@@ -61,7 +61,7 @@ export default function NewRequestPage() {
     const { data: target, error: tErr } = await supabase
       .from('targets')
       .upsert(
-        { slug, url: siteUrl.trim() },
+        { slug },
         { onConflict: 'user_id,slug', ignoreDuplicates: false }
       )
       .select('id')
