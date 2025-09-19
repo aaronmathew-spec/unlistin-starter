@@ -76,6 +76,7 @@ export default function NewRequestPage() {
       // Create the request
       const { error: rErr } = await supabase.from('requests').insert({
         target_id: target.id,
+        type: 'manual',
         site_url: siteUrl.trim(),
         category: category || null,
         notes: notes || null,
