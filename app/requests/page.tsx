@@ -1,19 +1,16 @@
 'use client';
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
 
 type Request = {
-  id: string;
-  site_url: string;
-  category: string | null;
-  status: string;
-  notes: string | null;
-  created_at: string;
+  id: string; site_url: string; category: string | null; status: string; notes: string | null; created_at: string;
 };
 
 export default function RequestsPage() {
   const [items, setItems] = useState<Request[]>([]);
   const [loading, setLoading] = useState(true);
+  const router = useRouter();
 
   useEffect(() => {
     (async () => {
@@ -33,6 +30,13 @@ export default function RequestsPage() {
     const { error } = await supabase.from('requests').update({ status }).eq('id', id);
     if (error) return alert(error.message);
     setItems((prev) => prev.map((r) => (r.id === id ? { ...r, status } : r)));
+  }
+
+  async function remove(id: string) {
+    if (!confirm('Delete this request?')) return;
+    const { error } = await supabase.from('requests').delete().eq('id', id);
+    if (error) return alert(error.message);
+    setItems((prev) => prev.filter((r) => r.id !== id));
   }
 
   if (loading) return <p>Loading…</p>;
@@ -55,6 +59,7 @@ export default function RequestsPage() {
               <th style={{ textAlign: 'left', borderBottom: '1px solid #eee', padding: 8 }}>Category</th>
               <th style={{ textAlign: 'left', borderBottom: '1px solid #eee', padding: 8 }}>Status</th>
               <th style={{ textAlign: 'left', borderBottom: '1px solid #eee', padding: 8 }}>Notes</th>
+              <th style={{ textAlign: 'left', borderBottom: '1px solid #eee', padding: 8 }}>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -75,6 +80,11 @@ export default function RequestsPage() {
                   </select>
                 </td>
                 <td style={{ padding: 8, maxWidth: 320, whiteSpace: 'pre-wrap' }}>{r.notes || '—'}</td>
+                <td style={{ padding: 8, display: 'flex', gap: 8 }}>
+                  <button onClick={() => router.push(`/requests/${r.id}/edit`)} style={{ padding: '6px 10px' }}>Edit</button>
+                  <button onClick={() => router.push(`/requests/${r.id}/files`)} style={{ padding: '6px 10px' }}>Files</button>
+                  <button onClick={() => remove(r.id)} style={{ padding: '6px 10px' }}>Delete</button>
+                </td>
               </tr>
             ))}
           </tbody>
