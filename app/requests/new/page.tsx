@@ -3,7 +3,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import supabase from '@/lib/supabaseClient';
+import supabase from '../../../lib/supabaseClient';
 
 function toSlug(input: string) {
   return input
