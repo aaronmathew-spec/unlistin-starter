@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 // four levels up from /app/requests/[id]/files/page.tsx -> /lib/supabaseClient
-import { supabase } from '../../../../lib/supabaseClient';
+import supabase from '../../lib/supabaseClient';
 import { useParams } from 'next/navigation';
 
 export default function FilesPage() {
