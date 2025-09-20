@@ -99,8 +99,7 @@ export default function NewRequestPage() {
         target_id: targetId,
         type: typeValue,        // <-- satisfies NOT NULL + CHECK on requests.type
         notes: notes || null,
-        status: 'open',         // harmless if default exists; remove if undesired
-      });
+     });
 
       if (rErr) {
         alert(`Error creating request: ${rErr.message}`);
