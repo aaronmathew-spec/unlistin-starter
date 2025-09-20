@@ -1,182 +1,188 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import supabase from '../../../lib/supabaseClient'; // <-- adjust only if your path differs
+import { useEffect, useState, FormEvent } from 'react';
+import supabase from '../../../lib/supabaseClient';
 
-/** Turn a URL or free text into a URL-safe slug. */
-function toSlug(input: string): string {
-  return input
-    .toLowerCase()
-    .trim()
-    .replace(/https?:\/\//, '')
-    .replace(/^www\./, '')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/(^-|-$)+/g, '');
-}
+// ---- helpers ---------------------------------------------------------------
 
-/** Try to produce a nice display name from a URL; fall back to slug. */
-function toDisplayNameFromUrl(urlText: string, fallbackSlug: string): string {
+// Turn a URL or string into a nice, per-user slug (usually the domain).
+function toDomain(input: string): string {
   try {
-    const u = new URL(urlText.trim());
-    const host = u.hostname.replace(/^www\./, '');
-    // If we also have a pathname that looks meaningful, keep just first segment
-    const firstPath = u.pathname.split('/').filter(Boolean)[0];
-    if (firstPath) return `${host}/${firstPath}`;
-    return host || fallbackSlug;
+    // If user pasted a full URL
+    const u = new URL(input.includes('://') ? input : `https://${input}`);
+    return u.hostname.toLowerCase();
   } catch {
-    // If not a valid URL, just use the slug
-    return fallbackSlug;
+    // Fallback: basic cleanup
+    return input
+      .trim()
+      .toLowerCase()
+      .replace(/^https?:\/\//, '')
+      .replace(/^www\./, '')
+      .split('/')[0]
+      .replace(/[^\w.-]+/g, '-');
   }
 }
 
+// ---- UI -------------------------------------------------------------------
+
+const CATEGORIES = [
+  'Data Broker',
+  'Search Engine',
+  'People Finder',
+  'Aggregator',
+  'Forum',
+  'Other',
+] as const;
+
 export default function NewRequestPage() {
   const [siteUrl, setSiteUrl] = useState('');
-  const [category, setCategory] = useState('');
+  const [category, setCategory] = useState<string>('');
   const [notes, setNotes] = useState('');
   const [loading, setLoading] = useState(false);
+  const [authReady, setAuthReady] = useState(false);
 
   // Require login
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
-      if (!data.user) window.location.href = '/';
-    });
-  }, []);
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setLoading(true);
-
-    try {
-      // Confirm user
-      const { data: userResp, error: userErr } = await supabase.auth.getUser();
-      if (userErr) throw userErr;
-      const user = userResp.user;
-      if (!user) {
+      if (!data.user) {
         window.location.href = '/';
         return;
       }
+      setAuthReady(true);
+    });
+  }, []);
 
-      // Derive slug + display_name
-      const slug = toSlug(siteUrl.trim());
-      const display_name = toDisplayNameFromUrl(siteUrl.trim(), slug);
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (loading) return;
 
-      // Ensure there is a target for THIS user. (user_id gets set by your BEFORE INSERT trigger.)
-      const { data: target, error: tErr } = await supabase
-        .from('targets')
-        .upsert(
-          { slug, display_name }, // <--- include display_name to satisfy NOT NULL
-          { onConflict: 'user_id,slug', ignoreDuplicates: false }
-        )
-        .select('id')
-        .single();
-
-      if (tErr) throw tErr;
-      if (!target?.id) throw new Error('Could not create/find target.');
-
-      // Create the request
-      const { error: rErr } = await supabase.from('requests').insert({
-        target_id: target.id,
-        type: 'removal',
-        site_url: siteUrl.trim(),
-        category: category || null,
-        notes: notes || null,
-      });
-
-      if (rErr) throw rErr;
-
-      alert('Request created!');
-      // send them to requests list (or wherever you want)
-      window.location.href = '/requests';
-    } catch (err: any) {
-      // Surface helpful errors
-      const msg =
-        err?.message ||
-        err?.error ||
-        'Something went wrong while creating your request.';
-      alert(msg);
-    } finally {
-      setLoading(false);
+    const cleanUrl = siteUrl.trim();
+    if (!cleanUrl) {
+      alert('Please enter a site URL.');
+      return;
     }
+
+    setLoading(true);
+
+    // Confirm current user
+    const {
+      data: { user },
+      error: userErr,
+    } = await supabase.auth.getUser();
+
+    if (userErr || !user) {
+      setLoading(false);
+      alert('Please sign in again.');
+      return;
+    }
+
+    // 1) Upsert/ensure a target for THIS user
+    const slug = toDomain(cleanUrl);
+
+    const { data: target, error: targErr } = await supabase
+      .from('targets')
+      .upsert(
+        { slug, url: cleanUrl }, // user_id is set by your BEFORE INSERT trigger
+        { onConflict: 'user_id,slug', ignoreDuplicates: false },
+      )
+      .select('id')
+      .single();
+
+    if (targErr || !target) {
+      setLoading(false);
+      alert(`Error saving target: ${targErr?.message ?? 'unknown error'}`);
+      return;
+    }
+
+    // 2) Create the request (let DB default fill "type")
+    const { error: reqErr } = await supabase.from('requests').insert({
+      user_id: user.id,
+      target_id: target.id,
+      category: category || null,
+      notes: notes || null,
+      // DO NOT send "type" here — DB default handles it
+    });
+
+    setLoading(false);
+
+    if (reqErr) {
+      alert(`Error creating request: ${reqErr.message}`);
+      return;
+    }
+
+    // Done — take them to the list (or you can route to /requests/[id]/edit)
+    window.location.href = '/requests';
+  }
+
+  if (!authReady) {
+    return (
+      <main className="mx-auto max-w-2xl p-6">
+        <h1 className="text-2xl font-semibold">UnlistIN</h1>
+        <p className="mt-4 text-gray-600">Checking your session…</p>
+      </main>
+    );
   }
 
   return (
-    <main style={{ maxWidth: 760, margin: '3rem auto', padding: '0 1rem' }}>
-      <h1 style={{ marginBottom: 0 }}>UnlistIN</h1>
-      <h2 style={{ marginTop: '0.5rem' }}>New Removal Request</h2>
+    <main className="mx-auto max-w-2xl p-6">
+      <header className="mb-8 flex items-baseline justify-between">
+        <h1 className="text-2xl font-semibold">UnlistIN</h1>
+        <nav className="space-x-4 text-sm">
+          <a href="/" className="text-indigo-600 hover:underline">
+            Home
+          </a>
+          <a href="/requests" className="text-indigo-600 hover:underline">
+            Requests
+          </a>
+        </nav>
+      </header>
 
-      <form onSubmit={submit} style={{ display: 'grid', gap: '1rem', marginTop: '1.5rem' }}>
-        <label>
-          <div style={{ fontWeight: 600, marginBottom: 6 }}>Site URL *</div>
+      <h2 className="mb-4 text-xl font-medium">New Removal Request</h2>
+
+      <form onSubmit={handleSubmit} className="space-y-6">
+        <div>
+          <label className="mb-1 block text-sm font-medium">Site URL *</label>
           <input
             type="url"
-            required
+            placeholder="https://example.com/profile/123"
             value={siteUrl}
             onChange={(e) => setSiteUrl(e.target.value)}
-            placeholder="https://example.com/profile/123"
-            style={{
-              width: '100%',
-              padding: '10px 12px',
-              border: '1px solid #d0d7de',
-              borderRadius: 6,
-              fontSize: 15,
-            }}
+            required
+            className="w-full rounded border px-3 py-2 outline-none ring-indigo-500 focus:ring"
           />
-        </label>
+        </div>
 
-        <label>
-          <div style={{ fontWeight: 600, marginBottom: 6 }}>Category</div>
+        <div>
+          <label className="mb-1 block text-sm font-medium">Category</label>
           <select
             value={category}
             onChange={(e) => setCategory(e.target.value)}
-            style={{
-              width: '100%',
-              padding: '10px 12px',
-              border: '1px solid #d0d7de',
-              borderRadius: 6,
-              fontSize: 15,
-              background: 'white',
-            }}
+            className="w-full rounded border bg-white px-3 py-2 outline-none ring-indigo-500 focus:ring"
           >
             <option value="">— Select —</option>
-            <option value="Data Broker">Data Broker</option>
-            <option value="Search Engine">Search Engine</option>
-            <option value="Social Network">Social Network</option>
-            <option value="Scraper / Aggregator">Scraper / Aggregator</option>
-            <option value="Other">Other</option>
+            {CATEGORIES.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
           </select>
-        </label>
+        </div>
 
-        <label>
-          <div style={{ fontWeight: 600, marginBottom: 6 }}>Notes</div>
+        <div>
+          <label className="mb-1 block text-sm font-medium">Notes</label>
           <textarea
+            placeholder="Anything specific to track for this takedown"
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
-            placeholder="Anything specific to track for this takedown"
             rows={6}
-            style={{
-              width: '100%',
-              padding: '10px 12px',
-              border: '1px solid #d0d7de',
-              borderRadius: 6,
-              fontSize: 15,
-              resize: 'vertical',
-            }}
+            className="w-full resize-y rounded border px-3 py-2 outline-none ring-indigo-500 focus:ring"
           />
-        </label>
+        </div>
 
         <button
           type="submit"
           disabled={loading}
-          style={{
-            padding: '12px 14px',
-            fontSize: 16,
-            fontWeight: 600,
-            borderRadius: 6,
-            border: '1px solid #1f6feb',
-            background: loading ? '#9ec1ff' : '#2f81f7',
-            color: 'white',
-            cursor: loading ? 'default' : 'pointer',
-          }}
+          className="w-full rounded bg-indigo-600 px-4 py-2 font-medium text-white disabled:opacity-60"
         >
           {loading ? 'Saving…' : 'Create Request'}
         </button>
