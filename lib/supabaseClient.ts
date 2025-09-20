@@ -5,5 +5,6 @@ const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
 const supabase = createClient(url, anon);
 
-export { supabase };        // optional named export
-export default supabase;    // required for default import
+// export both ways
+export default supabase;
+export { supabase };
