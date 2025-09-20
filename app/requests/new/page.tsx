@@ -1,256 +1,208 @@
-// app/requests/new/page.tsx
 'use client';
 
-import { useEffect, useState } from 'react';
-import Link from 'next/link';
+import { useEffect, useMemo, useState } from 'react';
 import supabase from '../../../lib/supabaseClient';
 
+/**
+ * Convert any string into a slug.
+ * “Example Site” -> “example-site”
+ */
 function toSlug(input: string) {
   return input
     .trim()
     .toLowerCase()
-    .replace(/^https?:\/\//, '')
-    .replace(/\/$/, '')
+    .replace(/https?:\/\//, '')
+    .replace(/^www\./, '')
+    .replace(/\/.*/, '') // strip path if user pasted a full URL; keeps host
     .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
+    .replace(/(^-|-$)/g, '');
 }
 
-function displayFromUrl(input: string) {
-  try {
-    const u = new URL(input);
-    return u.hostname.replace(/^www\./, '');
-  } catch {
-    return input.replace(/^https?:\/\//, '').replace(/\/$/, '');
-  }
-}
+/**
+ * Visible options -> DB-safe values.
+ * Adjust the right-side values if your requests.type enum uses different tokens.
+ */
+const TYPE_OPTIONS: { label: string; value: string }[] = [
+  { label: 'Data Broker', value: 'data_broker' },
+  { label: 'Search Engine', value: 'search' },
+  { label: 'News/Media', value: 'news' },
+  { label: 'Aggregator/Directory', value: 'directory' },
+  { label: 'Other', value: 'other' },
+];
 
 export default function NewRequestPage() {
   const [siteUrl, setSiteUrl] = useState('');
-  const [category, setCategory] = useState('Data Broker');
+  const [typeLabel, setTypeLabel] = useState(TYPE_OPTIONS[0].label);
   const [notes, setNotes] = useState('');
   const [loading, setLoading] = useState(false);
 
-  // Require login for this page (redirect to "/")
+  // Redirect to home if not logged in
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
       if (!data.user) window.location.href = '/';
     });
   }, []);
 
-  async function tryUpsertTarget({
-    slug,
-    url,
-    display_name,
-  }: {
-    slug: string;
-    url: string;
-    display_name: string;
-  }) {
-    // Try with { slug, url, display_name } first.
-    let res = await supabase
-      .from('targets')
-      .upsert({ slug, url, display_name }, { onConflict: 'user_id,slug', ignoreDuplicates: false })
-      .select('id')
-      .single();
+  const typeValue = useMemo(
+    () => TYPE_OPTIONS.find((t) => t.label === typeLabel)?.value ?? 'other',
+    [typeLabel]
+  );
 
-    if (res.error) {
-      const msg = `${res.error.message || ''} ${res.error.details || ''}`.toLowerCase();
-
-      // If the API cache doesn't know the 'url' column (or it truly doesn't exist), try without it.
-      if (msg.includes("column 'url'") || msg.includes('url') || msg.includes('schema cache')) {
-        res = await supabase
-          .from('targets')
-          .upsert({ slug, display_name }, { onConflict: 'user_id,slug', ignoreDuplicates: false })
-          .select('id')
-          .single();
-      }
-    }
-    return res;
-  }
-
-  async function tryInsertRequest(payloadBase: any) {
-    // Some projects have a CHECK constraint on requests.type.
-    // We’ll try a few safe candidates; the first that passes wins.
-    const TYPE_CANDIDATES = ['removal', 'takedown', 'privacy', 'dmca', 'other'];
-
-    for (const t of TYPE_CANDIDATES) {
-      const { data, error } = await supabase
-        .from('requests')
-        .insert({ ...payloadBase, type: t })
-        .select('id')
-        .single();
-      if (!error) return { data, error: null };
-
-      const msg = (error.message || '').toLowerCase();
-      if (!msg.includes('check constraint') && !msg.includes('violates check')) {
-        // Different error (not the type check) — stop and report it.
-        return { data: null, error };
-      }
-      // else: try the next candidate
-    }
-    return {
-      data: null,
-      error: {
-        message:
-          "Your 'requests.type' CHECK constraint rejected common values. Either adjust the constraint or set a default.",
-        details:
-          "Quick fix (run in Supabase SQL):  alter table public.requests drop constraint if exists requests_type_check;",
-      },
-    };
-  }
-
-  async function onSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!siteUrl.trim()) {
+      alert('Please enter a site URL.');
+      return;
+    }
+
     setLoading(true);
 
     try {
-      // Make sure we have the logged in user
-      const { data: userResp, error: userErr } = await supabase.auth.getUser();
+      // Reconfirm auth on submit
+      const { data: userResp } = await supabase.auth.getUser();
       const user = userResp?.user;
-      if (userErr || !user) {
-        throw new Error('You must be logged in to create a request.');
+      if (!user) {
+        window.location.href = '/';
+        return;
       }
 
-      // Basic validation
-      const trimmedUrl = siteUrl.trim();
-      if (!trimmedUrl) throw new Error('Please enter a site URL.');
+      // Build a per-user slug/display name for the target
+      const displayName = siteUrl.trim().replace(/https?:\/\//, '').replace(/\/$/, '');
+      const slug = toSlug(siteUrl);
 
-      // Prepare target fields
-      const slug = toSlug(trimmedUrl);
-      const display_name = displayFromUrl(trimmedUrl);
-
-      // Create (or ensure) target for this user
-      let { data: target, error: tErr } = await tryUpsertTarget({
-        slug,
-        url: trimmedUrl,
-        display_name,
-      });
+      // 1) Ensure a target exists for THIS user
+      const { data: target, error: tErr } = await supabase
+        .from('targets')
+        .upsert(
+          {
+            // user_id is set by your BEFORE INSERT trigger
+            slug,
+            display_name: displayName, // many schemas require this to be NOT NULL
+          },
+          { onConflict: 'user_id,slug', ignoreDuplicates: false }
+        )
+        .select('id')
+        .single();
 
       if (tErr || !target?.id) {
-        // If upsert failed because row already exists but select failed,
-        // try to select the row by slug for this user.
-        const { data: existing, error: selErr } = await supabase
-          .from('targets')
-          .select('id')
-          .eq('slug', slug)
-          .limit(1)
-          .maybeSingle();
-
-        if (existing?.id) {
-          target = existing as any;
-        } else {
-          throw new Error(
-            tErr?.message ||
-              selErr?.message ||
-              "Couldn't create or locate the target row. Check your 'targets' columns and policies."
-          );
-        }
+        alert(`Error saving target: ${tErr?.message ?? 'no target returned'}`);
+        setLoading(false);
+        return;
       }
 
-      // Insert a request that points to that target
-      const basePayload = {
-        target_id: target.id,
-        category,
+      const targetId = target.id; // safe after the guard
+
+      // 2) Insert the request that points to that target.
+      //    Only send columns that definitely exist in your schema.
+      //    If your table uses "category" rather than "type", or both, adjust below.
+      const { error: rErr } = await supabase.from('requests').insert({
+        target_id: targetId,
+        type: typeValue,        // <-- satisfies NOT NULL + CHECK on requests.type
         notes: notes || null,
-        status: 'open', // harmless if your table has a default; ignored if the column doesn’t exist
-      };
+        status: 'open',         // harmless if default exists; remove if undesired
+      });
 
-      const { data: reqData, error: reqErr } = await tryInsertRequest(basePayload);
-      if (reqErr) {
-        const friendly =
-          reqErr.details ||
-          reqErr.message ||
-          'Insert failed. Verify the columns in public.requests and your RLS policies.';
-        throw new Error(friendly);
+      if (rErr) {
+        alert(`Error creating request: ${rErr.message}`);
+        setLoading(false);
+        return;
       }
 
-      // Done!
+      setLoading(false);
       window.location.href = '/requests';
     } catch (err: any) {
-      alert(err?.message || 'Something went wrong. Please try again.');
-    } finally {
+      console.error(err);
+      alert(err?.message ?? 'Something went wrong.');
       setLoading(false);
     }
   }
 
   return (
-    <div style={{ maxWidth: 720, margin: '3rem auto', padding: '0 1rem' }}>
-      {/* Simple header */}
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <h1 style={{ fontSize: 28, fontWeight: 700 }}>UnlistIN</h1>
-        <nav style={{ display: 'flex', gap: 16 }}>
-          <Link href="/">Home</Link>
-          <Link href="/requests">Requests</Link>
-        </nav>
-      </header>
+    <div style={{ maxWidth: 720, margin: '2rem auto', padding: '0 1rem' }}>
+      {/* simple header + crumb */}
+      <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 8 }}>UnlistIN</h1>
+      <div style={{ marginBottom: 24 }}>
+        <a href="/" style={{ color: '#5b21b6', textDecoration: 'underline', marginRight: 12 }}>
+          Home
+        </a>
+        <a href="/requests" style={{ color: '#5b21b6', textDecoration: 'underline' }}>
+          Requests
+        </a>
+      </div>
 
-      <h2 style={{ fontSize: 24, fontWeight: 600, marginBottom: 12 }}>New Removal Request</h2>
+      <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 16 }}>New Removal Request</h2>
 
-      <form onSubmit={onSubmit} style={{ display: 'grid', gap: 16, background: '#fafafa', padding: 20, borderRadius: 8 }}>
-        <div style={{ display: 'grid', gap: 6 }}>
-          <label htmlFor="siteUrl" style={{ fontWeight: 600 }}>
-            Site URL <span style={{ color: '#cc0000' }}>*</span>
-          </label>
+      <form onSubmit={handleSubmit} style={{ display: 'grid', gap: 16 }}>
+        {/* Site URL */}
+        <label style={{ display: 'grid', gap: 6 }}>
+          <span style={{ fontWeight: 600 }}>Site URL *</span>
           <input
-            id="siteUrl"
             type="url"
-            required
             placeholder="https://example.com/profile/123"
             value={siteUrl}
             onChange={(e) => setSiteUrl(e.target.value)}
+            required
             style={{
-              border: '1px solid #ddd',
-              borderRadius: 6,
               padding: '10px 12px',
+              border: '1px solid #ddd',
+              borderRadius: 8,
               fontSize: 14,
             }}
           />
-        </div>
+        </label>
 
-        <div style={{ display: 'grid', gap: 6 }}>
-          <label htmlFor="category" style={{ fontWeight: 600 }}>
-            Category
-          </label>
+        {/* Category / Type */}
+        <label style={{ display: 'grid', gap: 6 }}>
+          <span style={{ fontWeight: 600 }}>Category</span>
           <select
-            id="category"
-            value={category}
-            onChange={(e) => setCategory(e.target.value)}
-            style={{ border: '1px solid #ddd', borderRadius: 6, padding: '10px 12px', fontSize: 14 }}
+            value={typeLabel}
+            onChange={(e) => setTypeLabel(e.target.value)}
+            style={{
+              padding: '10px 12px',
+              border: '1px solid #ddd',
+              borderRadius: 8,
+              fontSize: 14,
+              background: '#fff',
+            }}
           >
-            <option>Data Broker</option>
-            <option>Search Index</option>
-            <option>Forum/Blog</option>
-            <option>Social</option>
-            <option>Other</option>
+            {TYPE_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.label}>
+                {opt.label}
+              </option>
+            ))}
           </select>
-        </div>
+        </label>
 
-        <div style={{ display: 'grid', gap: 6 }}>
-          <label htmlFor="notes" style={{ fontWeight: 600 }}>
-            Notes
-          </label>
+        {/* Notes */}
+        <label style={{ display: 'grid', gap: 6 }}>
+          <span style={{ fontWeight: 600 }}>Notes</span>
           <textarea
-            id="notes"
             rows={5}
             placeholder="Anything specific to track for this takedown"
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
-            style={{ border: '1px solid #ddd', borderRadius: 6, padding: '10px 12px', fontSize: 14 }}
+            style={{
+              padding: '10px 12px',
+              border: '1px solid #ddd',
+              borderRadius: 8,
+              fontSize: 14,
+              resize: 'vertical',
+            }}
           />
-        </div>
+        </label>
 
         <button
           type="submit"
           disabled={loading}
           style={{
-            background: '#111827',
-            color: '#fff',
-            border: 0,
-            borderRadius: 8,
+            marginTop: 8,
             padding: '12px 14px',
+            borderRadius: 8,
+            background: loading ? '#ddd' : '#5b21b6',
+            color: '#fff',
+            border: 'none',
             fontWeight: 600,
             cursor: loading ? 'not-allowed' : 'pointer',
-            opacity: loading ? 0.7 : 1,
           }}
         >
           {loading ? 'Saving…' : 'Create Request'}
