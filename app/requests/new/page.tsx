@@ -1,192 +1,261 @@
+// app/requests/new/page.tsx
 'use client';
 
-import { useEffect, useState, FormEvent } from 'react';
-import supabase from '../../../lib/supabaseClient';
+import { useEffect, useState } from 'react';
+import Link from 'next/link';
+import supabase from '@/lib/supabaseClient';
 
-// ---- helpers ---------------------------------------------------------------
+function toSlug(input: string) {
+  return input
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/\/$/, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
 
-// Turn a URL or string into a nice, per-user slug (usually the domain).
-function toDomain(input: string): string {
+function displayFromUrl(input: string) {
   try {
-    // If user pasted a full URL
-    const u = new URL(input.includes('://') ? input : `https://${input}`);
-    return u.hostname.toLowerCase();
+    const u = new URL(input);
+    return u.hostname.replace(/^www\./, '');
   } catch {
-    // Fallback: basic cleanup
-    return input
-      .trim()
-      .toLowerCase()
-      .replace(/^https?:\/\//, '')
-      .replace(/^www\./, '')
-      .split('/')[0]
-      .replace(/[^\w.-]+/g, '-');
+    return input.replace(/^https?:\/\//, '').replace(/\/$/, '');
   }
 }
 
-// ---- UI -------------------------------------------------------------------
-
-const CATEGORIES = [
-  'Data Broker',
-  'Search Engine',
-  'People Finder',
-  'Aggregator',
-  'Forum',
-  'Other',
-] as const;
-
 export default function NewRequestPage() {
   const [siteUrl, setSiteUrl] = useState('');
-  const [category, setCategory] = useState<string>('');
+  const [category, setCategory] = useState('Data Broker');
   const [notes, setNotes] = useState('');
   const [loading, setLoading] = useState(false);
-  const [authReady, setAuthReady] = useState(false);
 
-  // Require login
+  // Require login for this page (redirect to "/")
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
-      if (!data.user) {
-        window.location.href = '/';
-        return;
-      }
-      setAuthReady(true);
+      if (!data.user) window.location.href = '/';
     });
   }, []);
 
-  async function handleSubmit(e: FormEvent) {
-    e.preventDefault();
-    if (loading) return;
-
-    const cleanUrl = siteUrl.trim();
-    if (!cleanUrl) {
-      alert('Please enter a site URL.');
-      return;
-    }
-
-    setLoading(true);
-
-    // Confirm current user
-    const {
-      data: { user },
-      error: userErr,
-    } = await supabase.auth.getUser();
-
-    if (userErr || !user) {
-      setLoading(false);
-      alert('Please sign in again.');
-      return;
-    }
-
-    // 1) Upsert/ensure a target for THIS user
-    const slug = toDomain(cleanUrl);
-
-    const { data: target, error: targErr } = await supabase
+  async function tryUpsertTarget({
+    slug,
+    url,
+    display_name,
+  }: {
+    slug: string;
+    url: string;
+    display_name: string;
+  }) {
+    // Try with { slug, url, display_name } first.
+    let res = await supabase
       .from('targets')
-      .upsert(
-        { slug, url: cleanUrl }, // user_id is set by your BEFORE INSERT trigger
-        { onConflict: 'user_id,slug', ignoreDuplicates: false },
-      )
+      .upsert({ slug, url, display_name }, { onConflict: 'user_id,slug', ignoreDuplicates: false })
       .select('id')
       .single();
 
-    if (targErr || !target) {
-      setLoading(false);
-      alert(`Error saving target: ${targErr?.message ?? 'unknown error'}`);
-      return;
+    if (res.error) {
+      const msg = `${res.error.message || ''} ${res.error.details || ''}`.toLowerCase();
+
+      // If the API cache doesn't know the 'url' column (or it truly doesn't exist), try without it.
+      if (msg.includes("column 'url'") || msg.includes('url') || msg.includes('schema cache')) {
+        res = await supabase
+          .from('targets')
+          .upsert({ slug, display_name }, { onConflict: 'user_id,slug', ignoreDuplicates: false })
+          .select('id')
+          .single();
+      }
     }
-
-    // 2) Create the request (let DB default fill "type")
-    const { error: reqErr } = await supabase.from('requests').insert({
-      user_id: user.id,
-      target_id: target.id,
-      category: category || null,
-      notes: notes || null,
-      // DO NOT send "type" here — DB default handles it
-    });
-
-    setLoading(false);
-
-    if (reqErr) {
-      alert(`Error creating request: ${reqErr.message}`);
-      return;
-    }
-
-    // Done — take them to the list (or you can route to /requests/[id]/edit)
-    window.location.href = '/requests';
+    return res;
   }
 
-  if (!authReady) {
-    return (
-      <main className="mx-auto max-w-2xl p-6">
-        <h1 className="text-2xl font-semibold">UnlistIN</h1>
-        <p className="mt-4 text-gray-600">Checking your session…</p>
-      </main>
-    );
+  async function tryInsertRequest(payloadBase: any) {
+    // Some projects have a CHECK constraint on requests.type.
+    // We’ll try a few safe candidates; the first that passes wins.
+    const TYPE_CANDIDATES = ['removal', 'takedown', 'privacy', 'dmca', 'other'];
+
+    for (const t of TYPE_CANDIDATES) {
+      const { data, error } = await supabase
+        .from('requests')
+        .insert({ ...payloadBase, type: t })
+        .select('id')
+        .single();
+      if (!error) return { data, error: null };
+
+      const msg = (error.message || '').toLowerCase();
+      if (!msg.includes('check constraint') && !msg.includes('violates check')) {
+        // Different error (not the type check) — stop and report it.
+        return { data: null, error };
+      }
+      // else: try the next candidate
+    }
+    return {
+      data: null,
+      error: {
+        message:
+          "Your 'requests.type' CHECK constraint rejected common values. Either adjust the constraint or set a default.",
+        details:
+          "Quick fix (run in Supabase SQL):  alter table public.requests drop constraint if exists requests_type_check;",
+      },
+    };
+  }
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+
+    try {
+      // Make sure we have the logged in user
+      const { data: userResp, error: userErr } = await supabase.auth.getUser();
+      const user = userResp?.user;
+      if (userErr || !user) {
+        throw new Error('You must be logged in to create a request.');
+      }
+
+      // Basic validation
+      const trimmedUrl = siteUrl.trim();
+      if (!trimmedUrl) throw new Error('Please enter a site URL.');
+
+      // Prepare target fields
+      const slug = toSlug(trimmedUrl);
+      const display_name = displayFromUrl(trimmedUrl);
+
+      // Create (or ensure) target for this user
+      let { data: target, error: tErr } = await tryUpsertTarget({
+        slug,
+        url: trimmedUrl,
+        display_name,
+      });
+
+      if (tErr || !target?.id) {
+        // If upsert failed because row already exists but select failed,
+        // try to select the row by slug for this user.
+        const { data: existing, error: selErr } = await supabase
+          .from('targets')
+          .select('id')
+          .eq('slug', slug)
+          .limit(1)
+          .maybeSingle();
+
+        if (existing?.id) {
+          target = existing as any;
+        } else {
+          throw new Error(
+            tErr?.message ||
+              selErr?.message ||
+              "Couldn't create or locate the target row. Check your 'targets' columns and policies."
+          );
+        }
+      }
+
+      // Insert a request that points to that target
+      const basePayload = {
+        target_id: target.id,
+        category,
+        notes: notes || null,
+        status: 'open', // harmless if your table has a default; ignored if the column doesn’t exist
+      };
+
+      const { data: reqData, error: reqErr } = await tryInsertRequest(basePayload);
+      if (reqErr) {
+        const friendly =
+          reqErr.details ||
+          reqErr.message ||
+          'Insert failed. Verify the columns in public.requests and your RLS policies.';
+        throw new Error(friendly);
+      }
+
+      // Done!
+      window.location.href = '/requests';
+    } catch (err: any) {
+      alert(err?.message || 'Something went wrong. Please try again.');
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
-    <main className="mx-auto max-w-2xl p-6">
-      <header className="mb-8 flex items-baseline justify-between">
-        <h1 className="text-2xl font-semibold">UnlistIN</h1>
-        <nav className="space-x-4 text-sm">
-          <a href="/" className="text-indigo-600 hover:underline">
-            Home
-          </a>
-          <a href="/requests" className="text-indigo-600 hover:underline">
-            Requests
-          </a>
+    <div style={{ maxWidth: 720, margin: '3rem auto', padding: '0 1rem' }}>
+      {/* Simple header */}
+      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+        <h1 style={{ fontSize: 28, fontWeight: 700 }}>UnlistIN</h1>
+        <nav style={{ display: 'flex', gap: 16 }}>
+          <Link href="/">Home</Link>
+          <Link href="/requests">Requests</Link>
         </nav>
       </header>
 
-      <h2 className="mb-4 text-xl font-medium">New Removal Request</h2>
+      <h2 style={{ fontSize: 24, fontWeight: 600, marginBottom: 12 }}>New Removal Request</h2>
 
-      <form onSubmit={handleSubmit} className="space-y-6">
-        <div>
-          <label className="mb-1 block text-sm font-medium">Site URL *</label>
+      <form onSubmit={onSubmit} style={{ display: 'grid', gap: 16, background: '#fafafa', padding: 20, borderRadius: 8 }}>
+        <div style={{ display: 'grid', gap: 6 }}>
+          <label htmlFor="siteUrl" style={{ fontWeight: 600 }}>
+            Site URL <span style={{ color: '#cc0000' }}>*</span>
+          </label>
           <input
+            id="siteUrl"
             type="url"
+            required
             placeholder="https://example.com/profile/123"
             value={siteUrl}
             onChange={(e) => setSiteUrl(e.target.value)}
-            required
-            className="w-full rounded border px-3 py-2 outline-none ring-indigo-500 focus:ring"
+            style={{
+              border: '1px solid #ddd',
+              borderRadius: 6,
+              padding: '10px 12px',
+              fontSize: 14,
+            }}
           />
         </div>
 
-        <div>
-          <label className="mb-1 block text-sm font-medium">Category</label>
+        <div style={{ display: 'grid', gap: 6 }}>
+          <label htmlFor="category" style={{ fontWeight: 600 }}>
+            Category
+          </label>
           <select
+            id="category"
             value={category}
             onChange={(e) => setCategory(e.target.value)}
-            className="w-full rounded border bg-white px-3 py-2 outline-none ring-indigo-500 focus:ring"
+            style={{ border: '1px solid #ddd', borderRadius: 6, padding: '10px 12px', fontSize: 14 }}
           >
-            <option value="">— Select —</option>
-            {CATEGORIES.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
+            <option>Data Broker</option>
+            <option>Search Index</option>
+            <option>Forum/Blog</option>
+            <option>Social</option>
+            <option>Other</option>
           </select>
         </div>
 
-        <div>
-          <label className="mb-1 block text-sm font-medium">Notes</label>
+        <div style={{ display: 'grid', gap: 6 }}>
+          <label htmlFor="notes" style={{ fontWeight: 600 }}>
+            Notes
+          </label>
           <textarea
+            id="notes"
+            rows={5}
             placeholder="Anything specific to track for this takedown"
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
-            rows={6}
-            className="w-full resize-y rounded border px-3 py-2 outline-none ring-indigo-500 focus:ring"
+            style={{ border: '1px solid #ddd', borderRadius: 6, padding: '10px 12px', fontSize: 14 }}
           />
         </div>
 
         <button
           type="submit"
           disabled={loading}
-          className="w-full rounded bg-indigo-600 px-4 py-2 font-medium text-white disabled:opacity-60"
+          style={{
+            background: '#111827',
+            color: '#fff',
+            border: 0,
+            borderRadius: 8,
+            padding: '12px 14px',
+            fontWeight: 600,
+            cursor: loading ? 'not-allowed' : 'pointer',
+            opacity: loading ? 0.7 : 1,
+          }}
         >
           {loading ? 'Saving…' : 'Create Request'}
         </button>
       </form>
-    </main>
+    </div>
   );
 }
