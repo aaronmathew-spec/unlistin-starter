@@ -10,11 +10,11 @@
   },
   "dependencies": {
     "@supabase/ssr": "^0.4.0",
-    "resend": "^3.2.0"
+    "@supabase/supabase-js": "2.46.1",
     "next": "14.2.11",
     "react": "18.3.1",
     "react-dom": "18.3.1",
-    "@supabase/supabase-js": "2.46.1"
+    "resend": "^3.2.0"
   },
   "devDependencies": {
     "typescript": "5.6.2",
