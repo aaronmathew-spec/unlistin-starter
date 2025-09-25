@@ -7,8 +7,8 @@ export async function POST(req: NextRequest) {
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   const body = await req.json().catch(() => ({}));
-  const category = (body?.category ?? null) as string | null;
-  const notes = (body?.notes ?? null) as string | null;
+  const category = body?.category ?? null;
+  const notes = body?.notes ?? null;
 
   const { data, error } = await supabase
     .from("requests")
