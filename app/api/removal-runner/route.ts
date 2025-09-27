@@ -1,8 +1,9 @@
+// app/api/removal-runner/route.ts
 import { createClient } from '@supabase/supabase-js'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY! // server-only (in Vercel env)
+  process.env.SUPABASE_SERVICE_ROLE_KEY! // server-only in Vercel
 )
 
 async function logEvent(job_id: string, type: string, message: string, meta: any = {}) {
@@ -56,11 +57,10 @@ async function runWorker() {
   return new Response('ok', { status: 200 })
 }
 
-export async function GET(request: Request) {
-  // secure: only Vercel Cron with header may call
-  const secret = request.headers.get('x-cron-secret')
-  if (!process.env.CRON_SECRET || secret !== process.env.CRON_SECRET) {
-    return new Response('forbidden', { status: 403 })
-  }
+export async function GET(req: Request) {
+  // Vercel Cron includes this header automatically
+  const isCron = req.headers.get('x-vercel-cron') === '1'
+  const ok = isCron || (!!process.env.CRON_SECRET && req.headers.get('x-cron-secret') === process.env.CRON_SECRET)
+  if (!ok) return new Response('forbidden', { status: 403 })
   return runWorker()
 }
