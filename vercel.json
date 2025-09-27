@@ -1,6 +1,7 @@
 {
+  "version": 2,
   "crons": [
-    { "path": "/api/cron/rescan",       "schedule": "0 3 * * *" },  // 03:00 UTC daily
-    { "path": "/api/removal-runner",    "schedule": "0 4 * * *" }   // 04:00 UTC daily
+    { "path": "/api/cron/rescan", "schedule": "0 3 * * *" },
+    { "path": "/api/removal-runner", "schedule": "0 * * * *" }
   ]
 }
