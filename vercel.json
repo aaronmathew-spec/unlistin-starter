@@ -4,7 +4,6 @@
     "app/**": { "maxDuration": 30, "memory": 1024 }
   },
   "crons": [
-    { "path": "/api/cron/rescan", "schedule": "0 3 * * *" },
-    { "path": "/api/removal-runner", "schedule": "0 * * * *" }
+    { "path": "/api/cron/dispatch", "schedule": "0 * * * *" }
   ]
 }
