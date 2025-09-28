@@ -1,95 +1,63 @@
+// app/components/LeadForm.tsx
 'use client'
 
 import { useState } from 'react'
 
 export default function LeadForm() {
-  const [name, setName] = useState('')
-  const [city, setCity] = useState('')
-  const [email, setEmail] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
 
-  async function onSubmit(e: React.FormEvent) {
+  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
+    setSubmitting(true)
     setMsg(null)
 
-    if (!name.trim()) {
-      setMsg({ ok: false, text: 'Please enter your full name.' })
-      return
+    const fd = new FormData(e.currentTarget)
+    const payload = {
+      name: String(fd.get('name') || '').trim(),
+      email: String(fd.get('email') || '').trim(),
+      city_state: String(fd.get('city_state') || '').trim(),
+      source: 'site'
     }
 
-    setLoading(true)
     try {
       const res = await fetch('/api/lead', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          name,
-          city_state: city || null,
-          email: email || null,
-          source: 'site',
-        }),
+        body: JSON.stringify(payload),
       })
-
-      const data = await res.json().catch(() => ({}))
-
-      if (res.ok) {
-        setMsg({ ok: true, text: "Scan queued! We'll email results soon." })
-        setName('')
-        setCity('')
-        setEmail('')
-      } else {
-        setMsg({
-          ok: false,
-          text: (data && (data.error || data.message)) || 'Could not queue scan.',
-        })
-      }
-    } catch {
-      setMsg({ ok: false, text: 'Network error. Please try again.' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data?.error || 'Submit failed')
+      setMsg('Thanks! We received your info.')
+      e.currentTarget.reset()
+    } catch (err: any) {
+      setMsg(err.message || 'Something went wrong.')
     } finally {
-      setLoading(false)
+      setSubmitting(false)
     }
   }
 
   return (
-    <form onSubmit={onSubmit} className="mt-6 grid gap-3 sm:grid-cols-3">
-      <input
-        className="w-full rounded-md border px-3 py-2"
-        placeholder="Full name"
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        required
-      />
-      <input
-        className="w-full rounded-md border px-3 py-2"
-        placeholder="City / State (optional)"
-        value={city}
-        onChange={(e) => setCity(e.target.value)}
-      />
-      <input
-        className="w-full rounded-md border px-3 py-2"
-        placeholder="Email (optional)"
-        type="email"
-        value={email}
-        onChange={(e) => setEmail(e.target.value)}
-      />
+    <form onSubmit={onSubmit} className="mt-8 space-y-4">
+      <div>
+        <label className="block text-sm font-medium">Name</label>
+        <input name="name" required className="mt-1 w-full rounded border px-3 py-2" />
+      </div>
+      <div>
+        <label className="block text-sm font-medium">Email</label>
+        <input name="email" type="email" required className="mt-1 w-full rounded border px-3 py-2" />
+      </div>
+      <div>
+        <label className="block text-sm font-medium">City, State</label>
+        <input name="city_state" placeholder="e.g., Mumbai, MH" className="mt-1 w-full rounded border px-3 py-2" />
+      </div>
       <button
         type="submit"
-        disabled={loading}
-        className="sm:col-span-3 rounded-md bg-black px-4 py-2 text-white disabled:opacity-60"
-      >
-        {loading ? 'Submitting…' : 'Instant scan'}
+        disabled={submitting}
+        className="rounded bg-black px-4 py-2 text-white disabled:opacity-60">
+        {submitting ? 'Submitting…' : 'Get scan & updates'}
       </button>
-
-      {msg && (
-        <p
-          className={`sm:col-span-3 text-sm ${
-            msg.ok ? 'text-green-600' : 'text-red-600'
-          }`}
-        >
-          {msg.text}
-        </p>
-      )}
+      {msg && <p className="text-sm mt-2">{msg}</p>}
     </form>
   )
 }
