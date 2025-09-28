@@ -37,5 +37,5 @@ export async function middleware(req: NextRequest) {
  * (This avoids assets and speeds up builds.)
  */
 export const config = {
-  matcher: ['/', '/requests/:path*', '/dashboard'],
+  matcher: ['/', '/requests/:path*', '/dashboard', '/login'],
 };
