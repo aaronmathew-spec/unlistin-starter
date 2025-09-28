@@ -1,11 +1,18 @@
-// app/middleware.ts
 import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
+import { createMiddlewareClient } from '@supabase/ssr';
 
-export function middleware() {
-  return NextResponse.next();
+export async function middleware(req: NextRequest) {
+  const res = NextResponse.next();
+
+  // Touch the session so auth cookies stay valid (important for API routes)
+  const supabase = createMiddlewareClient({ req, res });
+  await supabase.auth.getSession();
+
+  return res;
 }
 
-// You can keep or remove this; leaving it is fine when middleware always next()s.
+// Run on everything except static assets; adjust as needed
 export const config = {
-  matcher: ['/requests/:path*', '/dashboard'],
+  matcher: ['/(?!_next/static|_next/image|favicon.ico).*'],
 };
