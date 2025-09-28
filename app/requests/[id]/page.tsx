@@ -1,48 +1,48 @@
-'use client'
+'use client';
 
-import { useEffect, useState } from 'react'
-import { useParams, useRouter } from 'next/navigation'
-import supabase from '@/lib/supabaseClient'
+import { useEffect, useMemo, useState } from 'react';
+import { useParams, useRouter } from 'next/navigation';
+import supabase from '@/lib/supabaseClient';
 
 type RequestRow = {
-  id: number
-  created_at: string
-  category: string | null
-  status: string | null
-  notes: string | null
-}
+  id: number;
+  created_at: string;
+  category: string | null;
+  status: string | null;
+  notes: string | null;
+};
 
 type FileRow = {
-  id: number
-  name: string | null
-  size_bytes: number | null
-  url: string | null // if you store urls; otherwise it will be null and we’ll just show the name
-}
+  id: number;
+  name: string | null;
+  size_bytes: number | null;
+  url: string | null;
+};
 
-const STATUSES = ['new', 'queued', 'in_progress', 'done'] as const
+const STATUSES = ['new', 'queued', 'in_progress', 'done'] as const;
 
 export default function RequestDetailPage() {
-  const params = useParams<{ id: string }>()
-  const router = useRouter()
+  const router = useRouter();
+  const params = useParams<{ id: string }>();
+  const requestId = useMemo(() => Number(params?.id), [params]);
 
-  const requestId = Number(params?.id)
-  const [row, setRow] = useState<RequestRow | null>(null)
-  const [files, setFiles] = useState<FileRow[]>([])
-  const [loading, setLoading] = useState(true)
-  const [savingStatus, setSavingStatus] = useState(false)
+  const [row, setRow] = useState<RequestRow | null>(null);
+  const [files, setFiles] = useState<FileRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
 
-  // Load request + files
+  // Load request + files, ensure user is logged in
   useEffect(() => {
-    let mounted = true
-    if (!requestId) return
+    let mounted = true;
 
-    ;(async () => {
+    (async () => {
       try {
-        // require login
-        const { data: auth } = await supabase.auth.getUser()
+        if (!requestId) return;
+
+        const { data: auth } = await supabase.auth.getUser();
         if (!auth?.user) {
-          router.push('/')
-          return
+          router.push('/');
+          return;
         }
 
         const [{ data: req, error: reqErr }, { data: f, error: fileErr }] =
@@ -56,70 +56,119 @@ export default function RequestDetailPage() {
               .from('request_files')
               .select('id, name, size_bytes, url')
               .eq('request_id', requestId)
-              .order('id', { ascending: false }),
-          ])
+              .order('created_at', { ascending: false }),
+          ]);
 
-        if (reqErr) throw reqErr
-        if (fileErr) throw fileErr
-        if (!mounted) return
+        if (reqErr) throw reqErr;
+        if (fileErr) throw fileErr;
+        if (!mounted) return;
 
-        setRow(req as RequestRow)
-        setFiles((f ?? []) as FileRow[])
+        setRow(req as RequestRow);
+        setFiles((f ?? []) as FileRow[]);
       } catch (e) {
-        console.error(e)
-        alert('Failed to load request.')
+        console.error(e);
+        alert('Failed to load the request.');
       } finally {
-        if (mounted) setLoading(false)
+        if (mounted) setLoading(false);
       }
-    })()
+    })();
 
     return () => {
-      mounted = false
-    }
-  }, [requestId, router])
+      mounted = false;
+    };
+  }, [requestId, router]);
 
   async function updateStatus(nextStatus: string) {
-    if (!row) return
+    if (!row) return;
+    setSaving(true);
     try {
-      setSavingStatus(true)
       const { error } = await supabase
         .from('requests')
         .update({ status: nextStatus })
-        .eq('id', row.id)
-      if (error) throw error
-      setRow({ ...row, status: nextStatus })
+        .eq('id', row.id);
+
+      if (error) throw error;
+      setRow({ ...row, status: nextStatus });
     } catch (e) {
-      console.error(e)
-      alert('Could not update status')
+      console.error(e);
+      alert('Could not update status.');
     } finally {
-      setSavingStatus(false)
+      setSaving(false);
     }
   }
 
-  async function deleteFile(fileId: number, fileName: string | null) {
-    if (!row) return
-    if (!confirm(`Delete "${fileName ?? 'file'}"?`)) return
+  async function saveNotes(next: string) {
+    if (!row) return;
+    setSaving(true);
+    try {
+      const { error } = await supabase
+        .from('requests')
+        .update({ notes: next })
+        .eq('id', row.id);
+
+      if (error) throw error;
+      setRow({ ...row, notes: next });
+    } catch (e) {
+      console.error(e);
+      alert('Could not save notes.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteFile(fileId: number) {
+    if (!row) return;
+    if (!confirm('Delete this file?')) return;
 
     try {
       const res = await fetch(`/api/requests/${row.id}/files/${fileId}`, {
         method: 'DELETE',
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data?.error || 'Delete failed')
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Delete failed');
 
-      setFiles(prev => prev.filter(f => f.id !== fileId))
+      setFiles(prev => prev.filter(f => f.id !== fileId));
     } catch (e: any) {
-      console.error(e)
-      alert(e.message || 'Delete failed')
+      console.error(e);
+      alert(e.message || 'Delete failed');
+    }
+  }
+
+  async function renameFile(fileId: number, currentName: string | null) {
+    if (!row) return;
+
+    const next = prompt('New file name:', currentName ?? '');
+    if (next == null) return; // Cancelled
+    const trimmed = next.trim();
+    if (!trimmed) {
+      alert('Name cannot be empty.');
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/requests/${row.id}/files/${fileId}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: trimmed }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Rename failed');
+
+      setFiles(prev =>
+        prev.map(f => (f.id === fileId ? { ...f, name: trimmed } : f))
+      );
+    } catch (e: any) {
+      console.error(e);
+      alert(e.message || 'Rename failed');
     }
   }
 
   if (loading) {
-    return <div style={{ padding: 24 }}>Loading…</div>
+    return <div style={{ padding: 24 }}>Loading…</div>;
   }
 
   if (!row) {
-    return <div style={{ padding: 24 }}>Not found.</div>
+    return <div style={{ padding: 24 }}>Not found.</div>;
   }
 
   return (
@@ -138,17 +187,18 @@ export default function RequestDetailPage() {
       </div>
 
       <h2 style={{ marginTop: 24 }}>Request #{row.id}</h2>
+      <p style={{ color: '#666' }}>
+        Created: {new Date(row.created_at).toLocaleString()}
+      </p>
 
       {/* Status */}
-      <div style={{ marginBottom: 24 }}>
-        <label style={{ display: 'block', marginBottom: 6, color: '#555' }}>
-          Status
-        </label>
+      <div style={{ marginTop: 16 }}>
+        <label style={{ fontWeight: 600, marginRight: 8 }}>Status:</label>
         <select
           value={row.status ?? 'new'}
+          disabled={saving}
           onChange={e => updateStatus(e.target.value)}
-          disabled={savingStatus}
-          style={{ padding: 8 }}
+          style={{ padding: 6 }}
         >
           {STATUSES.map(s => (
             <option key={s} value={s}>
@@ -156,66 +206,94 @@ export default function RequestDetailPage() {
             </option>
           ))}
         </select>
-        {savingStatus && (
-          <span style={{ marginLeft: 8, color: '#888' }}>Saving…</span>
-        )}
       </div>
 
       {/* Notes */}
-      <div style={{ marginBottom: 24 }}>
-        <div style={{ color: '#777', marginBottom: 6 }}>Notes</div>
-        <div
+      <div style={{ marginTop: 16 }}>
+        <label style={{ display: 'block', fontWeight: 600, marginBottom: 6 }}>
+          Notes
+        </label>
+        <textarea
+          defaultValue={row.notes ?? ''}
+          onBlur={e => saveNotes(e.target.value)}
+          placeholder="Add any notes for this request…"
+          rows={5}
           style={{
-            border: '1px solid #eee',
+            width: '100%',
+            border: '1px solid #ddd',
             borderRadius: 6,
-            padding: 12,
-            whiteSpace: 'pre-wrap',
-            minHeight: 48,
+            padding: 10,
+            fontFamily: 'inherit',
+            fontSize: 14,
           }}
-        >
-          {row.notes || '—'}
-        </div>
+        />
+        <p style={{ color: '#777', marginTop: 6 }}>
+          (Edits save automatically when the textarea loses focus.)
+        </p>
       </div>
 
       {/* Files */}
       <h3 id="files" style={{ marginTop: 32 }}>
         Files
       </h3>
+
       {files.length === 0 ? (
-        <p style={{ color: '#777' }}>No files uploaded.</p>
+        <p>No files uploaded.</p>
       ) : (
-        <ul style={{ paddingLeft: 18 }}>
+        <ul
+          style={{
+            listStyle: 'none',
+            padding: 0,
+            margin: 0,
+            border: '1px solid #eee',
+            borderRadius: 8,
+          }}
+        >
           {files.map(f => (
             <li
               key={f.id}
               style={{
-                marginBottom: 6,
                 display: 'flex',
                 alignItems: 'center',
-                gap: 10,
+                justifyContent: 'space-between',
+                padding: '10px 12px',
+                borderTop: '1px solid #f2f2f2',
               }}
             >
-              {f.url ? (
-                <a href={f.url} target="_blank" rel="noreferrer" style={{ color: 'purple' }}>
-                  {f.name ?? '(file)'}
-                </a>
-              ) : (
-                <span>{f.name ?? '(file)'}</span>
-              )}
-              <span style={{ color: '#888' }}>
-                ({(f.size_bytes ?? 0).toLocaleString()} bytes)
-              </span>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 600 }}>
+                  {f.name || '(untitled file)'}
+                </div>
+                <div style={{ color: '#777', fontSize: 12 }}>
+                  {f.size_bytes ? `${(f.size_bytes / 1024).toFixed(1)} KB` : ''}
+                </div>
+                {f.url ? (
+                  <div style={{ marginTop: 4 }}>
+                    <a href={f.url} target="_blank" rel="noreferrer">
+                      Open
+                    </a>
+                  </div>
+                ) : null}
+              </div>
 
-              <button
-                onClick={() => deleteFile(f.id, f.name)}
-                style={{ padding: '4px 8px' }}
-              >
-                Delete
-              </button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  onClick={() => renameFile(f.id, f.name)}
+                  style={{ padding: '6px 10px' }}
+                >
+                  Rename
+                </button>
+                <button
+                  onClick={() => deleteFile(f.id)}
+                  style={{ padding: '6px 10px' }}
+                >
+                  Delete
+                </button>
+              </div>
             </li>
           ))}
         </ul>
       )}
     </div>
-  )
+  );
 }
