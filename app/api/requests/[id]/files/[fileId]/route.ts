@@ -2,55 +2,57 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY! // server-only
-const BUCKET = 'request-files'
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY! // server-only
+)
 
-function srv() {
-  return createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } })
+type Params = { params: { id: string; fileId: string } }
+
+// DELETE /api/requests/:id/files/:fileId
+export async function DELETE(_req: Request, { params }: Params) {
+  const requestId = Number(params.id)
+  const fileId = Number(params.fileId)
+  if (!requestId || !fileId) {
+    return NextResponse.json({ error: 'Bad id' }, { status: 400 })
+  }
+
+  const { error } = await supabase
+    .from('request_files')
+    .delete()
+    .eq('id', fileId)
+    .eq('request_id', requestId)
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 })
+  }
+  return NextResponse.json({ ok: true })
 }
 
-// DELETE: remove file record + storage object
-export async function DELETE(
-  req: Request,
-  ctx: { params: { id: string; fileId: string } }
-) {
-  try {
-    const requestId = Number(ctx.params.id)
-    const fileId = Number(ctx.params.fileId)
-    if (!requestId || !fileId) {
-      return NextResponse.json({ error: 'Bad id' }, { status: 400 })
-    }
-
-    const supabase = srv()
-
-    // 1) Read path from DB so we know what to delete in storage
-    const { data: row, error: selErr } = await supabase
-      .from('request_files')
-      .select('path')
-      .eq('id', fileId)
-      .eq('request_id', requestId)
-      .single()
-
-    if (selErr) throw selErr
-    if (!row) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-
-    // 2) Delete storage object
-    const storage = supabase.storage.from(BUCKET)
-    const { error: delObjErr } = await storage.remove([row.path])
-    if (delObjErr) throw delObjErr
-
-    // 3) Delete DB row
-    const { error: delRowErr } = await supabase
-      .from('request_files')
-      .delete()
-      .eq('id', fileId)
-      .eq('request_id', requestId)
-
-    if (delRowErr) throw delRowErr
-
-    return NextResponse.json({ ok: true })
-  } catch (e: any) {
-    return NextResponse.json({ error: e.message || 'Delete failed' }, { status: 500 })
+// PATCH /api/requests/:id/files/:fileId
+// body: { name: string }
+export async function PATCH(req: Request, { params }: Params) {
+  const requestId = Number(params.id)
+  const fileId = Number(params.fileId)
+  if (!requestId || !fileId) {
+    return NextResponse.json({ error: 'Bad id' }, { status: 400 })
   }
+
+  const { name } = await req.json().catch(() => ({}))
+  if (!name || typeof name !== 'string') {
+    return NextResponse.json({ error: 'Name required' }, { status: 400 })
+  }
+
+  const { data, error } = await supabase
+    .from('request_files')
+    .update({ name })
+    .eq('id', fileId)
+    .eq('request_id', requestId)
+    .select('id, name, size_bytes, url')
+    .single()
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 })
+  }
+  return NextResponse.json({ file: data })
 }
