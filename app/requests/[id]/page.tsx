@@ -222,17 +222,31 @@ export default function RequestDetailPage() {
       ) : (
         <ul style={{ marginTop: 12, paddingLeft: 18 }}>
           {files.map(f => (
-            <li key={f.id} style={{ marginBottom: 6 }}>
-              <a href={f.url ?? '#'} target="_blank" rel="noreferrer" style={{ color: 'purple' }}>
-                {f.name}
-              </a>
-              <span style={{ color: '#888', marginLeft: 8 }}>
-                ({(f.size_bytes ?? 0).toLocaleString()} bytes)
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  )
-}
+  <li key={f.id} style={{ marginBottom: 6, display: 'flex', alignItems: 'center', gap: 10 }}>
+    <a href={f.url ?? '#'} target="_blank" rel="noreferrer" style={{ color: 'purple' }}>
+      {f.name}
+    </a>
+    <span style={{ color: '#888' }}>
+      ({(f.size_bytes ?? 0).toLocaleString()} bytes)
+    </span>
+
+    <button
+      onClick={async () => {
+        if (!confirm(`Delete "${f.name}"?`)) return
+        try {
+          const res = await fetch(`/api/requests/${row!.id}/files/${f.id}`, { method: 'DELETE' })
+          const data = await res.json()
+          if (!res.ok) throw new Error(data?.error || 'Delete failed')
+          // reload list
+          setFiles(prev => prev.filter(x => x.id !== f.id))
+        } catch (e: any) {
+          console.error(e)
+          alert(e.message || 'Delete failed')
+        }
+      }}
+      style={{ padding: '4px 8px' }}
+    >
+      Delete
+    </button>
+  </li>
+))}
