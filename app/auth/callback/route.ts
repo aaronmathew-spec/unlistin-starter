@@ -1,21 +1,31 @@
-// app/auth/callback/route.ts
-import { NextRequest, NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
-import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
+import { NextRequest, NextResponse } from "next/server";
+import { createServerClient } from "@supabase/ssr";
+
+export const dynamic = "force-dynamic"; // do not prerender
 
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
-  const code = url.searchParams.get('code');
-  // Where to land after login; tweak as desired
-  const next = url.searchParams.get('next') || '/requests';
+  const code = url.searchParams.get("code");
 
-  const supabase = createRouteHandlerClient({ cookies });
+  const res = NextResponse.redirect(new URL("/requests", req.url));
 
-  // Exchange the PKCE code in the URL for a session (sets cookies server-side)
-  if (code) {
-    await supabase.auth.exchangeCodeForSession(code);
-  }
+  if (!code) return res;
 
-  // Redirect the user into the app (session cookies now set)
-  return NextResponse.redirect(new URL(next, url.origin));
+  // Create a client bound to req/res cookies
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        get: (name) => req.cookies.get(name)?.value,
+        set: (name, value, options) => res.cookies.set({ name, value, ...options }),
+        remove: (name, options) => res.cookies.set({ name, value: "", ...options, maxAge: 0 }),
+      },
+    }
+  );
+
+  // this sets the session cookie
+  await supabase.auth.exchangeCodeForSession(code);
+
+  return res;
 }
