@@ -1,75 +1,51 @@
-import { NextRequest, NextResponse } from "next/server";
-import { createServerClient, type CookieOptions } from "@supabase/ssr";
+// app/api/requests/[id]/route.ts
+import { NextResponse, NextRequest } from 'next/server';
+import { createServerClient, type CookieOptions } from '@supabase/ssr';
 
-function supabaseFrom(req: NextRequest) {
-  const res = NextResponse.next();
-
+function getServerClient(req: NextRequest) {
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
         get: (name: string) => req.cookies.get(name)?.value,
-        set: (name: string, value: string, options: CookieOptions) => {
-          res.cookies.set(name, value, options as any);
-        },
-        remove: (name: string, options: CookieOptions) => {
-          res.cookies.set(name, "", { ...(options as any), maxAge: 0 });
-        },
-      },
+      } as unknown as CookieOptions, // read-only is enough for this route
     }
   );
-
-  return { supabase, res };
+  return supabase;
 }
 
-export async function GET(
-  req: NextRequest,
-  { params }: { params: { id: string } }
-) {
-  const { supabase, res } = supabaseFrom(req);
+export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+  try {
+    const { id } = params;
+    const supabase = getServerClient(req);
 
-  // Ensure we have a session (helps disambiguate RLS errors)
-  const {
-    data: { session },
-    error: sessionErr,
-  } = await supabase.auth.getSession();
-  if (sessionErr) {
-    return NextResponse.json({ error: sessionErr.message }, { status: 500 });
+    // Ensure user is logged-in
+    const {
+      data: { user },
+      error: userErr,
+    } = await supabase.auth.getUser();
+    if (userErr || !user) {
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+    }
+
+    // Fetch the request – RLS should allow only owner to see it
+    const { data, error } = await supabase
+      .from('requests')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+
+    if (!data) {
+      return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    }
+
+    return NextResponse.json({ request: data });
+  } catch (e: any) {
+    return NextResponse.json({ error: e?.message ?? 'Unexpected error' }, { status: 500 });
   }
-  if (!session) {
-    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-  }
-
-  // NOTE: do not force Number() – let PostgREST coerce; avoids NaN edge cases.
-  const id = params.id;
-
-  const { data, error } = await supabase
-    .from("requests")
-    .select("id, site_url, category, notes, status, created_at, updated_at")
-    .eq("id", id)
-    .limit(1)
-    .maybeSingle();
-
-  if (error) {
-    const msg = error.message.toLowerCase();
-    const status =
-      msg.includes("permission denied") ? 403 :
-      msg.includes("jwt") || msg.includes("auth") ? 401 :
-      400;
-
-    const out = NextResponse.json({ error: error.message }, { status });
-    res.headers.forEach((v, k) => out.headers.set(k, v));
-    return out;
-  }
-
-  if (!data) {
-    const out = NextResponse.json({ error: "Request not found" }, { status: 404 });
-    res.headers.forEach((v, k) => out.headers.set(k, v));
-    return out;
-  }
-
-  const out = NextResponse.json({ request: data }, { status: 200 });
-  res.headers.forEach((v, k) => out.headers.set(k, v));
-  return out;
 }
