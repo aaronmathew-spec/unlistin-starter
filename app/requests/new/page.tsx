@@ -1,116 +1,72 @@
-'use client'
+// app/requests/new/page.tsx
+import { cookies } from 'next/headers';
+import { redirect } from 'next/navigation';
+import { createServerComponentClient } from '@supabase/auth-helpers-nextjs';
 
-import { useState } from 'react'
-import { useRouter } from 'next/navigation'
+export const dynamic = 'force-dynamic';
 
-export default function NewRequestPage() {
-  const router = useRouter()
-  const [siteUrl, setSiteUrl] = useState('')
-  const [category, setCategory] = useState('Search Engine')
-  const [notes, setNotes] = useState('')
-  const [saving, setSaving] = useState(false)
+export default async function NewRequestPage() {
+  const supabase = createServerComponentClient({ cookies });
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault()
-    setSaving(true)
-    try {
-      const res = await fetch('/api/requests', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          // IMPORTANT: use removal_url (server accepts url too, but let’s be explicit)
-          removal_url: siteUrl,
-          category,
-          notes,
-        }),
-      })
-
-      const json = await res.json().catch(() => ({}))
-      if (!res.ok) {
-        // show the server error
-        alert(json?.error || 'Failed to create.')
-        return
-      }
-
-      // Success – back to list
-      router.push('/requests')
-    } finally {
-      setSaving(false)
-    }
+  if (!user) {
+    redirect('/login'); // send them to magic-link page
   }
 
   return (
-    <div style={{ maxWidth: 720, margin: '40px auto', padding: 16 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-        <h1 style={{ margin: 0 }}>UnlistIN</h1>
-        <nav style={{ display: 'flex', gap: 16 }}>
-          <a href="/" style={{ color: 'purple' }}>Home</a>
-          <a href="/requests" style={{ color: 'purple' }}>Requests</a>
-          <a href="/dashboard" style={{ color: 'purple' }}>Dashboard</a>
-        </nav>
-      </div>
+    <div style={{ maxWidth: 800, margin: '40px auto', padding: 16 }}>
+      <h1>New Removal Request</h1>
+      <form
+        onSubmit={async (e) => {
+          e.preventDefault();
+          const fd = new FormData(e.currentTarget as HTMLFormElement);
+          const payload = {
+            site_url: fd.get('site_url'),
+            category: fd.get('category'),
+            notes: fd.get('notes'),
+          };
 
-      <h2 style={{ marginTop: 24 }}>New Removal Request</h2>
+          const res = await fetch('/api/requests', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            // same-origin cookies are sent by default, but this is harmless and explicit:
+            credentials: 'include',
+            body: JSON.stringify(payload),
+          });
 
-      <form onSubmit={onSubmit} style={{ marginTop: 16 }}>
+          if (!res.ok) {
+            const { error } = await res.json();
+            alert(error || 'Failed to create request');
+            return;
+          }
+          window.location.href = '/requests';
+        }}
+      >
         <label style={{ display: 'grid', gap: 6 }}>
           <span>Site URL *</span>
-          <input
-            required
-            type="url"
-            placeholder="https://www.example.com"
-            value={siteUrl}
-            onChange={(e) => setSiteUrl(e.target.value)}
-            style={{ padding: 10, border: '1px solid #ddd', borderRadius: 6 }}
-          />
+          <input name="site_url" required placeholder="https://www.example.com" />
         </label>
 
-        <label style={{ display: 'grid', gap: 6, marginTop: 16 }}>
+        <label style={{ display: 'grid', gap: 6, marginTop: 12 }}>
           <span>Category</span>
-          <select
-            value={category}
-            onChange={(e) => setCategory(e.target.value)}
-            style={{ padding: 10, border: '1px solid #ddd', borderRadius: 6 }}
-          >
-            {[
-              'Search Engine',
-              'Data Broker',
-              'Social Network',
-              'News / Article',
-              'Forum / Misc',
-            ].map((c) => (
-              <option key={c} value={c}>{c}</option>
-            ))}
+          <select name="category" defaultValue="Search Engine">
+            <option>Search Engine</option>
+            <option>News/Media</option>
+            <option>Social Network</option>
+            <option>Aggregator</option>
+            <option>Other</option>
           </select>
         </label>
 
-        <label style={{ display: 'grid', gap: 6, marginTop: 16 }}>
+        <label style={{ display: 'grid', gap: 6, marginTop: 12 }}>
           <span>Notes</span>
-          <textarea
-            rows={5}
-            placeholder="Any extra context…"
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            style={{ padding: 10, border: '1px solid #ddd', borderRadius: 6 }}
-          />
+          <textarea name="notes" rows={4} placeholder="Details to help us remove the content" />
         </label>
 
-        <button
-          type="submit"
-          disabled={saving}
-          style={{
-            marginTop: 20,
-            padding: '10px 14px',
-            background: '#111',
-            color: '#fff',
-            borderRadius: 6,
-            border: '1px solid #111',
-            opacity: saving ? 0.7 : 1,
-          }}
-        >
-          {saving ? 'Saving…' : 'Create Request'}
-        </button>
+        <button type="submit" style={{ marginTop: 16 }}>Save</button>
       </form>
     </div>
-  )
+  );
 }
