@@ -1,8 +1,27 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import supabase from '@/lib/supabaseClient';
+import LoginMagic from '@/components/LoginMagic';
+
+export default function RequestsPage() {
+  const [loading, setLoading] = useState(true);
+  const [authed, setAuthed]   = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.auth.getSession();
+      setAuthed(!!data.session);
+      setLoading(false);
+    })();
+  }, []);
+
+  if (loading) return <p>Loading…</p>;
+  if (!authed) return <LoginMagic next="/requests" />;
+
+  // ... your existing requests table UI here ...
+  return <div>/* your requests grid */</div>;
+}
 
 type RequestRow = {
   id: number;
