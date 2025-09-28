@@ -1,8 +1,6 @@
-// app/api/requests/[id]/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 
-/** Build a Supabase server client that can read/write auth cookies */
 function supabaseFrom(req: NextRequest) {
   const res = NextResponse.next();
 
@@ -13,7 +11,6 @@ function supabaseFrom(req: NextRequest) {
       cookies: {
         get: (name: string) => req.cookies.get(name)?.value,
         set: (name: string, value: string, options: CookieOptions) => {
-          // propagate cookie changes back to the client
           res.cookies.set(name, value, options as any);
         },
         remove: (name: string, options: CookieOptions) => {
@@ -32,12 +29,7 @@ export async function GET(
 ) {
   const { supabase, res } = supabaseFrom(req);
 
-  const id = Number(params.id);
-  if (!Number.isFinite(id)) {
-    return NextResponse.json({ error: "Invalid id" }, { status: 400 });
-  }
-
-  // Ensure we have a session (prevents RLS confusion)
+  // Ensure we have a session (helps disambiguate RLS errors)
   const {
     data: { session },
     error: sessionErr,
@@ -49,30 +41,35 @@ export async function GET(
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
 
-  // RLS should ensure only the owner can read this row
+  // NOTE: do not force Number() – let PostgREST coerce; avoids NaN edge cases.
+  const id = params.id;
+
   const { data, error } = await supabase
     .from("requests")
-    .select(
-      "id, site_url, category, notes, status, created_at, updated_at"
-    )
+    .select("id, site_url, category, notes, status, created_at, updated_at")
     .eq("id", id)
-    .single();
+    .limit(1)
+    .maybeSingle();
 
-  if (error || !data) {
-    return NextResponse.json(
-      { error: error?.message ?? "Request not found" },
-      { status: 404 }
-    );
+  if (error) {
+    const msg = error.message.toLowerCase();
+    const status =
+      msg.includes("permission denied") ? 403 :
+      msg.includes("jwt") || msg.includes("auth") ? 401 :
+      400;
+
+    const out = NextResponse.json({ error: error.message }, { status });
+    res.headers.forEach((v, k) => out.headers.set(k, v));
+    return out;
   }
 
-  // Return JSON while preserving any cookie updates set by Supabase
-  const json = JSON.stringify({ request: data });
-  const out = new NextResponse(json, {
-    status: 200,
-    headers: { "content-type": "application/json" },
-  });
+  if (!data) {
+    const out = NextResponse.json({ error: "Request not found" }, { status: 404 });
+    res.headers.forEach((v, k) => out.headers.set(k, v));
+    return out;
+  }
 
-  // copy cookie headers from the intermediate response
+  const out = NextResponse.json({ request: data }, { status: 200 });
   res.headers.forEach((v, k) => out.headers.set(k, v));
   return out;
 }
