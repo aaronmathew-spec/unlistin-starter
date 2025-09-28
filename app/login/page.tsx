@@ -1,38 +1,61 @@
+// app/login/page.tsx
 "use client";
 
 import { useState } from "react";
-import { getBrowserSupabase } from "@/lib/supabaseBrowser";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
-  const [sent, setSent] = useState(false);
+  const [status, setStatus] = useState<"idle" | "sending" | "sent" | "error">(
+    "idle"
+  );
+  const [err, setErr] = useState<string | null>(null);
 
-  async function send() {
-    const supabase = getBrowserSupabase();
-    const origin = window.location.origin;
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setErr(null);
+    setStatus("sending");
 
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      options: {
-        emailRedirectTo: `${origin}/auth/callback`
-      }
-    });
-
-    if (error) alert(error.message);
-    else setSent(true);
+    try {
+      const r = await fetch("/api/auth/magic-link", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      setStatus("sent");
+    } catch (e: any) {
+      setErr(e?.message || "Failed to send link");
+      setStatus("error");
+    }
   }
 
   return (
-    <div style={{ maxWidth: 480, margin: "80px auto", padding: 16 }}>
+    <div style={{ maxWidth: 420, margin: "48px auto" }}>
       <h1>Sign in</h1>
-      <input
-        placeholder="Email"
-        value={email}
-        onChange={(e) => setEmail(e.target.value)}
-        style={{ width: "100%", marginBottom: 12 }}
-      />
-      <button onClick={send}>Send magic link</button>
-      {sent && <p>Check your email for the magic link.</p>}
+      <form onSubmit={onSubmit}>
+        <input
+          type="email"
+          required
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="you@example.com"
+          style={{ width: "100%", padding: 10, marginBottom: 12 }}
+        />
+        <button
+          disabled={status === "sending"}
+          style={{ width: "100%", padding: 10 }}
+        >
+          {status === "sending" ? "Sending…" : "Send magic link"}
+        </button>
+        {status === "sent" && (
+          <p style={{ marginTop: 12 }}>Check your inbox for the link.</p>
+        )}
+        {err && (
+          <p style={{ marginTop: 12, color: "crimson" }}>
+            Error: {String(err)}
+          </p>
+        )}
+      </form>
     </div>
   );
 }
