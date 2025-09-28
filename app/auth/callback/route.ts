@@ -1,34 +1,39 @@
 // app/auth/callback/route.ts
-import { NextResponse, type NextRequest } from 'next/server'
-import { cookies } from 'next/headers'
-import { createServerClient, type CookieOptions } from '@supabase/ssr'
+import { NextResponse } from 'next/server';
+import { cookies } from 'next/headers';
+import { createServerClient } from '@supabase/ssr';
 
-function getSupabase() {
-  const cookieStore = cookies()
-  return createServerClient(
+export async function GET(req: Request) {
+  const { origin, searchParams } = new URL(req.url);
+  const code = searchParams.get('code');
+  const next = searchParams.get('next') ?? '/requests';
+
+  const cookieStore = cookies();
+
+  const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        get(name: string) {
-          return cookieStore.get(name)?.value
+        get(name) {
+          return cookieStore.get(name)?.value;
         },
-        set(name: string, value: string, options: CookieOptions) {
-          cookieStore.set({ name, value, ...options })
+        set(name, value, options) {
+          // Next 14 cookie setter signature
+          cookieStore.set({ name, value, ...options });
         },
-        remove(name: string, options: CookieOptions) {
-          cookieStore.set({ name, value: '', ...options, maxAge: 0 })
+        remove(name, options) {
+          cookieStore.set({ name, value: '', ...options, maxAge: 0 });
         },
       },
     }
-  )
-}
+  );
 
-export async function GET(req: NextRequest) {
-  const supabase = getSupabase()
+  // If Supabase sent a code, exchange it for a session (sets cookies)
+  if (code) {
+    await supabase.auth.exchangeCodeForSession(code);
+  }
 
-  // Exchange magic-link code for a session and set sb-* cookies
-  await supabase.auth.exchangeCodeForSession(req.url)
-
-  return NextResponse.redirect(new URL('/requests', req.url))
+  // Send the user where we want them after login
+  return NextResponse.redirect(new URL(next, origin));
 }
