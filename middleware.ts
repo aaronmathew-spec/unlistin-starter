@@ -1,15 +1,24 @@
 // middleware.ts
-import type { NextRequest } from 'next/server';
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
+import { createMiddlewareClient } from '@supabase/auth-helpers-nextjs';
 
-export function middleware(_req: NextRequest) {
-  return NextResponse.next();
+export async function middleware(req: NextRequest) {
+  // This response will be sent forward (and cookies can be attached to it)
+  const res = NextResponse.next();
+
+  // Initialize the Supabase client on the edge
+  const supabase = createMiddlewareClient({ req, res });
+
+  // IMPORTANT: this call reads/refreshes the session and
+  // attaches updated auth cookies to `res` automatically.
+  await supabase.auth.getSession();
+
+  return res;
 }
 
-// Either match everything except Next assets...
+// (Exclude static assets so middleware doesn’t run for those)
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+  matcher: [
+    '/((?!_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml).*)',
+  ],
 };
-
-// ...or, if you only want middleware on app pages you might guard later:
-// export const config = { matcher: ['/requests/:path*', '/dashboard/:path*'] };
