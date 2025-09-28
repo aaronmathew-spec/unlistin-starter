@@ -1,208 +1,173 @@
-'use client';
+// app/requests/[id]/files/page.tsx
 
-import { useEffect, useMemo, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
-import supabase from '@/lib/supabaseClient';
+import type { Metadata } from "next";
+import Link from "next/link";
 
-type FileObject = {
-  name: string;
-  id?: string;
-  updated_at?: string;
-  created_at?: string;
-  last_accessed_at?: string;
-  metadata?: {
-    size?: number;
-    mimetype?: string;
-  };
+// This page lists files for a request and should always be up-to-date
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+export const metadata: Metadata = {
+  title: "Request Files",
 };
 
-const BUCKET = 'unlistin';
+type FileRow = {
+  id: string;
+  name: string;
+  path: string | null;
+  contentType: string | null;
+  size: number | null;
+  created_at: string;
+  signedUrl: string | null;
+};
 
-export default function RequestFilesPage() {
-  const router = useRouter();
-  const { id } = useParams<{ id: string }>();
-  const prefix = useMemo(() => `${id}`, [id]);
-
-  const [files, setFiles] = useState<FileObject[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-
-  async function listFiles() {
-    setLoading(true);
-    setErrorMsg(null);
-    const { data, error } = await supabase.storage
-      .from(BUCKET)
-      .list(prefix, { sortBy: { column: 'updated_at', order: 'desc' } });
-
-    if (error) setErrorMsg(error.message);
-    setFiles(data ?? []);
-    setLoading(false);
+function formatBytes(n: number | null | undefined) {
+  if (!n || n <= 0) return "-";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  let val = n;
+  while (val >= 1024 && i < units.length - 1) {
+    val /= 1024;
+    i++;
   }
+  return `${val.toFixed(val < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
+}
 
-  useEffect(() => {
-    listFiles();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prefix]);
+function formatDate(iso: string | null | undefined) {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "-";
+  return d.toLocaleString();
+}
 
-  async function onUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    setErrorMsg(null);
+async function fetchFiles(requestId: string): Promise<FileRow[]> {
+  // Prefer absolute URL if you set NEXT_PUBLIC_SITE_URL; otherwise use relative.
+  const base =
+    process.env.NEXT_PUBLIC_SITE_URL && process.env.NEXT_PUBLIC_SITE_URL.trim() !== ""
+      ? process.env.NEXT_PUBLIC_SITE_URL.replace(/\/$/, "")
+      : "";
 
-    const path = `${prefix}/${file.name}`;
-    const { error } = await supabase.storage
-      .from(BUCKET)
-      .upload(path, file, { upsert: true });
+  const res = await fetch(`${base}/api/requests/${requestId}/files`, {
+    // always fetch fresh signed URLs
+    cache: "no-store",
+  });
 
-    if (error) setErrorMsg(error.message);
-    setUploading(false);
-    await listFiles();
-  }
-
-  async function onDownload(name: string) {
-    setErrorMsg(null);
-    const path = `${prefix}/${name}`;
-    const { data, error } = await supabase.storage
-      .from(BUCKET)
-      .createSignedUrl(path, 60); // 60s signed URL
-
-    if (error || !data?.signedUrl) {
-      setErrorMsg(error?.message || 'Could not create signed URL');
-      return;
+  if (!res.ok) {
+    let msg = "Failed to load files";
+    try {
+      const j = await res.json();
+      if (j?.error) msg = j.error;
+    } catch {
+      // ignore
     }
-    window.open(data.signedUrl, '_blank');
+    throw new Error(msg);
   }
 
-  async function onDelete(name: string) {
-    if (!confirm(`Delete "${name}"?`)) return;
-    setErrorMsg(null);
-    const { error } = await supabase.storage
-      .from(BUCKET)
-      .remove([`${prefix}/${name}`]);
+  const data = (await res.json()) as { files: FileRow[] };
+  return data.files ?? [];
+}
 
-    if (error) setErrorMsg(error.message);
-    await listFiles();
+export default async function RequestFilesPage({
+  params,
+  searchParams,
+}: {
+  params: { id: string };
+  searchParams?: Record<string, string | string[] | undefined>;
+}) {
+  const requestId = params.id;
+
+  let files: FileRow[] = [];
+  let error: string | null = null;
+
+  try {
+    files = await fetchFiles(requestId);
+  } catch (e: any) {
+    error = e?.message ?? "Failed to load files";
   }
 
   return (
-    <div style={{ padding: 24, maxWidth: 900 }}>
-      <nav style={{ marginBottom: 16, display: 'flex', gap: 12 }}>
-        <a href="/requests" style={{ color: '#5b21b6' }}>← Back to Requests</a>
-        <button onClick={() => router.refresh()} style={{ padding: '6px 10px' }}>
-          Refresh
-        </button>
-      </nav>
+    <main className="mx-auto max-w-4xl px-4 py-8">
+      <div className="mb-6 flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold">Files</h1>
+          <p className="text-sm text-gray-500">
+            Request ID: <span className="font-mono">{requestId}</span>
+          </p>
+        </div>
 
-      <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 8 }}>
-        Files for Request #{id}
-      </h1>
-
-      <div style={{ marginBottom: 16 }}>
-        <label
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 10,
-            border: '1px solid #e5e7eb',
-            padding: '8px 12px',
-            borderRadius: 8,
-            cursor: 'pointer',
-          }}
-        >
-          <input
-            type="file"
-            onChange={onUpload}
-            disabled={uploading}
-            style={{ display: 'none' }}
-          />
-          {uploading ? 'Uploading…' : 'Upload a file'}
-        </label>
+        <div className="flex gap-2">
+          {/* Simple refresh: add a timestamp param so the URL is unique and Next won't cache */}
+          <Link
+            href={`/requests/${requestId}/files?ts=${Date.now()}`}
+            className="rounded-md border px-3 py-1.5 text-sm hover:bg-gray-50"
+          >
+            Refresh
+          </Link>
+          <Link
+            href={`/requests/${requestId}`}
+            className="rounded-md border px-3 py-1.5 text-sm hover:bg-gray-50"
+          >
+            Back to request
+          </Link>
+        </div>
       </div>
 
-      {errorMsg && (
-        <div style={{ color: '#b91c1c', marginBottom: 12 }}>{errorMsg}</div>
-      )}
-
-      {loading ? (
-        <p>Loading…</p>
+      {error ? (
+        <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+          {error}
+        </div>
       ) : files.length === 0 ? (
-        <p style={{ color: '#6b7280' }}>No files yet.</p>
+        <div className="rounded-md border bg-white p-6 text-sm text-gray-600">
+          No files uploaded for this request yet.
+        </div>
       ) : (
-        <table
-          style={{
-            width: '100%',
-            borderCollapse: 'collapse',
-            border: '1px solid #e5e7eb',
-          }}
-        >
-          <thead>
-            <tr style={{ background: '#fafafa' }}>
-              <th style={th}>File</th>
-              <th style={th}>Size</th>
-              <th style={th}>Type</th>
-              <th style={{ ...th, width: 220 }}>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {files.map((f) => (
-              <tr key={f.name}>
-                <td style={td}>{f.name}</td>
-                <td style={td}>
-                  {f.metadata?.size ? formatBytes(f.metadata.size) : '—'}
-                </td>
-                <td style={td}>{f.metadata?.mimetype ?? '—'}</td>
-                <td style={{ ...td, display: 'flex', gap: 8 }}>
-                  <button style={btn} onClick={() => onDownload(f.name)}>
-                    Download
-                  </button>
-                  <button style={btnDanger} onClick={() => onDelete(f.name)}>
-                    Delete
-                  </button>
-                </td>
+        <div className="overflow-x-auto rounded-md border bg-white">
+          <table className="min-w-full border-separate border-spacing-0 text-sm">
+            <thead>
+              <tr className="bg-gray-50 text-left">
+                <th className="border-b px-4 py-3 font-medium text-gray-700">Name</th>
+                <th className="border-b px-4 py-3 font-medium text-gray-700">Size</th>
+                <th className="border-b px-4 py-3 font-medium text-gray-700">Type</th>
+                <th className="border-b px-4 py-3 font-medium text-gray-700">Uploaded</th>
+                <th className="border-b px-4 py-3" />
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {files.map((f) => (
+                <tr key={f.id} className="hover:bg-gray-50">
+                  <td className="border-b px-4 py-3">
+                    <div className="flex flex-col">
+                      <span className="font-medium">{f.name ?? "file"}</span>
+                      {f.path ? (
+                        <span className="text-xs text-gray-500">{f.path}</span>
+                      ) : null}
+                    </div>
+                  </td>
+                  <td className="border-b px-4 py-3">{formatBytes(f.size)}</td>
+                  <td className="border-b px-4 py-3">
+                    {f.contentType ?? <span className="text-gray-400">unknown</span>}
+                  </td>
+                  <td className="border-b px-4 py-3">{formatDate(f.created_at)}</td>
+                  <td className="border-b px-4 py-3">
+                    {f.signedUrl ? (
+                      <a
+                        href={f.signedUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="rounded-md border px-2 py-1 text-xs hover:bg-gray-50"
+                      >
+                        Download
+                      </a>
+                    ) : (
+                      <span className="text-xs text-gray-400">no link</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
-    </div>
+    </main>
   );
-}
-
-const th: React.CSSProperties = {
-  textAlign: 'left',
-  padding: '10px 12px',
-  borderBottom: '1px solid #e5e7eb',
-  fontWeight: 600,
-  color: '#374151',
-};
-
-const td: React.CSSProperties = {
-  padding: '10px 12px',
-  borderBottom: '1px solid #f3f4f6',
-  verticalAlign: 'middle',
-};
-
-const btn: React.CSSProperties = {
-  padding: '6px 10px',
-  border: '1px solid #e5e7eb',
-  borderRadius: 8,
-  background: '#fff',
-  cursor: 'pointer',
-};
-
-const btnDanger: React.CSSProperties = {
-  ...btn,
-  color: '#b91c1c',
-  borderColor: '#fecaca',
-  background: '#fff5f5',
-};
-
-function formatBytes(bytes: number) {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
 }
