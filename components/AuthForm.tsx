@@ -1,47 +1,43 @@
 'use client'
+
 import { useState } from 'react'
-import supabase from '@/lib/supabaseClient'   // ⬅️ default import (no curly braces)
+import supabase from '@/lib/supabaseClient'
 
 export default function AuthForm() {
-  const [email, setEmail] = React.useState('');
-  const [status, setStatus] = React.useState<string | null>(null);
-  const [loading, setLoading] = React.useState(false);
+  const [email, setEmail] = useState('')
+  const [loading, setLoading] = useState(false)
 
-  async function handleLogin(e: React.FormEvent) {
-    e.preventDefault();
-    setLoading(true);
-    setStatus(null);
-    try {
-      const { error } = await supabase.auth.signInWithOtp({
-        email,
-        options: { emailRedirectTo: `${location.origin}/dashboard` },
-      });
-      if (error) throw error;
-      setStatus('Check your email for a login link.');
-    } catch (err: any) {
-      setStatus(err.message || 'Login failed');
-    } finally {
-      setLoading(false);
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    setLoading(true)
+
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: { emailRedirectTo: `${location.origin}/auth/callback` },
+    })
+
+    setLoading(false)
+
+    if (error) {
+      alert(error.message)
+    } else {
+      alert('Check your email for the magic link.')
     }
   }
 
   return (
-    <form onSubmit={handleLogin} style={{ display: 'grid', gap: 12 }}>
-      <label>
-        Email
-        <input
-          type="email"
-          required
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          placeholder="you@example.com"
-          style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
-        />
-      </label>
-      <button type="submit" disabled={loading} style={{ padding: '10px 14px', borderRadius: 8, border: 0 }}>
+    <form onSubmit={onSubmit} style={{ display: 'grid', gap: 12, maxWidth: 420 }}>
+      <input
+        type="email"
+        required
+        placeholder="you@email.com"
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+        style={{ padding: 10 }}
+      />
+      <button type="submit" disabled={loading} style={{ padding: '10px 14px' }}>
         {loading ? 'Sending…' : 'Send magic link'}
       </button>
-      {status && <p style={{ fontSize: 14 }}>{status}</p>}
     </form>
-  );
+  )
 }
