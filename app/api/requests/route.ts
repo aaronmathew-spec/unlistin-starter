@@ -1,54 +1,32 @@
-// app/api/requests/route.ts
-import { NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
-import { createServerClient, type CookieOptions } from '@supabase/ssr';
+import { NextRequest, NextResponse } from "next/server";
+import { getServerSupabase } from "@/lib/supabaseServer";
 
-function createSupabaseServerClient() {
-  const cookieStore = cookies();
-
-  return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        get(name: string) {
-          return cookieStore.get(name)?.value;
-        },
-        set(name: string, value: string, options: CookieOptions) {
-          cookieStore.set({ name, value, ...options });
-        },
-        remove(name: string, options: CookieOptions) {
-          cookieStore.set({ name, value: '', ...options, maxAge: 0 });
-        },
-      },
-    }
-  );
-}
-
-export async function POST(req: Request) {
-  const supabase = createSupabaseServerClient();
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+export async function POST(req: NextRequest) {
+  const supabase = getServerSupabase();
+  const { data: { user } } = await supabase.auth.getUser();
 
   if (!user) {
-    return NextResponse.json({ error: 'Auth session missing' }, { status: 401 });
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { site_url, category, notes } = await req.json();
+  const body = await req.json();
+  const { site_url, category, notes } = body;
 
-  const { error } = await supabase.from('requests').insert({
-    user_id: user.id,
-    site_url,
-    category,
-    notes,
-    status: 'new',
-  });
+  // Adjust table/columns to your schema
+  const { data, error } = await supabase
+    .from("requests")
+    .insert({
+      site_url,
+      category,
+      notes,
+      user_id: user.id
+    })
+    .select()
+    .single();
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 400 });
   }
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ request: data }, { status: 201 });
 }
