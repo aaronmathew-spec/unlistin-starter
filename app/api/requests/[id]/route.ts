@@ -1,50 +1,78 @@
 // app/api/requests/[id]/route.ts
-import { NextResponse, NextRequest } from 'next/server';
-import { getServerSupabase } from '@/lib/supabaseServer';
+import { NextRequest, NextResponse } from "next/server";
+import { createServerClient, type CookieOptions } from "@supabase/ssr";
 
-function asInt(v: string | string[]) {
-  const n = Number(Array.isArray(v) ? v[0] : v);
-  return Number.isInteger(n) ? n : null;
+/** Build a Supabase server client that can read/write auth cookies */
+function supabaseFrom(req: NextRequest) {
+  const res = NextResponse.next();
+
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        get: (name: string) => req.cookies.get(name)?.value,
+        set: (name: string, value: string, options: CookieOptions) => {
+          // propagate cookie changes back to the client
+          res.cookies.set(name, value, options as any);
+        },
+        remove: (name: string, options: CookieOptions) => {
+          res.cookies.set(name, "", { ...(options as any), maxAge: 0 });
+        },
+      },
+    }
+  );
+
+  return { supabase, res };
 }
 
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
-  const id = asInt(params.id);
-  if (id === null) return NextResponse.json({ error: 'Bad id' }, { status: 400 });
+export async function GET(
+  req: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  const { supabase, res } = supabaseFrom(req);
 
-  const supabase = getServerSupabase();
-
-  const { data, error } = await supabase
-    .from('requests')
-    .select('id, created_at, category, status, notes, removal_url')
-    .eq('id', id)
-    .single();
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 404 });
-  return NextResponse.json(data);
-}
-
-export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
-  const id = asInt(params.id);
-  if (id === null) return NextResponse.json({ error: 'Bad id' }, { status: 400 });
-
-  const supabase = getServerSupabase();
-  const payload = await req.json().catch(() => ({} as Record<string, unknown>));
-
-  const allowed: Record<string, unknown> = {};
-  for (const k of ['status', 'notes', 'category', 'removal_url'] as const) {
-    if (k in payload) allowed[k] = payload[k];
-  }
-  if (Object.keys(allowed).length === 0) {
-    return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
+  const id = Number(params.id);
+  if (!Number.isFinite(id)) {
+    return NextResponse.json({ error: "Invalid id" }, { status: 400 });
   }
 
+  // Ensure we have a session (prevents RLS confusion)
+  const {
+    data: { session },
+    error: sessionErr,
+  } = await supabase.auth.getSession();
+  if (sessionErr) {
+    return NextResponse.json({ error: sessionErr.message }, { status: 500 });
+  }
+  if (!session) {
+    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  }
+
+  // RLS should ensure only the owner can read this row
   const { data, error } = await supabase
-    .from('requests')
-    .update(allowed)
-    .eq('id', id)
-    .select('id, status, notes, category, removal_url')
+    .from("requests")
+    .select(
+      "id, site_url, category, notes, status, created_at, updated_at"
+    )
+    .eq("id", id)
     .single();
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
-  return NextResponse.json(data);
+  if (error || !data) {
+    return NextResponse.json(
+      { error: error?.message ?? "Request not found" },
+      { status: 404 }
+    );
+  }
+
+  // Return JSON while preserving any cookie updates set by Supabase
+  const json = JSON.stringify({ request: data });
+  const out = new NextResponse(json, {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+
+  // copy cookie headers from the intermediate response
+  res.headers.forEach((v, k) => out.headers.set(k, v));
+  return out;
 }
