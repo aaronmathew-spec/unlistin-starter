@@ -1,39 +1,61 @@
 // app/requests/new/page.tsx
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
-import { createServerComponentClient } from '@supabase/auth-helpers-nextjs';
+import { createServerClient, type CookieOptions } from '@supabase/ssr';
 
 export const dynamic = 'force-dynamic';
 
+function createSupabaseServerClient() {
+  const cookieStore = cookies();
+
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        get(name: string) {
+          return cookieStore.get(name)?.value;
+        },
+        set(name: string, value: string, options: CookieOptions) {
+          cookieStore.set({ name, value, ...options });
+        },
+        remove(name: string, options: CookieOptions) {
+          cookieStore.set({ name, value: '', ...options, maxAge: 0 });
+        },
+      },
+    }
+  );
+}
+
 export default async function NewRequestPage() {
-  const supabase = createServerComponentClient({ cookies });
+  const supabase = createSupabaseServerClient();
+
   const {
     data: { user },
   } = await supabase.auth.getUser();
 
   if (!user) {
-    redirect('/login'); // send them to magic-link page
+    redirect('/login'); // must sign in first
   }
 
   return (
     <div style={{ maxWidth: 800, margin: '40px auto', padding: 16 }}>
       <h1>New Removal Request</h1>
+
       <form
         onSubmit={async (e) => {
           e.preventDefault();
           const fd = new FormData(e.currentTarget as HTMLFormElement);
-          const payload = {
-            site_url: fd.get('site_url'),
-            category: fd.get('category'),
-            notes: fd.get('notes'),
-          };
 
           const res = await fetch('/api/requests', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            // same-origin cookies are sent by default, but this is harmless and explicit:
             credentials: 'include',
-            body: JSON.stringify(payload),
+            body: JSON.stringify({
+              site_url: fd.get('site_url'),
+              category: fd.get('category'),
+              notes: fd.get('notes'),
+            }),
           });
 
           if (!res.ok) {
@@ -62,7 +84,7 @@ export default async function NewRequestPage() {
 
         <label style={{ display: 'grid', gap: 6, marginTop: 12 }}>
           <span>Notes</span>
-          <textarea name="notes" rows={4} placeholder="Details to help us remove the content" />
+          <textarea name="notes" rows={4} />
         </label>
 
         <button type="submit" style={{ marginTop: 16 }}>Save</button>
