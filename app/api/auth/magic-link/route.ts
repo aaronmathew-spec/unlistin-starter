@@ -1,17 +1,12 @@
-// app/api/auth/magic-link/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 
-export const dynamic = "force-dynamic"; // avoid prerendering this route
-// export const runtime = "nodejs"; // optional; default is fine on Vercel
+export const dynamic = "force-dynamic"; // avoid prerendering
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   const email = typeof body?.email === "string" ? body.email.trim() : "";
-
-  if (!email) {
-    return new NextResponse("email required", { status: 400 });
-  }
+  if (!email) return new NextResponse("email required", { status: 400 });
 
   // We'll attach auth cookies to this response
   const res = new NextResponse(null, { status: 204 });
@@ -20,20 +15,18 @@ export async function POST(req: NextRequest) {
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
-      // IMPORTANT: implement CookieMethods<'server'> exactly
-      cookies: () => ({
+      // NOTE: pass an OBJECT, not a function, to satisfy the overload
+      cookies: {
         get(name: string): string | undefined {
           return req.cookies.get(name)?.value;
         },
         set(name: string, value: string, options: CookieOptions): void {
-          // NextResponse.cookies.set uses CookieSerializeOptions; it's
-          // compatible at runtime with Supabase's CookieOptions.
           res.cookies.set(name, value, options as any);
         },
         remove(name: string, options: CookieOptions): void {
-          res.cookies.set(name, "", { ...options, maxAge: 0 } as any);
+          res.cookies.set(name, "", { ...(options as any), maxAge: 0 });
         },
-      }),
+      },
     }
   );
 
@@ -45,10 +38,8 @@ export async function POST(req: NextRequest) {
     options: { emailRedirectTo: redirectTo },
   });
 
-  if (error) {
-    return new NextResponse(error.message, { status: 400 });
-  }
+  if (error) return new NextResponse(error.message, { status: 400 });
 
-  // 204 No Content; cookies are set on this response
+  // Cookies are set on this response
   return res;
 }
