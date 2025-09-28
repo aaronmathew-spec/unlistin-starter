@@ -1,225 +1,79 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import supabase from '@/lib/supabaseClient';
 
-type RequestRow = {
-  id: number;
-  created_at: string;
-  category: string | null;
-  status: string | null;
-  notes: string | null;
-};
+const CATEGORIES = ['data_broker', 'social_profile', 'search_result', 'other'] as const;
 
-const STATUSES = ['new', 'queued', 'in_progress', 'done'] as const;
-
-export default function RequestsPage() {
+export default function NewRequestPage() {
   const router = useRouter();
-  const [rows, setRows] = useState<RequestRow[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
 
-  // Load current user's requests
-  useEffect(() => {
-    let mounted = true;
+  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setMsg(null);
+    setSubmitting(true);
 
-    (async () => {
-      try {
-        const { data: auth } = await supabase.auth.getUser();
-        if (!auth?.user) {
-          // not logged in -> go home
-          router.push('/');
-          return;
-        }
-
-        const { data, error } = await supabase
-          .from('requests')
-          .select('id, created_at, category, status, notes')
-          .order('created_at', { ascending: false });
-
-        if (error) throw error;
-        if (!mounted) return;
-
-        setRows((data ?? []) as RequestRow[]);
-      } catch (e) {
-        console.error('Failed to load requests:', e);
-        alert('Error loading requests. Please try again.');
-      } finally {
-        if (mounted) setLoading(false);
-      }
-    })();
-
-    return () => {
-      mounted = false;
-    };
-  }, [router]);
-
-  async function updateStatus(id: number, nextStatus: string) {
-    try {
-      const { error } = await supabase
-        .from('requests')
-        .update({ status: nextStatus })
-        .eq('id', id);
-
-      if (error) throw error;
-
-      setRows((prev) =>
-        prev.map((r) => (r.id === id ? { ...r, status: nextStatus } : r))
-      );
-    } catch (e) {
-      console.error('Status update failed:', e);
-      alert('Could not update status.');
-    }
-  }
-
-  async function remove(id: number) {
-    if (!confirm('Delete this request?')) return;
+    const form = new FormData(e.currentTarget);
+    const category = String(form.get('category') ?? '').trim();
+    const removal_url = String(form.get('removal_url') ?? '').trim();
+    const notes = String(form.get('notes') ?? '').trim();
 
     try {
-      const { error } = await supabase.from('requests').delete().eq('id', id);
-      if (error) throw error;
+      const res = await fetch('/api/requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category, removal_url, notes }),
+      });
+      const data = await res.json().catch(() => ({}));
 
-      setRows((prev) => prev.filter((r) => r.id !== id));
-    } catch (e) {
-      console.error('Delete failed:', e);
-      alert('Could not delete this request.');
+      if (!res.ok) throw new Error(data?.error || 'Failed to submit.');
+
+      // go back to the list you already have
+      router.push('/requests');
+    } catch (err: any) {
+      setMsg(err?.message || 'Something went wrong.');
+    } finally {
+      setSubmitting(false);
     }
   }
 
   return (
-    <div style={{ maxWidth: 960, margin: '40px auto', padding: 16 }}>
-      {/* Top nav */}
-      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-        <h1 style={{ margin: 0 }}>UnlistIN</h1>
-        <nav style={{ display: 'flex', gap: 16 }}>
-          <a href="/" style={{ color: 'purple' }}>
-            Home
-          </a>
-          <a href="/requests" style={{ color: 'purple' }}>
-            Requests
-          </a>
-        </nav>
-      </div>
+    <main style={{ maxWidth: 720, margin: '40px auto', padding: 16 }}>
+      <h1 style={{ margin: 0 }}>New Request</h1>
+      <p style={{ color: '#666' }}>Submit a link to remove and any notes.</p>
 
-      <h2 style={{ marginTop: 24 }}>My Requests</h2>
+      <form onSubmit={onSubmit} style={{ marginTop: 16, display: 'grid', gap: 12 }}>
+        <label style={{ display: 'grid', gap: 6 }}>
+          <span>Category</span>
+          <select name="category" defaultValue="other" style={{ padding: 8 }}>
+            {CATEGORIES.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
+        </label>
 
-      <div style={{ marginBottom: 16 }}>
-        <a
-          href="/requests/new"
-          style={{
-            display: 'inline-block',
-            padding: '8px 12px',
-            background: '#f3e8ff',
-            border: '1px solid #e9d5ff',
-            borderRadius: 6,
-            color: '#7c3aed',
-          }}
+        <label style={{ display: 'grid', gap: 6 }}>
+          <span>Profile / Link to remove</span>
+          <input name="removal_url" type="url" placeholder="https://example.com/profile/123" style={{ padding: 8 }} />
+        </label>
+
+        <label style={{ display: 'grid', gap: 6 }}>
+          <span>Notes</span>
+          <textarea name="notes" rows={4} placeholder="Any extra context…" style={{ padding: 8 }} />
+        </label>
+
+        <button
+          type="submit"
+          disabled={submitting}
+          style={{ padding: '10px 14px', background: '#000', color: '#fff', borderRadius: 6 }}
         >
-          New Request
-        </a>
-      </div>
+          {submitting ? 'Submitting…' : 'Queue Request'}
+        </button>
 
-      {loading ? (
-        <p>Loading…</p>
-      ) : rows.length === 0 ? (
-        <p>No requests yet.</p>
-      ) : (
-        <div
-          style={{
-            overflowX: 'auto',
-            border: '1px solid #eee',
-            borderRadius: 8,
-          }}
-        >
-          <table
-            style={{
-              width: '100%',
-              borderCollapse: 'collapse',
-              fontSize: 14,
-            }}
-          >
-            <thead>
-              <tr
-                style={{
-                  background: '#fafafa',
-                  borderBottom: '1px solid #eee',
-                  textAlign: 'left',
-                }}
-              >
-                <th style={{ padding: 8 }}>Created</th>
-                <th style={{ padding: 8 }}>Site</th>
-                <th style={{ padding: 8 }}>Category</th>
-                <th style={{ padding: 8 }}>Status</th>
-                <th style={{ padding: 8 }}>Notes</th>
-                <th style={{ padding: 8 }}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.id} style={{ borderTop: '1px solid #f0f0f0' }}>
-                  <td style={{ padding: 8 }}>
-                    {new Date(r.created_at).toLocaleString()}
-                  </td>
-
-                  {/* Site column — you can fill this later from a join to targets */}
-                  <td style={{ padding: 8, color: '#777' }}>—</td>
-
-                  <td style={{ padding: 8 }}>{r.category ?? '—'}</td>
-
-                  <td style={{ padding: 8 }}>
-                    <select
-                      value={r.status ?? 'new'}
-                      onChange={(e) => updateStatus(r.id, e.target.value)}
-                      style={{ padding: 6 }}
-                    >
-                      {STATUSES.map((s) => (
-                        <option key={s} value={s}>
-                          {s}
-                        </option>
-                      ))}
-                    </select>
-                  </td>
-
-                  <td
-                    style={{
-                      padding: 8,
-                      maxWidth: 320,
-                      whiteSpace: 'pre-wrap',
-                    }}
-                  >
-                    {r.notes || '—'}
-                  </td>
-
-                  <td style={{ padding: 8, display: 'flex', gap: 8 }}>
-                    {/* ✅ Edit goes to /requests/[id] (no /edit) */}
-                    <button
-                      onClick={() => router.push(`/requests/${r.id}`)}
-                      style={{ padding: '6px 10px' }}
-                    >
-                      Edit
-                    </button>
-
-                    {/* ✅ Files jumps to the files section on the same page */}
-                    <button
-                      onClick={() => router.push(`/requests/${r.id}#files`)}
-                      style={{ padding: '6px 10px' }}
-                    >
-                      Files
-                    </button>
-
-                    <button
-                      onClick={() => remove(r.id)}
-                      style={{ padding: '6px 10px' }}
-                    >
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
+        {msg && <p style={{ color: '#444' }}>{msg}</p>}
+      </form>
+    </main>
   );
 }
