@@ -1,52 +1,38 @@
-'use client';
+"use client";
 
-import { useState } from 'react';
-import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
+import { useState } from "react";
+import { getBrowserSupabase } from "@/lib/supabaseBrowser";
 
 export default function LoginPage() {
-  const supabase = createClientComponentClient();
-  const [email, setEmail] = useState('');
-  const [sending, setSending] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [email, setEmail] = useState("");
+  const [sent, setSent] = useState(false);
 
-  async function sendLink(e: React.FormEvent) {
-    e.preventDefault();
-    setSending(true);
-    setMsg(null);
-    try {
-      const { error } = await supabase.auth.signInWithOtp({
-        email,
-        options: {
-          // IMPORTANT: this must match the route we created above
-          emailRedirectTo: `${window.location.origin}/auth/callback`,
-        },
-      });
-      if (error) throw error;
-      setMsg('Magic link sent! Check your email.');
-    } catch (err: any) {
-      setMsg(err.message || 'Failed to send magic link.');
-    } finally {
-      setSending(false);
-    }
+  async function send() {
+    const supabase = getBrowserSupabase();
+    const origin = window.location.origin;
+
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: {
+        emailRedirectTo: `${origin}/auth/callback`
+      }
+    });
+
+    if (error) alert(error.message);
+    else setSent(true);
   }
 
   return (
-    <main style={{ maxWidth: 520, margin: '60px auto', padding: 16 }}>
+    <div style={{ maxWidth: 480, margin: "80px auto", padding: 16 }}>
       <h1>Sign in</h1>
-      <form onSubmit={sendLink} style={{ display: 'grid', gap: 12, marginTop: 16 }}>
-        <input
-          type="email"
-          placeholder="you@example.com"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          required
-          style={{ padding: 10, fontSize: 16 }}
-        />
-        <button disabled={sending} style={{ padding: '10px 14px' }}>
-          {sending ? 'Sending…' : 'Send magic link'}
-        </button>
-        {msg && <p>{msg}</p>}
-      </form>
-    </main>
+      <input
+        placeholder="Email"
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+        style={{ width: "100%", marginBottom: 12 }}
+      />
+      <button onClick={send}>Send magic link</button>
+      {sent && <p>Check your email for the magic link.</p>}
+    </div>
   );
 }
