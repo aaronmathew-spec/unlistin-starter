@@ -1,62 +1,52 @@
 'use client';
 
 import { useState } from 'react';
-import { createClient } from '@supabase/supabase-js';
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
+import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
 
 export default function LoginPage() {
+  const supabase = createClientComponentClient();
   const [email, setEmail] = useState('');
-  const [sent, setSent] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
 
   async function sendLink(e: React.FormEvent) {
     e.preventDefault();
-    setErr(null);
-    setLoading(true);
+    setSending(true);
+    setMsg(null);
     try {
       const { error } = await supabase.auth.signInWithOtp({
         email,
         options: {
-          emailRedirectTo: `${process.env.NEXT_PUBLIC_SITE_URL}/requests`,
+          // IMPORTANT: this must match the route we created above
+          emailRedirectTo: `${window.location.origin}/auth/callback`,
         },
       });
       if (error) throw error;
-      setSent(true);
-    } catch (e: any) {
-      setErr(e?.message ?? 'Failed to send link.');
+      setMsg('Magic link sent! Check your email.');
+    } catch (err: any) {
+      setMsg(err.message || 'Failed to send magic link.');
     } finally {
-      setLoading(false);
+      setSending(false);
     }
   }
 
   return (
-    <div style={{ maxWidth: 420, margin: '60px auto', padding: 16 }}>
+    <main style={{ maxWidth: 520, margin: '60px auto', padding: 16 }}>
       <h1>Sign in</h1>
-      {sent ? (
-        <p>Check your email for a magic link. After clicking it, you’ll land on Requests.</p>
-      ) : (
-        <form onSubmit={sendLink} style={{ display: 'grid', gap: 12 }}>
-          <label>
-            Email
-            <input
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              style={{ width: '100%', padding: 8 }}
-            />
-          </label>
-          <button disabled={loading} type="submit" style={{ padding: '8px 12px' }}>
-            {loading ? 'Sending…' : 'Send magic link'}
-          </button>
-          {err && <p style={{ color: 'crimson' }}>{err}</p>}
-        </form>
-      )}
-    </div>
+      <form onSubmit={sendLink} style={{ display: 'grid', gap: 12, marginTop: 16 }}>
+        <input
+          type="email"
+          placeholder="you@example.com"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          required
+          style={{ padding: 10, fontSize: 16 }}
+        />
+        <button disabled={sending} style={{ padding: '10px 14px' }}>
+          {sending ? 'Sending…' : 'Send magic link'}
+        </button>
+        {msg && <p>{msg}</p>}
+      </form>
+    </main>
   );
 }
