@@ -1,4 +1,3 @@
-// app/api/requests/[id]/files/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 
@@ -30,7 +29,6 @@ export async function GET(
 ) {
   const { supabase, res } = supabaseFrom(req);
 
-  // Auth check keeps errors predictable under RLS
   const {
     data: { session },
     error: sessionErr,
@@ -42,47 +40,63 @@ export async function GET(
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
 
-  // We keep files under "request-files" bucket in folder "<id>/"
-  const folder = `${params.id}/`;
+  const id = params.id;
 
-  // List files
+  // Verify the request exists and is owned by this user via RLS.
+  const { data: requestRow, error: reqErr } = await supabase
+    .from("requests")
+    .select("id")
+    .eq("id", id)
+    .limit(1)
+    .maybeSingle();
+
+  if (reqErr) {
+    const msg = reqErr.message.toLowerCase();
+    const status =
+      msg.includes("permission denied") ? 403 :
+      msg.includes("jwt") || msg.includes("auth") ? 401 :
+      400;
+    const out = NextResponse.json({ error: reqErr.message }, { status });
+    res.headers.forEach((v, k) => out.headers.set(k, v));
+    return out;
+  }
+
+  if (!requestRow) {
+    const out = NextResponse.json({ error: "Request not found" }, { status: 404 });
+    res.headers.forEach((v, k) => out.headers.set(k, v));
+    return out;
+  }
+
+  // List files from Storage bucket "request-files" under folder "<id>/"
+  const folder = `${id}/`;
+
   const { data: entries, error: listErr } = await supabase
     .storage
     .from("request-files")
-    .list(folder, {
-      limit: 100,
-      sortBy: { column: "created_at", order: "desc" },
-    });
+    .list(folder, { limit: 100, sortBy: { column: "created_at", order: "desc" } });
 
   if (listErr) {
-    return NextResponse.json({ error: listErr.message }, { status: 400 });
+    const out = NextResponse.json({ error: listErr.message }, { status: 400 });
+    res.headers.forEach((v, k) => out.headers.set(k, v));
+    return out;
   }
 
-  // Create signed URLs for display/download
   const files = await Promise.all(
     (entries ?? []).map(async (f) => {
       const path = `${folder}${f.name}`;
       const { data: signed, error: signErr } =
-        await supabase.storage.from("request-files").createSignedUrl(path, 60 * 60); // 1 hour
+        await supabase.storage.from("request-files").createSignedUrl(path, 3600);
 
       return {
         name: f.name,
         path,
-        created_at: (f as any)?.created_at ?? null,
-        last_modified: (f as any)?.updated_at ?? null,
-        size: (f as any)?.metadata?.size ?? null,
         signedUrl: signErr ? null : signed?.signedUrl ?? null,
         error: signErr?.message ?? null,
       };
     })
   );
 
-  const json = JSON.stringify({ files });
-  const out = new NextResponse(json, {
-    status: 200,
-    headers: { "content-type": "application/json" },
-  });
-
+  const out = NextResponse.json({ files }, { status: 200 });
   res.headers.forEach((v, k) => out.headers.set(k, v));
   return out;
 }
