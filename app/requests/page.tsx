@@ -1,9 +1,9 @@
+// app/requests/page.tsx
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import supabase from '@/lib/supabaseClient';
-import LoginMagic from '@/components/LoginMagic';
-
 
 type RequestRow = {
   id: number;
@@ -20,7 +20,6 @@ export default function RequestsPage() {
   const [rows, setRows] = useState<RequestRow[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Load current user's requests
   useEffect(() => {
     let mounted = true;
 
@@ -28,7 +27,6 @@ export default function RequestsPage() {
       try {
         const { data: auth } = await supabase.auth.getUser();
         if (!auth?.user) {
-          // not logged in -> go home
           router.push('/');
           return;
         }
@@ -64,8 +62,8 @@ export default function RequestsPage() {
 
       if (error) throw error;
 
-      setRows((prev) =>
-        prev.map((r) => (r.id === id ? { ...r, status: nextStatus } : r))
+      setRows(prev =>
+        prev.map(r => (r.id === id ? { ...r, status: nextStatus } : r))
       );
     } catch (e) {
       console.error('Status update failed:', e);
@@ -80,7 +78,7 @@ export default function RequestsPage() {
       const { error } = await supabase.from('requests').delete().eq('id', id);
       if (error) throw error;
 
-      setRows((prev) => prev.filter((r) => r.id !== id));
+      setRows(prev => prev.filter(r => r.id !== id));
     } catch (e) {
       console.error('Delete failed:', e);
       alert('Could not delete this request.');
@@ -93,12 +91,8 @@ export default function RequestsPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between' }}>
         <h1 style={{ margin: 0 }}>UnlistIN</h1>
         <nav style={{ display: 'flex', gap: 16 }}>
-          <a href="/" style={{ color: 'purple' }}>
-            Home
-          </a>
-          <a href="/requests" style={{ color: 'purple' }}>
-            Requests
-          </a>
+          <a href="/" style={{ color: 'purple' }}>Home</a>
+          <a href="/requests" style={{ color: 'purple' }}>Requests</a>
         </nav>
       </div>
 
@@ -156,31 +150,26 @@ export default function RequestsPage() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
+              {rows.map(r => (
                 <tr key={r.id} style={{ borderTop: '1px solid #f0f0f0' }}>
                   <td style={{ padding: 8 }}>
                     {new Date(r.created_at).toLocaleString()}
                   </td>
-
-                  {/* Site column — fill later from a join to targets */}
                   <td style={{ padding: 8, color: '#777' }}>—</td>
-
                   <td style={{ padding: 8 }}>{r.category ?? '—'}</td>
-
                   <td style={{ padding: 8 }}>
                     <select
                       value={r.status ?? 'new'}
-                      onChange={(e) => updateStatus(r.id, e.target.value)}
+                      onChange={e => updateStatus(r.id, e.target.value)}
                       style={{ padding: 6 }}
                     >
-                      {STATUSES.map((s) => (
+                      {STATUSES.map(s => (
                         <option key={s} value={s}>
                           {s}
                         </option>
                       ))}
                     </select>
                   </td>
-
                   <td
                     style={{
                       padding: 8,
@@ -190,7 +179,6 @@ export default function RequestsPage() {
                   >
                     {r.notes || '—'}
                   </td>
-
                   <td style={{ padding: 8, display: 'flex', gap: 8 }}>
                     <button
                       onClick={() => router.push(`/requests/${r.id}`)}
