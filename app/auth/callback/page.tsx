@@ -1,38 +1,44 @@
-// app/auth/callback/page.tsx
 'use client';
-
-export const dynamic = 'force-dynamic'; // disable prerendering/SSG for this page
 
 import { useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import supabase from '@/lib/supabaseClient';
+import { createClient } from '@supabase/supabase-js';
 
-export default function AuthCallback() {
+// Stop Next from trying to prerender this page.
+export const dynamic = 'force-dynamic'; // or: export const revalidate = 0;
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
+
+export default function AuthCallbackPage() {
   const router = useRouter();
-  const params = useSearchParams();
+  const search = useSearchParams();
 
   useEffect(() => {
-    (async () => {
-      const code = params.get('code');
-      const next = params.get('next') || '/requests';
-
+    const run = async () => {
+      const code = search.get('code'); // Supabase redirects with ?code=...
       if (!code) {
-        // No code => bounce home
-        router.replace('/');
+        // No code, go back to login (or home)
+        router.replace('/login');
         return;
       }
 
-      const { error } = await supabase.auth.exchangeCodeForSession(code);
-      if (error) {
-        console.error('Auth exchange error:', error);
-        alert('Sign-in failed. Try again.');
-        router.replace('/');
-        return;
+      try {
+        // Exchange the code for a session
+        const { error } = await supabase.auth.exchangeCodeForSession(code);
+        if (error) throw error;
+
+        // Signed in — send them where you want (requests page, etc.)
+        router.replace('/requests');
+      } catch {
+        router.replace('/login?error=callback');
       }
+    };
+    run();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // run once on mount
 
-      router.replace(next);
-    })();
-  }, [params, router]);
-
-  return <p style={{ padding: 24 }}>Signing you in…</p>;
+  return <p style={{ padding: 24 }}>Finishing sign-in…</p>;
 }
