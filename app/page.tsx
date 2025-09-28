@@ -1,5 +1,5 @@
 // app/page.tsx
-import LeadForm from '@/components/LeadForm'  // see note below
+import LeadForm from './components/LeadForm'  // see note below
 
 export default function Page() {
   return (
