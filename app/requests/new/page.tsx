@@ -1,94 +1,61 @@
-// app/requests/new/page.tsx
-import { cookies } from 'next/headers';
-import { redirect } from 'next/navigation';
-import { createServerClient, type CookieOptions } from '@supabase/ssr';
+"use client";
 
-export const dynamic = 'force-dynamic';
+import { useState } from "react";
 
-function createSupabaseServerClient() {
-  const cookieStore = cookies();
+export default function NewRequestPage() {
+  const [site, setSite] = useState("");
+  const [category, setCategory] = useState("Search Engine");
+  const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
 
-  return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        get(name: string) {
-          return cookieStore.get(name)?.value;
-        },
-        set(name: string, value: string, options: CookieOptions) {
-          cookieStore.set({ name, value, ...options });
-        },
-        remove(name: string, options: CookieOptions) {
-          cookieStore.set({ name, value: '', ...options, maxAge: 0 });
-        },
-      },
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      const res = await fetch("/api/requests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          site_url: site,
+          category,
+          notes
+        }),
+        credentials: "include"
+      });
+
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        alert(j.error || "Failed to create request");
+        return;
+      }
+
+      window.location.href = "/requests";
+    } finally {
+      setSaving(false);
     }
-  );
-}
-
-export default async function NewRequestPage() {
-  const supabase = createSupabaseServerClient();
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
-    redirect('/login'); // must sign in first
   }
 
   return (
-    <div style={{ maxWidth: 800, margin: '40px auto', padding: 16 }}>
+    <form onSubmit={onSubmit} style={{ maxWidth: 720, margin: "40px auto", padding: 16 }}>
       <h1>New Removal Request</h1>
 
-      <form
-        onSubmit={async (e) => {
-          e.preventDefault();
-          const fd = new FormData(e.currentTarget as HTMLFormElement);
+      <label>Site URL</label>
+      <input value={site} onChange={(e) => setSite(e.target.value)} required style={{ width: "100%" }} />
 
-          const res = await fetch('/api/requests', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            body: JSON.stringify({
-              site_url: fd.get('site_url'),
-              category: fd.get('category'),
-              notes: fd.get('notes'),
-            }),
-          });
+      <label style={{ marginTop: 16 }}>Category</label>
+      <select value={category} onChange={(e) => setCategory(e.target.value)} style={{ width: "100%" }}>
+        <option>Search Engine</option>
+        <option>Social Network</option>
+        <option>News/Media</option>
+        <option>Other</option>
+      </select>
 
-          if (!res.ok) {
-            const { error } = await res.json();
-            alert(error || 'Failed to create request');
-            return;
-          }
-          window.location.href = '/requests';
-        }}
-      >
-        <label style={{ display: 'grid', gap: 6 }}>
-          <span>Site URL *</span>
-          <input name="site_url" required placeholder="https://www.example.com" />
-        </label>
+      <label style={{ marginTop: 16 }}>Notes</label>
+      <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={6} style={{ width: "100%" }} />
 
-        <label style={{ display: 'grid', gap: 6, marginTop: 12 }}>
-          <span>Category</span>
-          <select name="category" defaultValue="Search Engine">
-            <option>Search Engine</option>
-            <option>News/Media</option>
-            <option>Social Network</option>
-            <option>Aggregator</option>
-            <option>Other</option>
-          </select>
-        </label>
-
-        <label style={{ display: 'grid', gap: 6, marginTop: 12 }}>
-          <span>Notes</span>
-          <textarea name="notes" rows={4} />
-        </label>
-
-        <button type="submit" style={{ marginTop: 16 }}>Save</button>
-      </form>
-    </div>
+      <button type="submit" disabled={saving} style={{ marginTop: 20 }}>
+        {saving ? "Saving…" : "Save"}
+      </button>
+    </form>
   );
 }
