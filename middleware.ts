@@ -1,48 +1,49 @@
 // middleware.ts
-import { NextRequest, NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 
 export async function middleware(req: NextRequest) {
-  // This response will be returned by default unless we redirect below
+  // Always create the response first so we can mutate cookies on it
   const res = NextResponse.next();
 
+  // Supabase server client wired to read/write cookies correctly
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
-      cookies: () => ({
-        get(name: string): string | undefined {
+      cookies: {
+        get(name: string) {
           return req.cookies.get(name)?.value;
         },
-        set(name: string, value: string, options: CookieOptions): void {
-          res.cookies.set({ name, value, ...options });
+        set(name: string, value: string, options: CookieOptions) {
+          // Mutate the response cookies (this is what the SSR helper expects)
+          res.cookies.set(name, value, options as any);
         },
-        remove(name: string, options: CookieOptions): void {
-          res.cookies.set({ name, value: "", ...options, maxAge: 0 });
+        remove(name: string, options: CookieOptions) {
+          res.cookies.set(name, "", { ...(options as any), maxAge: 0 });
         },
-      }),
+      },
     }
   );
 
-  const { data } = await supabase.auth.getUser();
+  // Optional guard: require auth for protected pages
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
 
-  const isProtected =
-    req.nextUrl.pathname.startsWith("/requests") ||
-    req.nextUrl.pathname.startsWith("/dashboard");
+  const url = new URL(req.url);
+  const needsAuth =
+    url.pathname.startsWith("/requests") || url.pathname.startsWith("/dashboard");
 
-  if (isProtected && !data.user) {
-    const loginUrl = new URL("/login", req.url);
-    loginUrl.searchParams.set(
-      "next",
-      req.nextUrl.pathname + req.nextUrl.search
-    );
-    return NextResponse.redirect(loginUrl);
+  if (!session && needsAuth) {
+    return NextResponse.redirect(new URL("/login", req.url));
   }
 
   return res;
 }
 
+// Only run middleware where we need it (keep auth and static assets public)
 export const config = {
-  // protect these paths
   matcher: ["/requests/:path*", "/dashboard"],
 };
