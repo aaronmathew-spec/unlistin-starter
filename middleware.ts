@@ -1,41 +1,36 @@
-// middleware.ts
-import { NextResponse } from 'next/server';
-import type { NextRequest } from 'next/server';
-import { createServerClient } from '@supabase/ssr';
+import { NextResponse, type NextRequest } from 'next/server'
+import { createMiddlewareClient } from '@supabase/auth-helpers-nextjs'
 
 export async function middleware(req: NextRequest) {
-  // Always create a response we can mutate cookies on
-  const res = NextResponse.next();
+  const res = NextResponse.next()
+  const supabase = createMiddlewareClient({ req, res })
 
-  // Create a Supabase server client for middleware and wire up cookie helpers
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        get(name: string) {
-          return req.cookies.get(name)?.value;
-        },
-        set(name: string, value: string, options: any) {
-          res.cookies.set({ name, value, ...options });
-        },
-        remove(name: string, options: any) {
-          res.cookies.set({ name, value: '', ...options, maxAge: 0 });
-        },
-      },
-    }
-  );
+  // keeps cookies in sync as the user is browsing
+  await supabase.auth.getSession()
 
-  // Touch the session so the helper can refresh/propagate auth cookies
-  await supabase.auth.getSession();
+  // public routes:
+  const { pathname } = req.nextUrl
+  const isPublic =
+    pathname === '/' ||
+    pathname.startsWith('/api/lead') ||
+    pathname.startsWith('/auth/callback')
 
-  return res;
+  if (isPublic) return res
+
+  // everything else requires a session
+  const { data: { session } } = await supabase.auth.getSession()
+  if (!session) {
+    const url = req.nextUrl.clone()
+    url.pathname = '/'
+    return NextResponse.redirect(url)
+  }
+
+  return res
 }
 
-/**
- * Limit middleware to the routes that need auth/session cookies.
- * (This avoids assets and speeds up builds.)
- */
 export const config = {
-  matcher: ['/', '/requests/:path*', '/dashboard', '/login'],
-};
+  matcher: [
+    // run on everything under app/, except static files and public assets
+    '/((?!_next/static|_next/image|favicon.ico).*)'
+  ]
+}
