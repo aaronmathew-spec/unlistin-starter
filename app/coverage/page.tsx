@@ -19,6 +19,8 @@ type Coverage = {
 
 type EditRow = { surface: string; status: Coverage["status"]; weight: string; note: string };
 
+const ALL_STATUSES: Coverage["status"][] = ["open", "in_progress", "resolved"];
+
 export default function CoverageIndexPage() {
   const { toast } = useToast();
 
@@ -38,6 +40,9 @@ export default function CoverageIndexPage() {
   // edit
   const [edit, setEdit] = useState<Record<number, EditRow>>({});
 
+  // bulk select
+  const [selected, setSelected] = useState<Record<number, true>>({});
+
   function buildListUrl(cursor?: string | null) {
     const sp = new URLSearchParams();
     sp.set("limit", "50");
@@ -56,6 +61,7 @@ export default function CoverageIndexPage() {
     const { rows, next } = await fetchPage(null);
     setRows(rows);
     setNextCursor(next);
+    setSelected({});
     setLoading(false);
   }
 
@@ -74,6 +80,9 @@ export default function CoverageIndexPage() {
       return okStatus && okQ;
     });
   }, [rows, q, status]);
+
+  const allOnPageSelected = filtered.length > 0 && filtered.every((r) => selected[r.id]);
+  const anySelected = Object.keys(selected).length > 0;
 
   async function loadMore() {
     if (!nextCursor) return;
@@ -162,10 +171,63 @@ export default function CoverageIndexPage() {
     if (res.ok) {
       setRows((prev) => prev.filter((r) => r.id !== id));
       toast("Deleted");
+      setSelected((m) => {
+        const next = { ...m };
+        delete next[id];
+        return next;
+      });
     } else {
       const j = await res.json().catch(() => ({}));
       alert(j?.error?.message || j?.error || "Delete failed");
     }
+  }
+
+  // Bulk actions
+  function toggleRow(id: number, checked: boolean) {
+    setSelected((m) => {
+      const next = { ...m };
+      if (checked) next[id] = true;
+      else delete next[id];
+      return next;
+    });
+  }
+  function toggleAllOnPage(checked: boolean) {
+    if (!checked) {
+      setSelected((m) => {
+        const next = { ...m };
+        for (const r of filtered) delete next[r.id];
+        return next;
+      });
+      return;
+    }
+    setSelected((m) => {
+      const next = { ...m };
+      for (const r of filtered) next[r.id] = true;
+      return next;
+    });
+  }
+  async function bulkSetStatus(s: Coverage["status"]) {
+    const ids = Object.keys(selected).map((k) => Number(k)).filter((n) => Number.isFinite(n));
+    if (ids.length === 0) return;
+    for (const id of ids) {
+      await fetch("/api/coverage", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, status: s }),
+      });
+    }
+    toast(`Updated ${ids.length} item${ids.length > 1 ? "s" : ""}`);
+    await refresh();
+  }
+  async function bulkDelete() {
+    const ids = Object.keys(selected).map((k) => Number(k)).filter((n) => Number.isFinite(n));
+    if (ids.length === 0) return;
+    if (!confirm(`Delete ${ids.length} selected coverage item${ids.length > 1 ? "s" : ""}?`)) return;
+    for (const id of ids) {
+      await fetch("/api/coverage?id=" + id, { method: "DELETE" });
+    }
+    toast(`Deleted ${ids.length} item${ids.length > 1 ? "s" : ""}`);
+    await refresh();
   }
 
   function exportHref() {
@@ -233,9 +295,11 @@ export default function CoverageIndexPage() {
           className="border rounded-lg px-3 py-2"
         >
           <option value="">All statuses</option>
-          <option value="open">Open</option>
-          <option value="in_progress">In Progress</option>
-          <option value="resolved">Resolved</option>
+          {ALL_STATUSES.map((s) => (
+            <option key={s} value={s}>
+              {s.replace("_", " ")}
+            </option>
+          ))}
         </select>
         {(q || status) && (
           <button onClick={() => { setQ(""); setStatus(""); }} className="px-3 py-2 rounded-lg border hover:bg-gray-50">
@@ -249,6 +313,33 @@ export default function CoverageIndexPage() {
         </div>
       </section>
 
+      {/* Bulk bar */}
+      {anySelected && (
+        <div className="border rounded-xl p-3 flex flex-wrap items-center gap-2 bg-amber-50">
+          <div className="text-sm">
+            Selected: <strong>{Object.keys(selected).length}</strong>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-sm">Set status:</span>
+            {ALL_STATUSES.map((s) => (
+              <button
+                key={s}
+                onClick={() => bulkSetStatus(s)}
+                className="px-2 py-1 rounded border hover:bg-gray-50 text-sm"
+              >
+                {s.replace("_", " ")}
+              </button>
+            ))}
+          </div>
+          <button onClick={bulkDelete} className="px-2 py-1 rounded border hover:bg-gray-50 text-sm">
+            Delete selected
+          </button>
+          <button onClick={() => setSelected({})} className="ml-auto px-2 py-1 rounded border hover:bg-gray-50 text-sm">
+            Clear selection
+          </button>
+        </div>
+      )}
+
       {/* Table */}
       <section className="space-y-3">
         {loading ? (
@@ -259,6 +350,14 @@ export default function CoverageIndexPage() {
           <table className="min-w-full text-sm">
             <thead className="bg-gray-50 text-gray-600">
               <tr>
+                <th className="px-4 py-2">
+                  <input
+                    aria-label="Select all"
+                    type="checkbox"
+                    checked={allOnPageSelected}
+                    onChange={(e) => toggleAllOnPage(e.target.checked)}
+                  />
+                </th>
                 <th className="text-left px-4 py-2">ID</th>
                 <th className="text-left px-4 py-2">Broker</th>
                 <th className="text-left px-4 py-2">Surface</th>
@@ -272,8 +371,17 @@ export default function CoverageIndexPage() {
               {filtered.map((r) => {
                 const e = edit[r.id];
                 const isEditing = !!e;
+                const checked = !!selected[r.id];
                 return (
                   <tr key={r.id} className="border-t">
+                    <td className="px-4 py-2">
+                      <input
+                        aria-label={`Select ${r.id}`}
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(ev) => toggleRow(r.id, ev.target.checked)}
+                      />
+                    </td>
                     <td className="px-4 py-2">
                       <Link href={`/coverage/${r.id}`} className="underline text-blue-600">#{r.id}</Link>
                     </td>
@@ -296,9 +404,11 @@ export default function CoverageIndexPage() {
                           value={e.status}
                           onChange={(ev) => setEdit((m) => ({ ...m, [r.id]: { ...e, status: ev.target.value as Coverage["status"] } }))}
                         >
-                          <option value="open">Open</option>
-                          <option value="in_progress">In Progress</option>
-                          <option value="resolved">Resolved</option>
+                          {ALL_STATUSES.map((s) => (
+                            <option key={s} value={s}>
+                              {s.replace("_", " ")}
+                            </option>
+                          ))}
                         </select>
                       ) : (
                         r.status.replace("_", " ")
@@ -347,7 +457,6 @@ export default function CoverageIndexPage() {
             </tbody>
           </table>
         )}
-
         {nextCursor && (
           <div className="flex justify-center">
             <button onClick={loadMore} className="px-4 py-2 rounded-lg border hover:bg-gray-50">
