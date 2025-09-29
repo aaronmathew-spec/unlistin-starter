@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, useTransition } from "react";
 import { useParams } from "next/navigation";
+import { useToast } from "@/components/toast";
 
 type FileRow = {
   id: number;
@@ -16,18 +17,40 @@ type FileRow = {
 export default function RequestFilesPage() {
   const params = useParams<{ id: string }>();
   const requestId = params.id;
+  const { push } = useToast();
 
   const [files, setFiles] = useState<FileRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [pending, startTransition] = useTransition();
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+
+  const fetchPage = async (cursor?: string | null) => {
+    const u = new URL(`/api/requests/${requestId}/files`, window.location.origin);
+    u.searchParams.set("limit", "20");
+    if (cursor) u.searchParams.set("cursor", cursor);
+    const res = await fetch(u.toString(), { cache: "no-store" });
+    const json = await res.json();
+    if (!res.ok) {
+      push({ message: json?.error || "Failed to load files", type: "error" });
+      return { files: [] as FileRow[], nextCursor: null as string | null };
+    }
+    return { files: (json.files || []) as FileRow[], nextCursor: json.nextCursor ?? null };
+  };
 
   const refresh = async () => {
     setLoading(true);
-    const res = await fetch(`/api/requests/${requestId}/files`, { cache: "no-store" });
-    const json = await res.json();
-    setFiles(json.files || []);
+    const { files, nextCursor } = await fetchPage(null);
+    setFiles(files);
+    setNextCursor(nextCursor);
     setLoading(false);
+  };
+
+  const loadMore = async () => {
+    if (!nextCursor) return;
+    const { files: more, nextCursor: nc } = await fetchPage(nextCursor);
+    setFiles((prev) => [...prev, ...more]);
+    setNextCursor(nc);
   };
 
   useEffect(() => {
@@ -50,10 +73,11 @@ export default function RequestFilesPage() {
         body: form,
       });
 
+      const j = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        alert(`Upload failed: ${j?.error || res.statusText}`);
+        push({ message: `Upload failed: ${j?.error || res.statusText}`, type: "error" });
       } else {
+        push({ message: "File uploaded", type: "success" });
         await refresh();
       }
     } finally {
@@ -69,17 +93,17 @@ export default function RequestFilesPage() {
       const res = await fetch(`/api/requests/${requestId}/files?fileId=${fileId}`, {
         method: "DELETE",
       });
+      const j = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        alert(`Delete failed: ${j?.error || res.statusText}`);
+        push({ message: `Delete failed: ${j?.error || res.statusText}`, type: "error" });
       } else {
         setFiles((prev) => prev.filter((f) => f.id !== fileId));
+        push({ message: "File deleted", type: "success" });
       }
     });
   };
 
   const onDownload = (fileId: number) => {
-    // Let the API redirect us to a signed URL:
     window.location.href = `/api/requests/${requestId}/files/${fileId}/download`;
   };
 
@@ -113,65 +137,78 @@ export default function RequestFilesPage() {
       ) : files.length === 0 ? (
         <div className="text-gray-500">No files yet.</div>
       ) : (
-        <div className="rounded-xl border overflow-hidden">
-          <table className="min-w-full text-sm">
-            <thead className="bg-gray-50 text-gray-600">
-              <tr>
-                <th className="text-left px-4 py-2">Name</th>
-                <th className="text-left px-4 py-2">Type</th>
-                <th className="text-right px-4 py-2">Size</th>
-                <th className="text-left px-4 py-2">Created</th>
-                <th className="text-right px-4 py-2">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {files.map((f) => (
-                <tr key={f.id} className="border-t">
-                  <td className="px-4 py-2">
-                    <span title={f.path} className="font-medium">
-                      {f.name}
-                    </span>
-                  </td>
-                  <td className="px-4 py-2">{f.mime || "—"}</td>
-                  <td className="px-4 py-2 text-right">
-                    {formatBytes(f.size_bytes || 0)}
-                  </td>
-                  <td className="px-4 py-2">
-                    {new Date(f.created_at).toLocaleString()}
-                  </td>
-                  <td className="px-4 py-2">
-                    <div className="flex justify-end gap-2">
-                      <button
-                        onClick={() => onDownload(f.id)}
-                        className="px-3 py-1 rounded-md border hover:bg-gray-50"
-                      >
-                        Download
-                      </button>
-                      <button
-                        onClick={() => onDelete(f.id)}
-                        disabled={pending}
-                        className="px-3 py-1 rounded-md border text-red-600 hover:bg-red-50 disabled:opacity-50"
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </td>
+        <>
+          <div className="rounded-xl border overflow-hidden">
+            <table className="min-w-full text-sm">
+              <thead className="bg-gray-50 text-gray-600">
+                <tr>
+                  <th className="text-left px-4 py-2">Name</th>
+                  <th className="text-left px-4 py-2">Type</th>
+                  <th className="text-right px-4 py-2">Size</th>
+                  <th className="text-left px-4 py-2">Created</th>
+                  <th className="text-right px-4 py-2">Actions</th>
                 </tr>
-              ))}
-            </tbody>
-            <tfoot className="bg-gray-50 text-gray-600">
-              <tr>
-                <td className="px-4 py-2" colSpan={2}>
-                  Total
-                </td>
-                <td className="px-4 py-2 text-right">
-                  {formatBytes(totalSize)}
-                </td>
-                <td className="px-4 py-2" colSpan={2}></td>
-              </tr>
-            </tfoot>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {files.map((f) => (
+                  <tr key={f.id} className="border-t">
+                    <td className="px-4 py-2">
+                      <span title={f.path} className="font-medium">
+                        {f.name}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2">{f.mime || "—"}</td>
+                    <td className="px-4 py-2 text-right">
+                      {formatBytes(f.size_bytes || 0)}
+                    </td>
+                    <td className="px-4 py-2">
+                      {new Date(f.created_at).toLocaleString()}
+                    </td>
+                    <td className="px-4 py-2">
+                      <div className="flex justify-end gap-2">
+                        <button
+                          onClick={() => onDownload(f.id)}
+                          className="px-3 py-1 rounded-md border hover:bg-gray-50"
+                        >
+                          Download
+                        </button>
+                        <button
+                          onClick={() => onDelete(f.id)}
+                          disabled={pending}
+                          className="px-3 py-1 rounded-md border text-red-600 hover:bg-red-50 disabled:opacity-50"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot className="bg-gray-50 text-gray-600">
+                <tr>
+                  <td className="px-4 py-2" colSpan={2}>
+                    Total
+                  </td>
+                  <td className="px-4 py-2 text-right">
+                    {formatBytes(totalSize)}
+                  </td>
+                  <td className="px-4 py-2" colSpan={2}></td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+
+          {nextCursor && (
+            <div className="flex justify-center mt-4">
+              <button
+                onClick={loadMore}
+                className="px-4 py-2 rounded-lg border hover:bg-gray-50"
+              >
+                Load more
+              </button>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
