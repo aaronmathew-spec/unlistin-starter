@@ -1,14 +1,28 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
-import { createServerClient } from '@supabase/ssr';
+import { createServerClient, type CookieOptions } from '@supabase/ssr';
 
 export const dynamic = 'force-dynamic';
 
-function sb() {
+// --- Supabase server client (Next.js cookie bridge)
+function supabaseServer() {
+  const cookieStore = cookies();
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { cookies } // <-- pass Next.js cookies helper directly
+    {
+      cookies: {
+        get(name: string) {
+          return cookieStore.get(name)?.value;
+        },
+        set(name: string, value: string, options: CookieOptions) {
+          cookieStore.set(name, value, options);
+        },
+        remove(name: string, options: CookieOptions) {
+          cookieStore.set(name, '', { ...options, maxAge: 0 });
+        },
+      },
+    }
   );
 }
 
@@ -16,7 +30,7 @@ export async function GET(
   _req: Request,
   { params }: { params: { id: string } }
 ) {
-  const supabase = sb();
+  const supabase = supabaseServer();
 
   const {
     data: { user },
