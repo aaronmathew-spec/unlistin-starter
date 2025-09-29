@@ -1,5 +1,6 @@
 // app/api/{{slice}}/route.ts
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
 
 export async function GET(_req: NextRequest) {
   return NextResponse.json({ ok: true, route: "/api/{{slice}}" });
