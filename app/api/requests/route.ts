@@ -3,13 +3,17 @@ import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 /**
- * GET  /api/requests?limit=20&cursor=123
- *   - Returns the signed-in user's requests (RLS should enforce ownership)
- *   - Sorted by id DESC with cursor pagination on id
+ * GET  /api/requests?limit=20&cursor=123&q=term&status=open
+ *   - RLS should limit to the current user
+ *   - Filters:
+ *        q:      substring match on title/description (ILIKE)
+ *        status: open|in_progress|resolved|closed  (omit for all)
+ *   - Pagination:
+ *        id DESC cursor (pass ?cursor=<last_id>)
  *
  * POST /api/requests
- *   - JSON body: { title: string, description?: string }
- *   - Creates a new request (status defaults to 'open') and logs request_activity 'request_created'
+ *   - JSON: { title: string, description?: string }
+ *   - Creates a new request and logs request_created activity (if activity table exists)
  */
 
 export async function GET(req: NextRequest) {
@@ -18,8 +22,10 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const limit = clampInt(searchParams.get("limit"), 20, 1, 100);
   const cursor = searchParams.get("cursor");
+  const q = (searchParams.get("q") || "").trim();
+  const status = (searchParams.get("status") || "").trim();
 
-  let q = supabase
+  let query = supabase
     .from("requests")
     .select("id, title, status, created_at, updated_at")
     .order("id", { ascending: false })
@@ -27,10 +33,27 @@ export async function GET(req: NextRequest) {
 
   if (cursor) {
     const cursorId = Number(cursor);
-    if (!Number.isNaN(cursorId)) q = q.lt("id", cursorId);
+    if (!Number.isNaN(cursorId)) query = query.lt("id", cursorId);
   }
 
-  const { data, error } = await q;
+  // status filter (validate)
+  if (status) {
+    const allowed = new Set(["open", "in_progress", "resolved", "closed"]);
+    if (allowed.has(status)) {
+      query = query.eq("status", status);
+    }
+  }
+
+  // text filter (ILIKE on title OR description)
+  if (q.length > 0) {
+    const needle = `%${escapeIlike(q)}%`;
+    // PostgREST OR filter syntax
+    query = query.or(
+      `title.ilike.${needle},description.ilike.${needle}`
+    );
+  }
+
+  const { data, error } = await query;
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 400 });
   }
@@ -62,7 +85,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Title is required" }, { status: 400 });
   }
 
-  // Insert request (RLS should attach to the current user and default status='open')
+  // Insert request (RLS should attach to current user; status defaults to 'open')
   const { data: inserted, error } = await supabase
     .from("requests")
     .insert({ title, description })
@@ -73,14 +96,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 400 });
   }
 
-  // Log activity (best-effort)
+  // Best-effort activity log (if request_activity table exists)
   await supabase.from("request_activity").insert({
     request_id: inserted.id,
     type: "request_created",
     message: `Request created: ${inserted.title ?? `#${inserted.id}`}`,
-    meta: {
-      status: inserted.status,
-    },
+    meta: { status: inserted.status },
   });
 
   return NextResponse.json({ request: inserted }, { status: 201 });
@@ -99,4 +120,9 @@ function clampInt(
     return Math.max(min, Math.min(max, Math.floor(n)));
   }
   return fallback;
+}
+
+// Escape % and _ for ILIKE
+function escapeIlike(s: string) {
+  return s.replace(/[%_]/g, (m) => `\\${m}`);
 }
