@@ -1,14 +1,21 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
-import type { Database } from "@/types/supabase";
 
 function getSupabaseSSR() {
   const cookieStore = cookies();
-  return createClient<Database>(
+  return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { cookies: { get: (key) => cookieStore.get(key)?.value } }
+    {
+      cookies: {
+        get(name: string) {
+          return cookieStore.get(name)?.value;
+        },
+        set() {},
+        remove() {},
+      },
+    }
   );
 }
 
@@ -23,13 +30,19 @@ export async function GET(
 
   const [taskRes, eventsRes] = await Promise.all([
     supabase.from("background_tasks").select("*").eq("id", id).single(),
-    supabase.from("background_task_events").select("*").eq("task_id", id).order("created_at", { ascending: false })
+    supabase
+      .from("background_task_events")
+      .select("*")
+      .eq("task_id", id)
+      .order("created_at", { ascending: false }),
   ]);
 
-  if (taskRes.error) return NextResponse.json({ error: taskRes.error.message }, { status: 400 });
+  if (taskRes.error) {
+    return NextResponse.json({ error: taskRes.error.message }, { status: 400 });
+  }
 
   return NextResponse.json({
     task: taskRes.data,
-    events: eventsRes.data ?? []
+    events: eventsRes.data ?? [],
   });
 }
