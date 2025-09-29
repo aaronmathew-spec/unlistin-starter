@@ -3,6 +3,7 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { logActivity } from "@/lib/activity";
 
 const StatusEnum = z.enum(["open", "in_progress", "resolved", "closed"]);
 
@@ -46,10 +47,7 @@ export async function GET(req: NextRequest) {
     qreq = qreq.eq("status", status);
   }
 
-  // Basic “ILIKE” search on title + description
   if (q.length > 0) {
-    // Supabase doesn't support OR chaining in a single call from the client, so do two filters via `or`
-    // Format: or('title.ilike.%foo%,description.ilike.%foo%')
     const pattern = `%${escapeLike(q)}%`;
     qreq = qreq.or(`title.ilike.${pattern},description.ilike.${pattern}`);
   }
@@ -84,6 +82,15 @@ export async function POST(req: NextRequest) {
     .single();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+
+  // activity
+  await logActivity({
+    entity_type: "request",
+    entity_id: data.id,
+    action: "create",
+    meta: { title: data.title },
+  });
+
   return NextResponse.json({ request: data }, { status: 201 });
 }
 
@@ -100,6 +107,12 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: "No changes provided" }, { status: 400 });
   }
 
+  const { data: before } = await supabase
+    .from("requests")
+    .select("id, title, description, status")
+    .eq("id", id)
+    .single();
+
   const { data, error } = await supabase
     .from("requests")
     .update(fields)
@@ -108,6 +121,21 @@ export async function PATCH(req: NextRequest) {
     .single();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+
+  // activity (status vs. update)
+  const changed: Record<string, { from: unknown; to: unknown }> = {};
+  for (const k of Object.keys(fields)) {
+    const key = k as keyof typeof fields;
+    changed[key] = { from: (before as any)?.[key], to: (data as any)?.[key] };
+  }
+  const action = fields.status ? "status" : "update";
+  await logActivity({
+    entity_type: "request",
+    entity_id: data.id,
+    action,
+    meta: changed,
+  });
+
   return NextResponse.json({ request: data });
 }
 
@@ -124,8 +152,21 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ error: "id is required" }, { status: 400 });
   }
 
+  const { data: row } = await supabase
+    .from("requests")
+    .select("id, title")
+    .eq("id", parsed.data.id)
+    .single();
+
   const { error } = await supabase.from("requests").delete().eq("id", parsed.data.id);
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+
+  await logActivity({
+    entity_type: "request",
+    entity_id: parsed.data.id,
+    action: "delete",
+    meta: { title: row?.title ?? null },
+  });
 
   return NextResponse.json({ ok: true, deletedId: parsed.data.id });
 }
@@ -136,8 +177,6 @@ function clampInt(v: string | null, fallback: number, min: number, max: number) 
   const n = Number(v);
   return Number.isFinite(n) ? Math.max(min, Math.min(max, Math.floor(n))) : fallback;
 }
-
-// escape % and _ for ilike patterns
 function escapeLike(input: string) {
   return input.replace(/[%_]/g, (m) => `\\${m}`);
 }
