@@ -36,11 +36,16 @@ export default function RequestsIndexPage() {
   // edit
   const [edit, setEdit] = useState<Record<number, EditRow>>({});
 
+  function buildListUrl(cursor?: string | null) {
+    const sp = new URLSearchParams();
+    sp.set("limit", "50");
+    if (cursor) sp.set("cursor", cursor);
+    return `/api/requests?${sp.toString()}`;
+  }
+
   async function fetchPage(cursor?: string | null) {
-    const u = new URL("/api/requests", window.location.origin);
-    u.searchParams.set("limit", "50");
-    if (cursor) u.searchParams.set("cursor", cursor);
-    const j = await fetch(u.toString(), { cache: "no-store" }).then((r) => r.json());
+    const url = buildListUrl(cursor);
+    const j = await fetch(url, { cache: "no-store" }).then((r) => r.json());
     return { rows: (j.requests ?? []) as RequestRow[], next: j.nextCursor ?? null };
   }
 
@@ -151,10 +156,11 @@ export default function RequestsIndexPage() {
   }
 
   function exportHref() {
-    const u = new URL("/api/requests/export", window.location.origin);
-    if (status) u.searchParams.set("status", status);
-    if (q.trim()) u.searchParams.set("q", q.trim());
-    return u.toString();
+    const sp = new URLSearchParams();
+    if (status) sp.set("status", status);
+    if (q.trim()) sp.set("q", q.trim());
+    const qs = sp.toString();
+    return qs ? `/api/requests/export?${qs}` : `/api/requests/export`;
   }
 
   return (
