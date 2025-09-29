@@ -1,51 +1,44 @@
-// app/api/requests/[id]/route.ts
-import { NextResponse, NextRequest } from 'next/server';
-import { createServerClient, type CookieOptions } from '@supabase/ssr';
+import { NextResponse } from 'next/server';
+import { cookies } from 'next/headers';
+import { createServerClient } from '@supabase/ssr';
 
-function getServerClient(req: NextRequest) {
-  const supabase = createServerClient(
+export const dynamic = 'force-dynamic';
+
+function sb() {
+  return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        get: (name: string) => req.cookies.get(name)?.value,
-      } as unknown as CookieOptions, // read-only is enough for this route
+        get: (name: string) => cookies().get(name)?.value,
+        set: (name: string, value: string, options: any) =>
+          cookies().set({ name, value, ...options }),
+        remove: (name: string, options: any) =>
+          cookies().set({ name, value: '', ...options, maxAge: 0 }),
+      },
     }
   );
-  return supabase;
 }
 
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
-  try {
-    const { id } = params;
-    const supabase = getServerClient(req);
+export async function GET(
+  _req: Request,
+  { params }: { params: { id: string } }
+) {
+  const supabase = sb();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    // Ensure user is logged-in
-    const {
-      data: { user },
-      error: userErr,
-    } = await supabase.auth.getUser();
-    if (userErr || !user) {
-      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
-    }
+  const { data, error } = await supabase
+    .from('requests')
+    .select('*')
+    .eq('id', params.id)
+    .single();
 
-    // Fetch the request – RLS should allow only owner to see it
-    const { data, error } = await supabase
-      .from('requests')
-      .select('*')
-      .eq('id', id)
-      .single();
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
-    }
-
-    if (!data) {
-      return NextResponse.json({ error: 'Not found' }, { status: 404 });
-    }
-
-    return NextResponse.json({ request: data });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? 'Unexpected error' }, { status: 500 });
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 400 });
   }
+
+  return NextResponse.json({ request: data });
 }
