@@ -1,112 +1,119 @@
-// app/api/coverage/route.ts
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createServerClient } from "@supabase/ssr";
+import { cookies } from "next/headers";
 
-type CoverageRow = {
-  id: number;
-  broker_id: number;
-  surface: string;
-  status: "open" | "in_progress" | "resolved";
-  weight: number | null;
-  note: string | null;
-  created_at?: string | null;
-  updated_at?: string | null;
-};
+function getSSR() {
+  const cookieStore = cookies();
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        get(name: string) {
+          return cookieStore.get(name)?.value;
+        },
+        set() {},
+        remove() {},
+      },
+    }
+  );
+}
 
-// GET /api/coverage?limit=50&cursor=opaque
+function clamp(n: number, lo: number, hi: number) {
+  return Math.max(lo, Math.min(hi, n));
+}
+
+/**
+ * GET /api/coverage?cursor=<id>&limit=20
+ * Returns { coverage: rows[], nextCursor }
+ */
 export async function GET(req: Request) {
-  const supabase = createSupabaseServerClient();
   const { searchParams } = new URL(req.url);
-  const limit = Math.max(1, Math.min(100, Number(searchParams.get("limit") || 50)));
   const cursor = searchParams.get("cursor");
+  const limit = Math.min(Number(searchParams.get("limit") ?? 20), 100);
 
-  let query = supabase
-    .from("coverage")
-    .select("id,broker_id,surface,status,weight,note,created_at,updated_at")
-    .order("id", { ascending: true })
+  const supabase = getSSR();
+
+  let q = supabase
+    .from("coverage_scores")
+    .select("*")
+    .order("created_at", { ascending: false })
     .limit(limit);
 
   if (cursor) {
-    const after = Number(cursor);
-    if (Number.isFinite(after)) query = query.gt("id", after);
+    q = q.lt("id", Number(cursor));
   }
 
-  const { data, error } = await query;
+  const { data, error } = await q;
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
-  const rows: CoverageRow[] = (data ?? []) as CoverageRow[];
-
-  // Use .at(-1) and optional chaining to avoid "possibly undefined"
-  const lastId = rows.at(-1)?.id ?? null;
-  const nextCursor = rows.length === limit && lastId !== null ? String(lastId) : null;
+  const rows = Array.isArray(data) ? data : [];
+  const nextCursor =
+    rows.length === limit && rows[rows.length - 1]?.id != null
+      ? String(rows[rows.length - 1].id)
+      : null;
 
   return NextResponse.json({ coverage: rows, nextCursor });
 }
 
-// POST /api/coverage
-// body: { broker_id: number, surface: string, note?: string, weight?: number }
+/**
+ * POST /api/coverage
+ * Body: { request_id: number }
+ * Creates a new snapshot row for that request based on current files_count.
+ */
 export async function POST(req: Request) {
-  const supabase = createSupabaseServerClient();
-  const body = await req.json().catch(() => ({}));
-  const { broker_id, surface, note, weight } = body || {};
+  const supabase = getSSR();
+  const { data: auth } = await supabase.auth.getUser();
+  if (!auth?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  if (!broker_id || !surface || typeof surface !== "string") {
-    return NextResponse.json({ error: "broker_id and surface are required" }, { status: 400 });
+  const body = await req.json().catch(() => ({}));
+  const request_id = Number(body?.request_id ?? 0);
+  if (!request_id) {
+    return NextResponse.json({ error: "Missing or invalid request_id" }, { status: 400 });
   }
 
-  const { data, error } = await supabase
-    .from("coverage")
+  // Confirm request belongs to this user
+  const { data: reqRow, error: reqErr } = await supabase
+    .from("requests")
+    .select("id")
+    .eq("id", request_id)
+    .single();
+
+  if (reqErr || !reqRow) {
+    return NextResponse.json({ error: "Request not found or not accessible" }, { status: 404 });
+  }
+
+  // Count files for the request (RLS ensures only user's files are visible)
+  const { data: files, error: filesErr } = await supabase
+    .from("request_files")
+    .select("id", { count: "exact", head: true })
+    .eq("request_id", request_id);
+
+  if (filesErr) {
+    return NextResponse.json({ error: filesErr.message }, { status: 400 });
+  }
+
+  const files_count = (files as any)?.length ?? (files as any)?.count ?? 0;
+
+  // Very basic "exposure" example: proportional to files
+  const exposure = Math.min(50, files_count * 5);
+
+  const score = clamp(files_count * 10 + exposure, 0, 100);
+
+  const { data: inserted, error: insErr } = await supabase
+    .from("coverage_scores")
     .insert({
-      broker_id,
-      surface,
-      note: note ?? null,
-      weight: Number.isFinite(Number(weight)) ? Number(weight) : 1,
+      request_id,
+      score,
+      files_count,
+      exposure,
     })
-    .select()
-    .maybeSingle();
+    .select("*")
+    .single();
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+  if (insErr) {
+    return NextResponse.json({ error: insErr.message }, { status: 400 });
+  }
 
-  return NextResponse.json({ coverage: data as CoverageRow });
-}
-
-// PATCH /api/coverage
-// body: { id: number, surface?, status?, note?, weight? }
-export async function PATCH(req: Request) {
-  const supabase = createSupabaseServerClient();
-  const body = await req.json().catch(() => ({}));
-  const { id, surface, status, note, weight } = body || {};
-  const pid = Number(id);
-  if (!Number.isFinite(pid)) return NextResponse.json({ error: "Invalid id" }, { status: 400 });
-
-  const update: Record<string, unknown> = {};
-  if (typeof surface === "string") update.surface = surface;
-  if (status) update.status = status; // "open" | "in_progress" | "resolved"
-  if (note !== undefined) update.note = note;
-  if (weight !== undefined) update.weight = Number(weight);
-
-  const { data, error } = await supabase
-    .from("coverage")
-    .update(update)
-    .eq("id", pid)
-    .select()
-    .maybeSingle();
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
-
-  return NextResponse.json({ coverage: data as CoverageRow });
-}
-
-// DELETE /api/coverage?id=123
-export async function DELETE(req: Request) {
-  const supabase = createSupabaseServerClient();
-  const { searchParams } = new URL(req.url);
-  const idParam = searchParams.get("id");
-  const id = Number(idParam);
-  if (!Number.isFinite(id)) return NextResponse.json({ error: "Invalid id" }, { status: 400 });
-
-  const { error } = await supabase.from("coverage").delete().eq("id", id);
-  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
-
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ coverage: inserted });
 }
