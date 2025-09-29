@@ -19,6 +19,13 @@ type EditRow = {
   status: RequestRow["status"];
 };
 
+const ALL_STATUSES: RequestRow["status"][] = [
+  "open",
+  "in_progress",
+  "resolved",
+  "closed",
+];
+
 export default function RequestsIndexPage() {
   const { toast } = useToast();
 
@@ -35,6 +42,9 @@ export default function RequestsIndexPage() {
 
   // edit
   const [edit, setEdit] = useState<Record<number, EditRow>>({});
+
+  // bulk select
+  const [selected, setSelected] = useState<Record<number, true>>({});
 
   function buildListUrl(cursor?: string | null) {
     const sp = new URLSearchParams();
@@ -54,6 +64,7 @@ export default function RequestsIndexPage() {
     const { rows, next } = await fetchPage(null);
     setRows(rows);
     setNextCursor(next);
+    setSelected({}); // clear selections on refresh
     setLoading(false);
   }
 
@@ -71,6 +82,9 @@ export default function RequestsIndexPage() {
       return okStatus && okQ;
     });
   }, [rows, q, status]);
+
+  const allOnPageSelected = filtered.length > 0 && filtered.every((r) => selected[r.id]);
+  const anySelected = Object.keys(selected).length > 0;
 
   async function loadMore() {
     if (!nextCursor) return;
@@ -149,10 +163,66 @@ export default function RequestsIndexPage() {
     if (res.ok) {
       setRows((prev) => prev.filter((r) => r.id !== id));
       toast("Deleted");
+      setSelected((m) => {
+        const next = { ...m };
+        delete next[id];
+        return next;
+      });
     } else {
       const j = await res.json().catch(() => ({}));
       alert(j?.error?.message || j?.error || "Delete failed");
     }
+  }
+
+  // Bulk actions
+  function toggleRow(id: number, checked: boolean) {
+    setSelected((m) => {
+      const next = { ...m };
+      if (checked) next[id] = true;
+      else delete next[id];
+      return next;
+    });
+  }
+  function toggleAllOnPage(checked: boolean) {
+    if (!checked) {
+      // clear only rows on current filter set
+      setSelected((m) => {
+        const next = { ...m };
+        for (const r of filtered) delete next[r.id];
+        return next;
+      });
+      return;
+    }
+    setSelected((m) => {
+      const next = { ...m };
+      for (const r of filtered) next[r.id] = true;
+      return next;
+    });
+  }
+
+  async function bulkSetStatus(s: RequestRow["status"]) {
+    const ids = Object.keys(selected).map((k) => Number(k)).filter((n) => Number.isFinite(n));
+    if (ids.length === 0) return;
+    for (const id of ids) {
+      await fetch("/api/requests", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, status: s }),
+      });
+    }
+    toast(`Updated ${ids.length} item${ids.length > 1 ? "s" : ""}`);
+    await refresh();
+  }
+
+  async function bulkDelete() {
+    const ids = Object.keys(selected).map((k) => Number(k)).filter((n) => Number.isFinite(n));
+    if (ids.length === 0) return;
+    if (!confirm(`Delete ${ids.length} selected request${ids.length > 1 ? "s" : ""}?`)) return;
+    for (const id of ids) {
+      await fetch("/api/requests?id=" + id, { method: "DELETE" });
+    }
+    toast(`Deleted ${ids.length} item${ids.length > 1 ? "s" : ""}`);
+    await refresh();
   }
 
   function exportHref() {
@@ -210,10 +280,11 @@ export default function RequestsIndexPage() {
             className="border rounded-lg px-3 py-2"
           >
             <option value="">All statuses</option>
-            <option value="open">Open</option>
-            <option value="in_progress">In Progress</option>
-            <option value="resolved">Resolved</option>
-            <option value="closed">Closed</option>
+            {ALL_STATUSES.map((s) => (
+              <option key={s} value={s}>
+                {s.replace("_", " ")}
+              </option>
+            ))}
           </select>
           {(q || status) && (
             <button onClick={() => { setQ(""); setStatus(""); }} className="px-3 py-2 rounded-lg border hover:bg-gray-50">
@@ -228,6 +299,33 @@ export default function RequestsIndexPage() {
         </div>
       </section>
 
+      {/* Bulk bar */}
+      {anySelected && (
+        <div className="border rounded-xl p-3 flex flex-wrap items-center gap-2 bg-amber-50">
+          <div className="text-sm">
+            Selected: <strong>{Object.keys(selected).length}</strong>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-sm">Set status:</span>
+            {ALL_STATUSES.map((s) => (
+              <button
+                key={s}
+                onClick={() => bulkSetStatus(s)}
+                className="px-2 py-1 rounded border hover:bg-gray-50 text-sm"
+              >
+                {s.replace("_", " ")}
+              </button>
+            ))}
+          </div>
+          <button onClick={bulkDelete} className="px-2 py-1 rounded border hover:bg-gray-50 text-sm">
+            Delete selected
+          </button>
+          <button onClick={() => setSelected({})} className="ml-auto px-2 py-1 rounded border hover:bg-gray-50 text-sm">
+            Clear selection
+          </button>
+        </div>
+      )}
+
       {/* Table */}
       <section className="space-y-3">
         {loading ? (
@@ -238,6 +336,14 @@ export default function RequestsIndexPage() {
           <table className="min-w-full text-sm">
             <thead className="bg-gray-50 text-gray-600">
               <tr>
+                <th className="px-4 py-2">
+                  <input
+                    aria-label="Select all"
+                    type="checkbox"
+                    checked={allOnPageSelected}
+                    onChange={(e) => toggleAllOnPage(e.target.checked)}
+                  />
+                </th>
                 <th className="text-left px-4 py-2">ID</th>
                 <th className="text-left px-4 py-2">Title</th>
                 <th className="text-left px-4 py-2">Status</th>
@@ -249,8 +355,17 @@ export default function RequestsIndexPage() {
               {filtered.map((r) => {
                 const e = edit[r.id];
                 const isEditing = !!e;
+                const checked = !!selected[r.id];
                 return (
                   <tr key={r.id} className="border-t">
+                    <td className="px-4 py-2">
+                      <input
+                        aria-label={`Select ${r.id}`}
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(ev) => toggleRow(r.id, ev.target.checked)}
+                      />
+                    </td>
                     <td className="px-4 py-2">
                       <Link href={`/requests/${r.id}`} className="underline text-blue-600">#{r.id}</Link>
                     </td>
@@ -272,10 +387,11 @@ export default function RequestsIndexPage() {
                           value={e.status}
                           onChange={(ev) => setEdit((m) => ({ ...m, [r.id]: { ...e, status: ev.target.value as RequestRow["status"] } }))}
                         >
-                          <option value="open">Open</option>
-                          <option value="in_progress">In Progress</option>
-                          <option value="resolved">Resolved</option>
-                          <option value="closed">Closed</option>
+                          {ALL_STATUSES.map((s) => (
+                            <option key={s} value={s}>
+                              {s.replace("_", " ")}
+                            </option>
+                          ))}
                         </select>
                       ) : (
                         r.status.replace("_", " ")
