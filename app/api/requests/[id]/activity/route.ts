@@ -1,6 +1,15 @@
 // app/api/requests/[id]/activity/route.ts
-import { NextRequest, NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+
+type ActivityRow = {
+  id: number;
+  type: "status_changed" | "file_uploaded" | "file_deleted" | "request_created";
+  message: string;
+  meta: unknown | null;
+  created_at: string;
+};
 
 export async function GET(
   req: NextRequest,
@@ -28,10 +37,10 @@ export async function GET(
   const { data, error } = await q;
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
-  const nextCursor =
-    data && data.length === limit ? String(data[data.length - 1].id) : null;
+  const list = (data ?? []) as ActivityRow[];
+  const nextCursor = list.length === limit ? String(list[list.length - 1]!.id) : null;
 
-  return NextResponse.json({ activity: data ?? [], nextCursor });
+  return NextResponse.json({ activity: list, nextCursor });
 }
 
 /* ----------------------------- helpers ----------------------------- */
