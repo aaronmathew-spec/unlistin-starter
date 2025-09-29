@@ -2,6 +2,17 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
+type CoverageRow = {
+  id: number;
+  broker_id: number;
+  surface: string;
+  status: "open" | "in_progress" | "resolved";
+  weight: number | null;
+  note: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
 // GET /api/coverage?limit=50&cursor=opaque
 export async function GET(req: Request) {
   const supabase = createSupabaseServerClient();
@@ -9,7 +20,6 @@ export async function GET(req: Request) {
   const limit = Math.max(1, Math.min(100, Number(searchParams.get("limit") || 50)));
   const cursor = searchParams.get("cursor");
 
-  // Cursor is the last seen id (numeric) for simplicity; when present, return rows with id > cursor
   let query = supabase
     .from("coverage")
     .select("id,broker_id,surface,status,weight,note,created_at,updated_at")
@@ -18,16 +28,16 @@ export async function GET(req: Request) {
 
   if (cursor) {
     const after = Number(cursor);
-    if (Number.isFinite(after)) {
-      query = query.gt("id", after);
-    }
+    if (Number.isFinite(after)) query = query.gt("id", after);
   }
 
   const { data, error } = await query;
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
-  const rows = data ?? [];
-  const nextCursor = rows.length === limit ? String(rows[rows.length - 1].id) : null;
+  const rows: CoverageRow[] = (data ?? []) as CoverageRow[];
+
+  const lastId = rows.length ? rows[rows.length - 1].id : null;
+  const nextCursor = rows.length === limit && lastId != null ? String(lastId) : null;
 
   return NextResponse.json({ coverage: rows, nextCursor });
 }
@@ -56,7 +66,7 @@ export async function POST(req: Request) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
-  return NextResponse.json({ coverage: data });
+  return NextResponse.json({ coverage: data as CoverageRow });
 }
 
 // PATCH /api/coverage
@@ -83,7 +93,7 @@ export async function PATCH(req: Request) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
-  return NextResponse.json({ coverage: data });
+  return NextResponse.json({ coverage: data as CoverageRow });
 }
 
 // DELETE /api/coverage?id=123
