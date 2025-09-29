@@ -15,27 +15,53 @@ function supa() {
 }
 
 export async function GET(
-  _req: Request,
+  req: Request,
   ctx: { params: { id: string } }
 ) {
   try {
+    const url = new URL(req.url);
+    const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? "20"), 1), 100);
+    const cursor = url.searchParams.get("cursor");
+
     const requestId = Number(ctx.params.id);
     if (!Number.isFinite(requestId)) {
       return NextResponse.json({ error: "Invalid id" }, { status: 400 });
     }
 
     const db = supa();
-    const { data, error } = await db
+    let q = db
       .from("request_files")
       .select("id, request_id, name, mime, size_bytes, created_at, path")
-      .eq("request_id", requestId)
-      .order("id", { ascending: true });
+      .eq("request_id", requestId);
+
+    if (cursor) {
+      const c = Number(cursor);
+      if (Number.isFinite(c)) {
+        q = q.gt("id", c); // ascending keyset
+      }
+    }
+
+    q = q.order("id", { ascending: true }).limit(limit);
+
+    const { data, error } = await q;
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
 
-    return NextResponse.json({ files: data ?? [] });
+    const rows = (data ?? []) as {
+      id: number;
+      request_id: number;
+      name: string;
+      mime: string | null;
+      size_bytes: number | null;
+      created_at: string;
+      path?: string | null;
+    }[];
+
+    const nextCursor = rows.length === limit ? String(rows[rows.length - 1]!.id) : null;
+
+    return NextResponse.json({ files: rows, nextCursor });
   } catch (err: any) {
     return NextResponse.json(
       { error: err?.message ?? "Unexpected error" },
@@ -96,9 +122,7 @@ export async function POST(
       // best-effort: clean DB row if storage failed
       try {
         await db.from("request_files").delete().eq("id", fileId);
-      } catch {
-        // ignore cleanup errors
-      }
+      } catch {}
       return NextResponse.json({ error: upErr.message }, { status: 400 });
     }
 
