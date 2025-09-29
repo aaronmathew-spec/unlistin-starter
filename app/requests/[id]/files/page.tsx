@@ -1,159 +1,173 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import * as React from 'react';
+import { useParams } from 'next/navigation';
 
 type FileRow = {
   id: string;
   name: string | null;
-  path: string | null;
+  path: string;
   contentType: string | null;
   size: number | null;
-  created_at: string | null;
+  created_at: string;
   signedUrl: string | null;
 };
 
 export default function RequestFilesPage() {
   const params = useParams<{ id: string }>();
-  const router = useRouter();
-  const requestId = params?.id;
+  const requestId = params?.id as string;
 
-  const [files, setFiles] = useState<FileRow[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string | null>(null);
-  const [uploading, setUploading] = useState<boolean>(false);
+  const [files, setFiles] = React.useState<FileRow[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const [uploading, setUploading] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
 
-  async function loadFiles() {
+  const load = React.useCallback(async () => {
+    if (!requestId) return;
+    setLoading(true);
+    setError(null);
     try {
-      setLoading(true);
-      setError(null);
-      const res = await fetch(`/api/requests/${requestId}/files`, {
-        method: 'GET',
-        cache: 'no-store',
-      });
-
-      if (res.status === 401) {
-        // Not signed in – go to login
-        router.push('/login');
-        return;
-      }
-
+      const res = await fetch(`/api/requests/${requestId}/files`, { cache: 'no-store' });
       if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        throw new Error(j?.error || `Failed to load files (HTTP ${res.status})`);
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error || `Failed to load files (${res.status})`);
       }
-
-      const data = (await res.json()) as { files: FileRow[] };
-      setFiles(data.files || []);
+      const body = (await res.json()) as { files: FileRow[] };
+      setFiles(body.files ?? []);
     } catch (e: any) {
-      setError(e?.message || 'Failed to load files.');
+      console.error(e);
+      setError(e.message || 'Failed to load files.');
+      alert('Failed to load the request.');
     } finally {
       setLoading(false);
     }
-  }
-
-  useEffect(() => {
-    if (requestId) {
-      loadFiles();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requestId]);
 
-  async function onUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  React.useEffect(() => {
+    load();
+  }, [load]);
 
+  async function onSelectFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (!f || !requestId) return;
+
+    setUploading(true);
+    setError(null);
     try {
-      setUploading(true);
-      setError(null);
-
-      const body = new FormData();
-      body.append('file', file);
+      const form = new FormData();
+      form.append('file', f);
 
       const res = await fetch(`/api/requests/${requestId}/files`, {
         method: 'POST',
-        body,
+        body: form,
       });
 
-      if (res.status === 401) {
-        router.push('/login');
-        return;
-      }
-
       if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        throw new Error(j?.error || `Upload failed (HTTP ${res.status})`);
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error || `Upload failed (${res.status})`);
       }
 
-      await loadFiles();
+      const { file } = (await res.json()) as { file: FileRow };
+      setFiles((prev) => [file, ...prev]);
     } catch (e: any) {
-      setError(e?.message || 'Upload failed.');
+      console.error(e);
+      setError(e.message || 'Upload failed.');
+      alert('Upload failed.');
     } finally {
       setUploading(false);
-      e.target.value = '';
+      // reset input so same file can be selected again
+      e.currentTarget.value = '';
     }
   }
 
   return (
-    <div className="mx-auto max-w-3xl p-6">
-      <h1 className="text-2xl font-semibold">Request Files</h1>
+    <div style={{ maxWidth: 880, margin: '32px auto', padding: '0 16px' }}>
+      <h1 style={{ marginBottom: 16 }}>Request Files</h1>
 
-      <div className="mt-4 flex items-center gap-3">
-        <label className="inline-flex items-center gap-2 rounded bg-black px-3 py-2 text-sm font-medium text-white hover:opacity-90 cursor-pointer">
+      <div style={{ marginBottom: 16 }}>
+        <label
+          style={{
+            display: 'inline-block',
+            padding: '10px 14px',
+            borderRadius: 8,
+            background: '#000',
+            color: '#fff',
+            cursor: uploading ? 'not-allowed' : 'pointer',
+            opacity: uploading ? 0.6 : 1,
+          }}
+        >
+          {uploading ? 'Uploading…' : 'Upload file'}
           <input
             type="file"
-            className="hidden"
-            onChange={onUpload}
+            onChange={onSelectFile}
             disabled={uploading}
+            style={{ display: 'none' }}
           />
-          {uploading ? 'Uploading…' : 'Upload file'}
         </label>
-
-        <button
-          className="text-sm underline"
-          onClick={loadFiles}
-          disabled={loading}
-        >
-          Refresh
-        </button>
       </div>
 
-      {error && (
-        <div className="mt-4 rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
-          {error}
-        </div>
-      )}
-
       {loading ? (
-        <div className="mt-6 text-sm text-neutral-500">Loading…</div>
+        <p>Loading…</p>
+      ) : error ? (
+        <p style={{ color: 'crimson' }}>{error}</p>
       ) : files.length === 0 ? (
-        <div className="mt-6 text-sm text-neutral-500">No files yet.</div>
+        <p>No files yet.</p>
       ) : (
-        <ul className="mt-6 divide-y rounded border">
+        <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
           {files.map((f) => (
-            <li key={f.id} className="flex items-center justify-between gap-4 p-3">
-              <div className="min-w-0">
-                <div className="truncate font-medium">{f.name ?? '(unnamed)'}</div>
-                <div className="truncate text-xs text-neutral-500">
-                  {f.contentType ?? 'unknown'} • {f.size ?? 0} bytes
+            <li
+              key={f.id}
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                gap: 12,
+                padding: '10px 0',
+                borderBottom: '1px solid #eee',
+              }}
+            >
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 600, wordBreak: 'break-word' }}>
+                  {f.name ?? f.path.split('/').pop()}
+                </div>
+                <div style={{ color: '#666', fontSize: 12 }}>
+                  {f.contentType ?? 'unknown'} • {formatBytes(f.size)} •{' '}
+                  {new Date(f.created_at).toLocaleString()}
                 </div>
               </div>
-              {f.signedUrl ? (
-                <a
-                  href={f.signedUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="rounded bg-neutral-800 px-2 py-1 text-xs text-white hover:opacity-90"
-                >
-                  View / Download
-                </a>
-              ) : (
-                <span className="text-xs text-neutral-500">no URL</span>
-              )}
+              <div style={{ flexShrink: 0 }}>
+                {f.signedUrl ? (
+                  <a
+                    href={f.signedUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      textDecoration: 'none',
+                      padding: '8px 10px',
+                      border: '1px solid #ddd',
+                      borderRadius: 6,
+                    }}
+                  >
+                    View
+                  </a>
+                ) : (
+                  <span style={{ color: '#999' }}>No preview</span>
+                )}
+              </div>
             </li>
           ))}
         </ul>
       )}
     </div>
   );
+}
+
+function formatBytes(n: number | null | undefined) {
+  const v = typeof n === 'number' ? n : 0;
+  if (v < 1024) return `${v} B`;
+  const kb = v / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB`;
+  const mb = kb / 1024;
+  if (mb < 1024) return `${mb.toFixed(1)} MB`;
+  const gb = mb / 1024;
+  return `${gb.toFixed(1)} GB`;
 }
