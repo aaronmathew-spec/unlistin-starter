@@ -1,128 +1,200 @@
-// app/api/requests/[id]/route.ts
-import { NextRequest, NextResponse } from "next/server";
+// app/api/requests/[id]/files/route.ts
+import type { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
-/**
- * GET   /api/requests/[id]
- * PATCH /api/requests/[id]  -> body: { status?: 'open'|'in_progress'|'resolved'|'closed', title?: string, description?: string }
- * - On PATCH, if status changes, we insert an event into request_status_events
- */
+const BUCKET = "request-files";
+
+type FileRow = {
+  id: number;
+  request_id: number;
+  path: string;
+  name: string;
+  mime: string | null;
+  size_bytes: number | null;
+  created_at: string;
+};
 
 export async function GET(
-  _req: NextRequest,
-  { params }: { params: { id: string } }
-) {
-  const supabase = createSupabaseServerClient();
-  const requestId = Number(params.id);
-
-  const { data, error } = await supabase
-    .from("requests")
-    .select("*")
-    .eq("id", requestId)
-    .single();
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 404 });
-  }
-  return NextResponse.json({ request: data });
-}
-
-export async function PATCH(
   req: NextRequest,
   { params }: { params: { id: string } }
 ) {
   const supabase = createSupabaseServerClient();
   const requestId = Number(params.id);
 
-  let body: any;
+  const { searchParams } = new URL(req.url);
+  const limit = clampInt(searchParams.get("limit"), 20, 1, 100);
+  const cursor = searchParams.get("cursor");
+
+  let q = supabase
+    .from("request_files")
+    .select("id, request_id, path, name, mime, size_bytes, created_at")
+    .eq("request_id", requestId)
+    .order("id", { ascending: false })
+    .limit(limit);
+
+  if (cursor) {
+    const cursorId = Number(cursor);
+    if (!Number.isNaN(cursorId)) q = q.lt("id", cursorId);
+  }
+
+  const { data, error } = await q;
+  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+
+  const list = (data ?? []) as FileRow[];
+  const nextCursor = list.length === limit ? String(list[list.length - 1]!.id) : null;
+
+  return NextResponse.json({ files: list, nextCursor });
+}
+
+export async function POST(
+  req: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  const supabase = createSupabaseServerClient();
+  const requestId = Number(params.id);
+
+  let form: FormData;
   try {
-    body = await req.json();
+    form = await req.formData();
   } catch {
-    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+    return NextResponse.json({ error: "Expected multipart/form-data" }, { status: 400 });
   }
 
-  // Fetch current row (for old_status)
-  const { data: current, error: curErr } = await supabase
-    .from("requests")
-    .select("id, title, description, status")
-    .eq("id", requestId)
+  const file = form.get("file") as File | null;
+  const mime =
+    (form.get("mime") as string) ||
+    (file?.type && String(file.type)) ||
+    "application/octet-stream";
+
+  if (!file) {
+    return NextResponse.json({ error: "Missing file" }, { status: 400 });
+  }
+
+  const safeName = sanitizeFileName(file.name || "upload.bin");
+  const path = `${requestId}/${Date.now()}-${safeName}`;
+
+  // 1) Upload
+  const { error: upErr } = await supabase.storage
+    .from(BUCKET)
+    .upload(path, file, { contentType: mime, upsert: false });
+
+  if (upErr) return NextResponse.json({ error: upErr.message }, { status: 400 });
+
+  // 2) Insert row
+  const { data, error: insErr } = await supabase
+    .from("request_files")
+    .insert({
+      request_id: requestId,
+      path,
+      name: file.name || safeName,
+      mime,
+      size_bytes: file.size ?? null,
+    })
+    .select("id, request_id, path, name, mime, size_bytes, created_at")
     .single();
 
-  if (curErr || !current) {
-    return NextResponse.json({ error: curErr?.message || "Not found" }, { status: 404 });
+  if (insErr) {
+    await supabase.storage.from(BUCKET).remove([path]).catch(() => {});
+    return NextResponse.json({ error: insErr.message }, { status: 400 });
   }
 
-  // Allow only specific fields
-  const payload: Record<string, any> = {};
-  if (typeof body.title === "string") {
-    const t = body.title.trim();
-    if (t.length === 0 || t.length > 200) {
-      return NextResponse.json({ error: "Title must be 1–200 chars" }, { status: 400 });
+  // 3) Activity (best-effort)
+  await supabase.from("request_activity").insert({
+    request_id: requestId,
+    type: "file_uploaded",
+    message: `File uploaded: ${data.name}`,
+    meta: { file_id: data.id, path: data.path, mime: data.mime, size_bytes: data.size_bytes },
+  });
+
+  return NextResponse.json({ file: data }, { status: 201 });
+}
+
+export async function DELETE(
+  req: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  const supabase = createSupabaseServerClient();
+  const requestId = Number(params.id);
+
+  // Accept ?fileId=... or JSON { fileId }
+  let fileId: number | null = null;
+  const url = new URL(req.url);
+  const q = url.searchParams.get("fileId");
+  if (q) fileId = Number(q);
+  if (!fileId) {
+    try {
+      const body = (await req.json().catch(() => ({}))) as { fileId?: unknown };
+      if (body?.fileId) fileId = Number(body.fileId);
+    } catch {
+      /* ignore */
     }
-    payload.title = t;
-  }
-  if (typeof body.description === "string") {
-    const d = body.description.trim();
-    if (d.length > 5000) {
-      return NextResponse.json({ error: "Description too long" }, { status: 400 });
-    }
-    payload.description = d;
-  }
-  if (typeof body.status === "string") {
-    const allowed = ["open", "in_progress", "resolved", "closed"];
-    if (!allowed.includes(body.status)) {
-      return NextResponse.json({ error: "Invalid status" }, { status: 400 });
-    }
-    payload.status = body.status;
   }
 
-  if (Object.keys(payload).length === 0) {
-    return NextResponse.json({ error: "No valid fields" }, { status: 400 });
+  if (!fileId || Number.isNaN(fileId)) {
+    return NextResponse.json({ error: "fileId is required" }, { status: 400 });
   }
 
-  const { data: updated, error } = await supabase
-    .from("requests")
-    .update(payload)
-    .eq("id", requestId)
-    .select("*")
+  // 1) Fetch row (RLS)
+  const { data: fileRow, error: fetchErr } = await supabase
+    .from("request_files")
+    .select("id, request_id, path, name, mime, size_bytes")
+    .eq("id", fileId)
+    .eq("request_id", requestId)
     .single();
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 400 });
+  if (fetchErr || !fileRow) {
+    return NextResponse.json(
+      { error: fetchErr?.message || "File not found" },
+      { status: 404 }
+    );
   }
 
-  // If status changed, write an event
-  const newStatus = updated.status as string | undefined;
-  const oldStatus = current.status as string | undefined;
-  if (newStatus && oldStatus && newStatus !== oldStatus) {
-    // optional note can come from body.note or be auto-generated
-    const note =
-      typeof body.note === "string" && body.note.trim().length > 0
-        ? body.note.trim().slice(0, 2000)
-        : `Status changed from ${labelForStatus(oldStatus as any)} to ${labelForStatus(newStatus as any)}`;
+  // 2) Delete from storage
+  const { error: stErr } = await supabase.storage.from(BUCKET).remove([fileRow.path]);
+  if (stErr) return NextResponse.json({ error: stErr.message }, { status: 403 });
 
-    await supabase
-      .from("request_status_events")
-      .insert({
-        request_id: requestId,
-        old_status: oldStatus,
-        new_status: newStatus,
-        note,
-      });
-    // Ignore insert error here to avoid failing the UI save if event write fails
-  }
+  // 3) Delete DB row
+  const { error: delErr } = await supabase
+    .from("request_files")
+    .delete()
+    .eq("id", fileId)
+    .eq("request_id", requestId);
 
-  return NextResponse.json({ request: updated });
+  if (delErr) return NextResponse.json({ error: delErr.message }, { status: 400 });
+
+  // 4) Activity (best-effort)
+  await supabase.from("request_activity").insert({
+    request_id: requestId,
+    type: "file_deleted",
+    message: `File deleted: ${fileRow.name}`,
+    meta: {
+      file_id: fileRow.id,
+      path: fileRow.path,
+      mime: fileRow.mime,
+      size_bytes: fileRow.size_bytes,
+    },
+  });
+
+  return NextResponse.json({ ok: true, deletedId: fileId });
 }
 
 /* ----------------------------- helpers ----------------------------- */
+function sanitizeFileName(name: string) {
+  const base = name.replace(/[\/\\]+/g, " ").replace(/[\x00-\x1F\x7F]+/g, "");
+  const collapsed = base.replace(/\s+/g, " ").trim();
+  return collapsed.slice(0, 180) || "file";
+}
 
-function labelForStatus(s: "open" | "in_progress" | "resolved" | "closed" | string) {
-  switch (s) {
-    case "open": return "Open";
-    case "in_progress": return "In Progress";
-    case "resolved": return "Resolved";
-    case "closed": return "Closed";
-    default: return s;
+function clampInt(
+  val: string | null,
+  fallback: number,
+  min: number,
+  max: number
+): number {
+  const n = Number(val);
+  if (Number.isFinite(n)) {
+    return Math.max(min, Math.min(max, Math.floor(n)));
   }
+  return fallback;
 }
