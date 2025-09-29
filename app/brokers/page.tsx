@@ -92,7 +92,7 @@ export default function BrokersPage() {
   }
 
   function cancelEdit(id: number) {
-    // Rebuild with entries so the value type is concrete and never undefined
+    // Rebuild with entries so value type is concrete (EditRow) and the removed key is dropped
     setEdit((m) => {
       const next: EditState = {};
       for (const [k, val] of Object.entries(m)) {
@@ -140,6 +140,24 @@ export default function BrokersPage() {
         alert(j?.error?.message || j?.error || "Delete failed");
       }
     }
+  }
+
+  // Helpers to maintain strict EditRow type when updating fields
+  function updateEditName(id: number, value: string) {
+    setEdit((m) => {
+      const prev: EditRow = m[id] ?? { name: "", url: "" };
+      const nextRow: EditRow = { ...prev, name: value };
+      const next: EditState = { ...m, [id]: nextRow };
+      return next;
+    });
+  }
+  function updateEditUrl(id: number, value: string) {
+    setEdit((m) => {
+      const prev: EditRow = m[id] ?? { name: "", url: "" };
+      const nextRow: EditRow = { ...prev, url: value };
+      const next: EditState = { ...m, [id]: nextRow };
+      return next;
+    });
   }
 
   return (
@@ -214,12 +232,7 @@ export default function BrokersPage() {
                         <input
                           className="border rounded px-2 py-1 w-full"
                           value={e.name}
-                          onChange={(ev) =>
-                            setEdit((m) => ({
-                              ...m,
-                              [b.id]: { ...m[b.id], name: ev.target.value },
-                            }))
-                          }
+                          onChange={(ev) => updateEditName(b.id, ev.target.value)}
                         />
                       ) : (
                         b.name
@@ -230,12 +243,7 @@ export default function BrokersPage() {
                         <input
                           className="border rounded px-2 py-1 w-full"
                           value={e.url}
-                          onChange={(ev) =>
-                            setEdit((m) => ({
-                              ...m,
-                              [b.id]: { ...m[b.id], url: ev.target.value },
-                            }))
-                          }
+                          onChange={(ev) => updateEditUrl(b.id, ev.target.value)}
                           placeholder="https://…"
                         />
                       ) : b.url ? (
