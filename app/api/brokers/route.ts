@@ -9,6 +9,12 @@ const CreateSchema = z.object({
   url: z.string().url().max(2000).optional(),
 });
 
+const UpdateSchema = z.object({
+  id: z.number().int().positive(),
+  name: z.string().min(1).max(200).optional(),
+  url: z.string().url().max(2000).nullable().optional(), // allow null to clear
+});
+
 export async function GET(req: NextRequest) {
   const supabase = createSupabaseServerClient();
   const { searchParams } = new URL(req.url);
@@ -53,6 +59,73 @@ export async function POST(req: NextRequest) {
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
   return NextResponse.json({ broker: data }, { status: 201 });
+}
+
+export async function PATCH(req: NextRequest) {
+  const supabase = createSupabaseServerClient();
+
+  const json = await req.json().catch(() => ({}));
+  const parsed = UpdateSchema.safeParse(json);
+  if (!parsed.success) {
+    return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+  }
+
+  const { id, ...fields } = parsed.data;
+
+  // Normalize optional url: undefined means "no change", null means "clear"
+  const update: Record<string, unknown> = {};
+  if (fields.name !== undefined) update.name = fields.name;
+  if (fields.url !== undefined) update.url = fields.url;
+
+  if (Object.keys(update).length === 0) {
+    return NextResponse.json({ error: "No changes provided" }, { status: 400 });
+  }
+
+  const { data, error } = await supabase
+    .from("brokers")
+    .update(update)
+    .eq("id", id)
+    .select("id, name, url, created_at, updated_at")
+    .single();
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+
+  return NextResponse.json({ broker: data });
+}
+
+export async function DELETE(req: NextRequest) {
+  const supabase = createSupabaseServerClient();
+
+  // Support ?id=123 or JSON body { id: 123 }
+  const url = new URL(req.url);
+  const idFromQuery = url.searchParams.get("id");
+  const body = await req.json().catch(() => ({}));
+  const id = Number(idFromQuery ?? (body as any).id);
+
+  if (!Number.isFinite(id) || id <= 0) {
+    return NextResponse.json({ error: "id is required" }, { status: 400 });
+  }
+
+  // Guard: if coverage exists for this broker, block delete
+  const { count, error: cntErr } = await supabase
+    .from("coverage")
+    .select("*", { count: "exact", head: true })
+    .eq("broker_id", id);
+
+  if (cntErr) {
+    return NextResponse.json({ error: cntErr.message }, { status: 400 });
+  }
+  if ((count ?? 0) > 0) {
+    return NextResponse.json(
+      { error: "Broker has coverage items and cannot be deleted." },
+      { status: 409 }
+    );
+  }
+
+  const { error } = await supabase.from("brokers").delete().eq("id", id);
+  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+
+  return NextResponse.json({ ok: true, deletedId: id });
 }
 
 /* --------------------- */
