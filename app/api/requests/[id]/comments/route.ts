@@ -1,100 +1,111 @@
 import { NextResponse } from "next/server";
-import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
+import { createServerClient } from "@supabase/ssr";
 
-function getSSR() {
-  const store = cookies();
+// shape of a comment row in your DB
+type CommentRow = {
+  id: number;
+  request_id: number;
+  user_id: string;
+  body: string;
+  is_deleted: boolean;
+  created_at: string;
+  updated_at: string | null;
+};
+
+function getSupabase() {
+  const cookieStore = cookies();
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        get(name: string) {
-          return store.get(name)?.value;
-        },
-        set() {},
-        remove() {},
+        get: (name) => cookieStore.get(name)?.value,
       },
     }
   );
 }
 
-// GET /api/requests/:id/comments?cursor=&limit=
+/**
+ * GET /api/requests/[id]/comments?limit=20&cursor=<id>
+ * Returns { comments, nextCursor }
+ */
 export async function GET(
   req: Request,
   { params }: { params: { id: string } }
 ) {
-  const requestId = Number(params.id);
-  if (!requestId) return NextResponse.json({ error: "Bad id" }, { status: 400 });
+  try {
+    const requestId = Number(params.id);
+    const url = new URL(req.url);
+    const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit")) || 20));
+    const cursor = url.searchParams.get("cursor"); // last seen id
 
-  const { searchParams } = new URL(req.url);
-  const cursor = searchParams.get("cursor");
-  const limit = Math.min(Number(searchParams.get("limit") ?? 20), 100);
+    const supabase = getSupabase();
 
-  const supabase = getSSR();
+    let q = supabase
+      .from("request_comments")
+      .select("*")
+      .eq("request_id", requestId)
+      .eq("is_deleted", false)
+      .order("id", { ascending: false })
+      .limit(limit);
 
-  // Validate access to request (owner). We rely on requests RLS but this helps return 404 quickly.
-  const { data: reqRow } = await supabase
-    .from("requests")
-    .select("id")
-    .eq("id", requestId)
-    .single();
+    if (cursor) {
+      // keyset pagination: fetch ids < cursor
+      q = q.lt("id", Number(cursor));
+    }
 
-  if (!reqRow) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    const { data, error } = await q;
 
-  let q = supabase
-    .from("request_comments")
-    .select("id, request_id, user_id, body, is_deleted, created_at, updated_at")
-    .eq("request_id", requestId)
-    .eq("is_deleted", false)
-    .order("created_at", { ascending: false })
-    .limit(limit);
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
 
-  if (cursor) q = q.lt("id", Number(cursor));
+    const rows = (data ?? []) as CommentRow[];
 
-  const { data, error } = await q;
-  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+    // ✅ SAFE nextCursor calculation
+    const last = rows.length ? rows[rows.length - 1] : undefined;
+    const nextCursor =
+      rows.length === limit && last?.id != null ? String(last.id) : null;
 
-  const rows = Array.isArray(data) ? data : [];
-  const nextCursor =
-    rows.length === limit && rows[rows.length - 1]?.id != null
-      ? String(rows[rows.length - 1].id)
-      : null;
-
-  return NextResponse.json({ comments: rows, nextCursor });
+    return NextResponse.json({ comments: rows, nextCursor });
+  } catch (err: any) {
+    return NextResponse.json({ error: err?.message ?? "Unexpected error" }, { status: 500 });
+  }
 }
 
-// POST /api/requests/:id/comments  { body: string }
+/**
+ * POST /api/requests/[id]/comments
+ * Body: { body: string }
+ * Returns { comment }
+ */
 export async function POST(
   req: Request,
   { params }: { params: { id: string } }
 ) {
-  const requestId = Number(params.id);
-  if (!requestId) return NextResponse.json({ error: "Bad id" }, { status: 400 });
+  try {
+    const requestId = Number(params.id);
+    const { body } = (await req.json().catch(() => ({}))) as { body?: string };
 
-  const supabase = getSSR();
-  const { data: auth } = await supabase.auth.getUser();
-  if (!auth?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (!body || !body.trim()) {
+      return NextResponse.json({ error: "Comment body is required" }, { status: 400 });
+    }
 
-  const payload = await req.json().catch(() => ({}));
-  const body = String(payload?.body ?? "").trim();
-  if (!body) return NextResponse.json({ error: "Empty comment" }, { status: 400 });
+    const supabase = getSupabase();
 
-  // Insert comment
-  const { data: inserted, error } = await supabase
-    .from("request_comments")
-    .insert({ request_id: requestId, body })
-    .select("*")
-    .single();
+    // insert comment (RLS enforces the actor)
+    const { data, error } = await supabase
+      .from("request_comments")
+      .insert({ request_id: requestId, body: body.trim() })
+      .select("*")
+      .single();
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
 
-  // Add event
-  await supabase.from("request_events").insert({
-    request_id: requestId,
-    event_type: "comment_added",
-    meta: { comment_id: inserted.id },
-  });
-
-  return NextResponse.json({ comment: inserted });
+    return NextResponse.json({ comment: data as CommentRow }, { status: 201 });
+  } catch (err: any) {
+    return NextResponse.json({ error: err?.message ?? "Unexpected error" }, { status: 500 });
+  }
 }
