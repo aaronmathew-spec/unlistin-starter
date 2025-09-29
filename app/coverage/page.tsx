@@ -117,7 +117,6 @@ export default function CoverageIndexPage() {
       },
     }));
   }
-
   function cancelEdit(id: number) {
     setEdit((m) => {
       const next: Record<number, EditRow> = {};
@@ -129,7 +128,6 @@ export default function CoverageIndexPage() {
       return next;
     });
   }
-
   async function saveEdit(id: number) {
     const e = edit[id];
     if (!e) return;
@@ -153,7 +151,6 @@ export default function CoverageIndexPage() {
       alert(j?.error?.message || j?.error || "Update failed");
     }
   }
-
   async function remove(id: number) {
     if (!confirm("Delete this coverage?")) return;
     const res = await fetch("/api/coverage?id=" + id, { method: "DELETE" });
@@ -164,6 +161,13 @@ export default function CoverageIndexPage() {
       const j = await res.json().catch(() => ({}));
       alert(j?.error?.message || j?.error || "Delete failed");
     }
+  }
+
+  function exportHref() {
+    const u = new URL("/api/coverage/export", window.location.origin);
+    if (status) u.searchParams.set("status", status);
+    if (q.trim()) u.searchParams.set("q", q.trim());
+    return u.toString();
   }
 
   return (
@@ -209,7 +213,7 @@ export default function CoverageIndexPage() {
         </div>
       </section>
 
-      {/* Filters */}
+      {/* Filters + Export */}
       <section className="border rounded-xl p-4 flex flex-wrap gap-3 items-center">
         <input
           value={q}
@@ -232,6 +236,11 @@ export default function CoverageIndexPage() {
             Reset
           </button>
         )}
+        <div className="ml-auto">
+          <a href={exportHref()} className="px-4 py-2 rounded-lg border hover:bg-gray-50">
+            Export CSV
+          </a>
+        </div>
       </section>
 
       {/* Table */}
