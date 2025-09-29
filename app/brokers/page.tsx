@@ -2,7 +2,15 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-type Broker = { id: number; name: string; url?: string | null; created_at?: string; updated_at?: string };
+type Broker = {
+  id: number;
+  name: string;
+  url?: string | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
+type EditState = Record<number, { name: string; url: string }>;
 
 export default function BrokersPage() {
   const [list, setList] = useState<Broker[]>([]);
@@ -14,8 +22,8 @@ export default function BrokersPage() {
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
 
-  // inline edit
-  const [edit, setEdit] = useState<Record<number, { name: string; url: string }>>({});
+  // inline edit (strict: url is always a string in edit state)
+  const [edit, setEdit] = useState<EditState>({});
 
   // inline message
   const [msg, setMsg] = useState<string | null>(null);
@@ -81,12 +89,19 @@ export default function BrokersPage() {
   function startEdit(row: Broker) {
     setEdit((m) => ({ ...m, [row.id]: { name: row.name, url: row.url ?? "" } }));
   }
+
   function cancelEdit(id: number) {
+    // Rebuild object to keep index signature strict (url: string)
     setEdit((m) => {
-      const { [id]: _, ...rest } = m;
-      return rest;
+      const next: EditState = {};
+      for (const k of Object.keys(m)) {
+        const key = Number(k);
+        if (key !== id) next[key] = m[key];
+      }
+      return next;
     });
   }
+
   async function saveEdit(id: number) {
     const e = edit[id];
     if (!e) return;
@@ -110,14 +125,14 @@ export default function BrokersPage() {
   }
 
   async function remove(id: number) {
-    if (!confirm("Delete this broker? (This is blocked if coverage rows exist)")) return;
+    if (!confirm("Delete this broker? (Blocked if coverage rows exist)")) return;
     const res = await fetch("/api/brokers?id=" + id, { method: "DELETE" });
     if (res.ok) {
       setList((prev) => prev.filter((b) => b.id !== id));
       flash("Deleted");
     } else {
       const j = await res.json().catch(() => ({}));
-      if ((res.status === 409) && j?.error) {
+      if (res.status === 409 && j?.error) {
         alert(j.error); // "Broker has coverage items and cannot be deleted."
       } else {
         alert(j?.error?.message || j?.error || "Delete failed");
@@ -197,7 +212,12 @@ export default function BrokersPage() {
                         <input
                           className="border rounded px-2 py-1 w-full"
                           value={e.name}
-                          onChange={(ev) => setEdit((m) => ({ ...m, [b.id]: { ...m[b.id], name: ev.target.value } }))}
+                          onChange={(ev) =>
+                            setEdit((m) => ({
+                              ...m,
+                              [b.id]: { ...m[b.id], name: ev.target.value },
+                            }))
+                          }
                         />
                       ) : (
                         b.name
@@ -208,7 +228,12 @@ export default function BrokersPage() {
                         <input
                           className="border rounded px-2 py-1 w-full"
                           value={e.url}
-                          onChange={(ev) => setEdit((m) => ({ ...m, [b.id]: { ...m[b.id], url: ev.target.value } }))}
+                          onChange={(ev) =>
+                            setEdit((m) => ({
+                              ...m,
+                              [b.id]: { ...m[b.id], url: ev.target.value },
+                            }))
+                          }
                           placeholder="https://…"
                         />
                       ) : b.url ? (
