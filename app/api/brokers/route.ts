@@ -3,6 +3,7 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { logActivity } from "@/lib/activity";
 
 const CreateSchema = z.object({
   name: z.string().min(1).max(200),
@@ -12,7 +13,7 @@ const CreateSchema = z.object({
 const UpdateSchema = z.object({
   id: z.number().int().positive(),
   name: z.string().min(1).max(200).optional(),
-  url: z.string().url().max(2000).nullable().optional(), // allow null to clear
+  url: z.string().url().max(2000).nullable().optional(),
 });
 
 export async function GET(req: NextRequest) {
@@ -58,6 +59,13 @@ export async function POST(req: NextRequest) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
+  await logActivity({
+    entity_type: "broker",
+    entity_id: data.id,
+    action: "create",
+    meta: { name: data.name },
+  });
+
   return NextResponse.json({ broker: data }, { status: 201 });
 }
 
@@ -72,7 +80,6 @@ export async function PATCH(req: NextRequest) {
 
   const { id, ...fields } = parsed.data;
 
-  // Normalize optional url: undefined means "no change", null means "clear"
   const update: Record<string, unknown> = {};
   if (fields.name !== undefined) update.name = fields.name;
   if (fields.url !== undefined) update.url = fields.url;
@@ -80,6 +87,12 @@ export async function PATCH(req: NextRequest) {
   if (Object.keys(update).length === 0) {
     return NextResponse.json({ error: "No changes provided" }, { status: 400 });
   }
+
+  const { data: before } = await supabase
+    .from("brokers")
+    .select("id, name, url")
+    .eq("id", id)
+    .single();
 
   const { data, error } = await supabase
     .from("brokers")
@@ -90,13 +103,23 @@ export async function PATCH(req: NextRequest) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
+  const changed: Record<string, { from: unknown; to: unknown }> = {};
+  for (const k of Object.keys(update)) {
+    changed[k] = { from: (before as any)?.[k], to: (data as any)?.[k] };
+  }
+  await logActivity({
+    entity_type: "broker",
+    entity_id: data.id,
+    action: "update",
+    meta: changed,
+  });
+
   return NextResponse.json({ broker: data });
 }
 
 export async function DELETE(req: NextRequest) {
   const supabase = createSupabaseServerClient();
 
-  // Support ?id=123 or JSON body { id: 123 }
   const url = new URL(req.url);
   const idFromQuery = url.searchParams.get("id");
   const body = await req.json().catch(() => ({}));
@@ -106,7 +129,6 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ error: "id is required" }, { status: 400 });
   }
 
-  // Guard: if coverage exists for this broker, block delete
   const { count, error: cntErr } = await supabase
     .from("coverage")
     .select("*", { count: "exact", head: true })
@@ -122,8 +144,21 @@ export async function DELETE(req: NextRequest) {
     );
   }
 
+  const { data: row } = await supabase
+    .from("brokers")
+    .select("id, name")
+    .eq("id", id)
+    .single();
+
   const { error } = await supabase.from("brokers").delete().eq("id", id);
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+
+  await logActivity({
+    entity_type: "broker",
+    entity_id: id,
+    action: "delete",
+    meta: { name: row?.name ?? null },
+  });
 
   return NextResponse.json({ ok: true, deletedId: id });
 }
