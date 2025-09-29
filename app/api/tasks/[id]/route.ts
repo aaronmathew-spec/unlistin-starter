@@ -1,26 +1,35 @@
-
-// app/api/tasks/[id]/route.ts
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createClient } from "@supabase/supabase-js";
+import { cookies } from "next/headers";
+import type { Database } from "@/types/supabase";
+
+function getSupabaseSSR() {
+  const cookieStore = cookies();
+  return createClient<Database>(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    { cookies: { get: (key) => cookieStore.get(key)?.value } }
+  );
+}
 
 export async function GET(
   _req: Request,
   { params }: { params: { id: string } }
 ) {
   const id = Number(params.id);
-  if (!Number.isFinite(id)) return NextResponse.json({ error: "Invalid id" }, { status: 400 });
+  if (!id) return NextResponse.json({ error: "Bad id" }, { status: 400 });
 
-  const supabase = createSupabaseServerClient();
-  const { data: task, error } = await supabase.from("tasks").select("*").eq("id", id).maybeSingle();
-  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
-  if (!task) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  const supabase = getSupabaseSSR();
 
-  const { data: runs } = await supabase
-    .from("task_runs")
-    .select("*")
-    .eq("task_id", id)
-    .order("created_at", { ascending: false })
-    .limit(5);
+  const [taskRes, eventsRes] = await Promise.all([
+    supabase.from("background_tasks").select("*").eq("id", id).single(),
+    supabase.from("background_task_events").select("*").eq("task_id", id).order("created_at", { ascending: false })
+  ]);
 
-  return NextResponse.json({ task, runs: runs ?? [] });
+  if (taskRes.error) return NextResponse.json({ error: taskRes.error.message }, { status: 400 });
+
+  return NextResponse.json({
+    task: taskRes.data,
+    events: eventsRes.data ?? []
+  });
 }
