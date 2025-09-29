@@ -1,297 +1,373 @@
 "use client";
 
-import { useEffect, useMemo, useState, useTransition } from "react";
-import { useParams } from "next/navigation";
-import { useToast } from "@/components/toast";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { useToast } from "@/components/providers/ToastProvider";
 
 type RequestRow = {
   id: number;
-  title?: string | null;
-  description?: string | null;
+  title: string | null;
+  description: string | null;
   status: "open" | "in_progress" | "resolved" | "closed";
-  created_at?: string;
-  updated_at?: string;
+  created_at: string | null;
+  updated_at: string | null;
 };
 
-type EventRow = {
+type FileRow = {
   id: number;
-  old_status: RequestRow["status"] | null;
-  new_status: RequestRow["status"];
-  note: string | null;
+  request_id: number;
+  path: string;
+  name: string;
+  mime: string | null;
+  size_bytes: number | null;
   created_at: string;
 };
 
-const STATUS_OPTIONS: RequestRow["status"][] = [
-  "open",
-  "in_progress",
-  "resolved",
-  "closed",
-];
+const STATUSES: RequestRow["status"][] = ["open", "in_progress", "resolved", "closed"];
 
-export default function RequestDetailPage() {
-  const params = useParams<{ id: string }>();
-  const requestId = params.id;
-  const { push } = useToast();
+export default function RequestDetailPage({
+  params,
+}: {
+  params: { id: string };
+}) {
+  const id = Number(params.id);
+  const router = useRouter();
+  const { toast } = useToast();
 
+  const [reqRow, setReqRow] = useState<RequestRow | null>(null);
   const [loading, setLoading] = useState(true);
-  const [saving, startTransition] = useTransition();
-  const [req, setReq] = useState<RequestRow | null>(null);
 
-  // form state
+  // edit form
   const [title, setTitle] = useState("");
   const [desc, setDesc] = useState("");
   const [status, setStatus] = useState<RequestRow["status"]>("open");
-  const [note, setNote] = useState(""); // optional note for status change
 
-  // events
-  const [events, setEvents] = useState<EventRow[]>([]);
-  const [evtNextCursor, setEvtNextCursor] = useState<string | null>(null);
-  const [evtLoading, setEvtLoading] = useState(false);
+  // files
+  const [files, setFiles] = useState<FileRow[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [uploadBusy, setUploadBusy] = useState(false);
 
-  const refreshRequest = async () => {
-    setLoading(true);
-    const res = await fetch(`/api/requests/${requestId}`, { cache: "no-store" });
-    const json = await res.json();
+  const createdAt = useMemo(
+    () => (reqRow?.created_at ? new Date(reqRow.created_at).toLocaleString() : "—"),
+    [reqRow]
+  );
+  const updatedAt = useMemo(
+    () => (reqRow?.updated_at ? new Date(reqRow.updated_at).toLocaleString() : "—"),
+    [reqRow]
+  );
+
+  // ----- data fetching -----
+  async function fetchRequest() {
+    const res = await fetch(`/api/requests/${id}`, { cache: "no-store" });
     if (!res.ok) {
-      push({ message: json?.error || "Failed to load request", type: "error" });
-      setLoading(false);
+      toast("Not found");
+      router.push("/requests");
       return;
     }
-    setReq(json.request);
-    setTitle(json.request.title ?? "");
-    setDesc(json.request.description ?? "");
-    setStatus(json.request.status);
-    setLoading(false);
-  };
+    const j = await res.json();
+    const row = (j.request ?? j) as RequestRow; // support older shape
+    setReqRow(row);
+    setTitle(row.title ?? "");
+    setDesc(row.description ?? "");
+    setStatus(row.status);
+  }
 
-  const fetchEventsPage = async (cursor?: string | null) => {
-    setEvtLoading(true);
-    const u = new URL(`/api/requests/${requestId}/events`, window.location.origin);
-    u.searchParams.set("limit", "20");
+  async function fetchFiles(cursor?: string | null) {
+    const u = new URL(`/api/requests/${id}/files`, window.location.origin);
+    u.searchParams.set("limit", "30");
     if (cursor) u.searchParams.set("cursor", cursor);
-    const res = await fetch(u.toString(), { cache: "no-store" });
-    const json = await res.json();
-    setEvtLoading(false);
-    if (!res.ok) {
-      push({ message: json?.error || "Failed to load timeline", type: "error" });
-      return { items: [] as EventRow[], next: null as string | null };
+    const j = await fetch(u.toString(), { cache: "no-store" }).then((r) => r.json());
+    const list = (j.files ?? []) as FileRow[];
+    if (cursor) {
+      setFiles((prev) => [...prev, ...list]);
+    } else {
+      setFiles(list);
     }
-    return { items: (json.events || []) as EventRow[], next: json.nextCursor ?? null };
-  };
+    setNextCursor(j.nextCursor ?? null);
+  }
 
-  const refreshEvents = async () => {
-    const { items, next } = await fetchEventsPage(null);
-    setEvents(items);
-    setEvtNextCursor(next);
-  };
-
-  const loadMoreEvents = async () => {
-    if (!evtNextCursor) return;
-    const { items, next } = await fetchEventsPage(evtNextCursor);
-    setEvents((prev) => [...prev, ...items]);
-    setEvtNextCursor(next);
-  };
+  async function refreshAll() {
+    setLoading(true);
+    await Promise.all([fetchRequest(), fetchFiles(null)]);
+    setLoading(false);
+  }
 
   useEffect(() => {
-    refreshRequest();
-    refreshEvents();
+    refreshAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [requestId]);
+  }, [id]);
 
-  const created = useMemo(
-    () => (req?.created_at ? new Date(req.created_at).toLocaleString() : ""),
-    [req]
-  );
-  const updated = useMemo(
-    () => (req?.updated_at ? new Date(req.updated_at).toLocaleString() : ""),
-    [req]
-  );
-
-  const onSave = async () => {
-    const body: any = { title, description: desc, status };
-    if (note.trim()) body.note = note.trim();
-
-    // optimistic
-    const prev = req;
-    if (prev) setReq({ ...prev, title, description: desc, status });
-
-    startTransition(async () => {
-      const res = await fetch(`/api/requests/${requestId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        if (prev) setReq(prev); // rollback
-        push({ message: j?.error || "Save failed", type: "error" });
-        return;
-      }
-      setReq(j.request);
-      setTitle(j.request.title ?? "");
-      setDesc(j.request.description ?? "");
-      setStatus(j.request.status);
-      setNote("");
-      push({ message: "Saved", type: "success" });
-      // Refresh timeline (status may have changed)
-      await refreshEvents();
+  // ----- actions -----
+  async function saveMeta() {
+    const payload: Partial<RequestRow> & { id: number } = {
+      id,
+      title: title.trim(),
+      description: desc.trim(),
+      status,
+    };
+    const res = await fetch("/api/requests", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
     });
-  };
+    if (res.ok) {
+      toast("Saved");
+      await fetchRequest();
+    } else {
+      const j = await res.json().catch(() => ({}));
+      toast(j?.error || "Update failed");
+    }
+  }
 
-  if (loading) return <div className="p-6">Loading…</div>;
-  if (!req) return <div className="p-6 text-red-600">Request not found</div>;
+  async function setQuickStatus(s: RequestRow["status"]) {
+    setStatus(s);
+    const res = await fetch("/api/requests", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, status: s }),
+    });
+    if (res.ok) {
+      toast(`Marked ${label(s)}`);
+      await fetchRequest();
+    } else {
+      const j = await res.json().catch(() => ({}));
+      toast(j?.error || "Status update failed");
+    }
+  }
+
+  async function onUpload(file: File) {
+    setUploadBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      // if your API reads `mime` from FormData, we can pass it explicitly:
+      fd.append("mime", file.type || "application/octet-stream");
+      const res = await fetch(`/api/requests/${id}/files`, { method: "POST", body: fd });
+      if (res.ok) {
+        toast("Uploaded");
+        await fetchFiles(null);
+      } else {
+        const j = await res.json().catch(() => ({}));
+        toast(j?.error || "Upload failed");
+      }
+    } finally {
+      setUploadBusy(false);
+    }
+  }
+
+  async function onDeleteFile(fileId: number) {
+    const okay = confirm("Delete this file?");
+    if (!okay) return;
+    const res = await fetch(`/api/requests/${id}/files?fileId=${fileId}`, {
+      method: "DELETE",
+    });
+    if (res.ok) {
+      setFiles((prev) => prev.filter((f) => f.id !== fileId));
+      toast("Deleted");
+    } else {
+      const j = await res.json().catch(() => ({}));
+      toast(j?.error || "Delete failed");
+    }
+  }
+
+  // ----- render -----
+  if (loading) {
+    return (
+      <div className="p-6 max-w-5xl mx-auto space-y-6">
+        <div className="h-6 w-40 bg-gray-200 rounded animate-pulse" />
+        <div className="h-24 bg-gray-100 rounded animate-pulse" />
+        <div className="h-48 bg-gray-100 rounded animate-pulse" />
+      </div>
+    );
+  }
+  if (!reqRow) {
+    return (
+      <div className="p-6">
+        <div className="mb-4">
+          <Link href="/requests" className="underline text-blue-600">
+            ← Back to requests
+          </Link>
+        </div>
+        <div>Request not found.</div>
+      </div>
+    );
+  }
 
   return (
-    <div className="p-6 max-w-4xl mx-auto space-y-8">
+    <div className="p-6 max-w-5xl mx-auto space-y-8">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Request #{req.id}</h1>
-        <StatusPill status={req.status} />
-      </div>
-
-      {/* Editor */}
-      <div className="grid gap-4">
-        <div className="grid gap-1">
-          <label className="text-sm text-gray-600">Title</label>
-          <input
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            className="border rounded-lg px-3 py-2"
-            placeholder="Add a short title"
-            maxLength={200}
-          />
+      <div className="flex items-center justify-between gap-4">
+        <div className="space-y-1">
+          <div className="text-xs text-gray-500">Request #{reqRow.id}</div>
+          <h1 className="text-xl font-semibold">Request Details</h1>
         </div>
-
-        <div className="grid gap-1">
-          <label className="text-sm text-gray-600">Description</label>
-          <textarea
-            value={desc}
-            onChange={(e) => setDesc(e.target.value)}
-            className="border rounded-lg px-3 py-2 min-h-[120px]"
-            placeholder="Describe the request…"
-            maxLength={5000}
-          />
-        </div>
-
-        <div className="grid gap-1">
-          <label className="text-sm text-gray-600">Status</label>
-          <select
-            value={status}
-            onChange={(e) => setStatus(e.target.value as RequestRow["status"])}
-            className="border rounded-lg px-3 py-2"
-          >
-            {STATUS_OPTIONS.map((s) => (
-              <option value={s} key={s}>
-                {labelForStatus(s)}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="grid gap-1">
-          <label className="text-sm text-gray-600">Status Note (optional)</label>
-          <input
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            className="border rounded-lg px-3 py-2"
-            placeholder="Add context for this status change…"
-            maxLength={2000}
-          />
-        </div>
-
-        <div className="flex items-center gap-3 text-sm text-gray-500">
-          {created && <div>Created: {created}</div>}
-          {updated && <div>• Updated: {updated}</div>}
-        </div>
-
-        <div className="flex gap-3">
-          <button
-            onClick={onSave}
-            disabled={saving}
-            className="px-4 py-2 rounded-lg border bg-black text-white hover:opacity-90 disabled:opacity-50"
-          >
-            {saving ? "Saving…" : "Save changes"}
-          </button>
-          <button
-            onClick={() => {
-              setTitle(req.title ?? "");
-              setDesc(req.description ?? "");
-              setStatus(req.status);
-              setNote("");
-            }}
-            disabled={saving}
-            className="px-4 py-2 rounded-lg border hover:bg-gray-50 disabled:opacity-50"
-          >
-            Reset
-          </button>
+        <div className="flex items-center gap-2">
+          <StatusBadge status={reqRow.status} />
+          <Link href="/requests" className="px-3 py-1 rounded border hover:bg-gray-50">
+            Back
+          </Link>
         </div>
       </div>
 
-      {/* Timeline */}
-      <div className="space-y-3">
-        <h2 className="text-lg font-semibold">Status timeline</h2>
-        {events.length === 0 ? (
-          <div className="text-gray-500">No activity yet.</div>
+      {/* Meta editor */}
+      <section className="border rounded-xl p-4 space-y-3">
+        <h2 className="font-medium">Meta</h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="space-y-2">
+            <label className="text-xs text-gray-600">Title</label>
+            <input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              className="border rounded-lg px-3 py-2 w-full"
+              placeholder="Request title"
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-xs text-gray-600">Status</label>
+            <select
+              value={status}
+              onChange={(e) => setStatus(e.target.value as RequestRow["status"])}
+              className="border rounded-lg px-3 py-2 w-full"
+            >
+              {STATUSES.map((s) => (
+                <option key={s} value={s}>
+                  {label(s)}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="md:col-span-2 space-y-2">
+            <label className="text-xs text-gray-600">Description</label>
+            <textarea
+              value={desc}
+              onChange={(e) => setDesc(e.target.value)}
+              className="border rounded-lg px-3 py-2 w-full min-h-[96px]"
+              placeholder="Optional description"
+            />
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={saveMeta} className="px-4 py-2 rounded-lg border hover:bg-gray-50">
+            Save
+          </button>
+          <div className="text-xs text-gray-500 ml-auto">
+            Created: {createdAt} · Updated: {updatedAt}
+          </div>
+        </div>
+      </section>
+
+      {/* Quick statuses */}
+      <section className="border rounded-xl p-4 space-y-2">
+        <h2 className="font-medium">Quick Status</h2>
+        <div className="flex flex-wrap gap-2">
+          {STATUSES.map((s) => (
+            <button
+              key={s}
+              onClick={() => setQuickStatus(s)}
+              className="px-3 py-1 rounded border hover:bg-gray-50"
+            >
+              {label(s)}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {/* Files */}
+      <section className="border rounded-xl p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="font-medium">Files</h2>
+          <label className="text-sm">
+            <input
+              type="file"
+              disabled={uploadBusy}
+              onChange={(e) => e.target.files?.[0] && onUpload(e.target.files[0])}
+              className="hidden"
+              id="fileInput"
+            />
+            <span className={`px-3 py-1 rounded border hover:bg-gray-50 cursor-pointer ${uploadBusy ? "opacity-60 pointer-events-none" : ""}`}>
+              {uploadBusy ? "Uploading…" : "Upload"}
+            </span>
+          </label>
+        </div>
+
+        {(files ?? []).length === 0 ? (
+          <div className="text-sm text-gray-600">No files yet.</div>
         ) : (
           <ul className="space-y-2">
-            {events.map((ev) => (
-              <li key={ev.id} className="border rounded-lg p-3">
-                <div className="flex items-center justify-between">
-                  <div className="text-sm">
-                    <span className="font-medium">
-                      {ev.old_status ? `${labelForStatus(ev.old_status)} → ` : ""}
-                      {labelForStatus(ev.new_status)}
-                    </span>
-                  </div>
-                  <div className="text-xs text-gray-500">
-                    {new Date(ev.created_at).toLocaleString()}
+            {files.map((f) => (
+              <li key={f.id} className="flex items-center justify-between border rounded p-2 text-sm">
+                <div className="min-w-0">
+                  <div className="truncate font-medium">{f.name}</div>
+                  <div className="text-gray-500">
+                    {f.mime || "file"} · {(f.size_bytes ?? 0).toLocaleString()} bytes ·{" "}
+                    {new Date(f.created_at).toLocaleString()}
                   </div>
                 </div>
-                {ev.note && (
-                  <div className="mt-1 text-sm text-gray-700 whitespace-pre-wrap">
-                    {ev.note}
-                  </div>
-                )}
+                <div className="flex items-center gap-2">
+                  <a
+                    href={`/api/requests/${id}/files/${f.id}/download`}
+                    className="px-2 py-1 rounded border hover:bg-gray-50"
+                  >
+                    Download
+                  </a>
+                  <button
+                    onClick={() => onDeleteFile(f.id)}
+                    className="px-2 py-1 rounded border hover:bg-gray-50"
+                  >
+                    Delete
+                  </button>
+                </div>
               </li>
             ))}
           </ul>
         )}
-        {evtNextCursor && (
-          <div className="flex justify-center">
+
+        {nextCursor && (
+          <div>
             <button
-              disabled={evtLoading}
-              onClick={loadMoreEvents}
-              className="px-4 py-2 rounded-lg border hover:bg-gray-50 disabled:opacity-50"
+              onClick={() => fetchFiles(nextCursor)}
+              className="px-3 py-1 rounded border hover:bg-gray-50"
             >
-              {evtLoading ? "Loading…" : "Load more"}
+              Load more
             </button>
           </div>
         )}
-      </div>
+      </section>
     </div>
   );
 }
 
-function labelForStatus(s: RequestRow["status"]) {
+/* --------------------- UI bits --------------------- */
+
+function StatusBadge({ status }: { status: RequestRow["status"] }) {
+  const { bg, text } = statusStyle(status);
+  return (
+    <span className={`px-3 py-1 rounded-full text-xs font-medium ${bg} ${text}`}>
+      {label(status)}
+    </span>
+  );
+}
+
+function label(s: RequestRow["status"]) {
   switch (s) {
-    case "open": return "Open";
-    case "in_progress": return "In Progress";
-    case "resolved": return "Resolved";
-    case "closed": return "Closed";
-    default: return s;
+    case "open":
+      return "Open";
+    case "in_progress":
+      return "In Progress";
+    case "resolved":
+      return "Resolved";
+    case "closed":
+      return "Closed";
   }
 }
 
-function StatusPill({ status }: { status: RequestRow["status"] }) {
-  const map: Record<RequestRow["status"], string> = {
-    open: "bg-blue-100 text-blue-700",
-    in_progress: "bg-amber-100 text-amber-700",
-    resolved: "bg-emerald-100 text-emerald-700",
-    closed: "bg-gray-200 text-gray-700",
-  };
-  return (
-    <span className={`px-2 py-1 rounded-full text-xs font-medium ${map[status]}`}>
-      {labelForStatus(status)}
-    </span>
-  );
+function statusStyle(s: RequestRow["status"]) {
+  if (s === "resolved" || s === "closed") {
+    return { bg: "bg-emerald-100", text: "text-emerald-700" };
+  }
+  if (s === "in_progress") {
+    return { bg: "bg-amber-100", text: "text-amber-700" };
+  }
+  return { bg: "bg-gray-100", text: "text-gray-700" };
 }
