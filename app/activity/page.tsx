@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 
 type Act = {
   id: number;
@@ -20,7 +21,7 @@ export default function ActivityPage() {
   const [entityType, setEntityType] = useState<"" | Act["entity_type"]>("");
   const [entityId, setEntityId] = useState<string>("");
 
-  const filtered = useMemo(() => rows, [rows]); // server-side filters handle most
+  const filtered = useMemo(() => rows, [rows]);
 
   async function fetchPage(cursor?: string | null) {
     const u = new URL("/api/activity", window.location.origin);
@@ -76,7 +77,10 @@ export default function ActivityPage() {
         />
         {(entityType || entityId) && (
           <button
-            onClick={() => { setEntityType(""); setEntityId(""); }}
+            onClick={() => {
+              setEntityType("");
+              setEntityId("");
+            }}
             className="px-3 py-2 rounded-lg border hover:bg-gray-50"
           >
             Reset
@@ -91,23 +95,43 @@ export default function ActivityPage() {
           <div className="text-gray-600">No activity yet.</div>
         ) : (
           <ul className="space-y-2">
-            {filtered.map((a) => (
-              <li key={a.id} className="border rounded p-3 text-sm flex items-start justify-between">
-                <div className="pr-4">
-                  <div className="font-medium">
-                    {prettyEntity(a.entity_type)} #{a.entity_id} — {prettyAction(a.action)}
+            {filtered.map((a) => {
+              const href =
+                a.entity_type === "request"
+                  ? `/requests/${a.entity_id}`
+                  : a.entity_type === "coverage"
+                  ? `/coverage/${a.entity_id}`
+                  : a.entity_type === "broker"
+                  ? `/brokers`
+                  : undefined;
+
+              return (
+                <li key={a.id} className="border rounded p-3 text-sm flex items-start justify-between">
+                  <div className="pr-4">
+                    <div className="font-medium">
+                      {href ? (
+                        <Link href={href} className="underline text-blue-600">
+                          {prettyEntity(a.entity_type)} #{a.entity_id}
+                        </Link>
+                      ) : (
+                        <>
+                          {prettyEntity(a.entity_type)} #{a.entity_id}
+                        </>
+                      )}{" "}
+                      — {prettyAction(a.action)}
+                    </div>
+                    {a.meta ? (
+                      <pre className="mt-1 text-xs text-gray-600 whitespace-pre-wrap break-words">
+                        {JSON.stringify(a.meta, null, 2)}
+                      </pre>
+                    ) : null}
                   </div>
-                  {a.meta ? (
-                    <pre className="mt-1 text-xs text-gray-600 whitespace-pre-wrap break-words">
-                      {JSON.stringify(a.meta, null, 2)}
-                    </pre>
-                  ) : null}
-                </div>
-                <div className="text-xs text-gray-500 whitespace-nowrap">
-                  {new Date(a.created_at).toLocaleString()}
-                </div>
-              </li>
-            ))}
+                  <div className="text-xs text-gray-500 whitespace-nowrap">
+                    {new Date(a.created_at).toLocaleString()}
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         )}
 
@@ -125,19 +149,29 @@ export default function ActivityPage() {
 
 function prettyEntity(t: Act["entity_type"]) {
   switch (t) {
-    case "request": return "Request";
-    case "coverage": return "Coverage";
-    case "broker": return "Broker";
-    case "file": return "File";
+    case "request":
+      return "Request";
+    case "coverage":
+      return "Coverage";
+    case "broker":
+      return "Broker";
+    case "file":
+      return "File";
   }
 }
 function prettyAction(a: Act["action"]) {
   switch (a) {
-    case "create": return "Created";
-    case "update": return "Updated";
-    case "status": return "Status Changed";
-    case "delete": return "Deleted";
-    case "upload": return "Uploaded";
-    case "download": return "Downloaded";
+    case "create":
+      return "Created";
+    case "update":
+      return "Updated";
+    case "status":
+      return "Status Changed";
+    case "delete":
+      return "Deleted";
+    case "upload":
+      return "Uploaded";
+    case "download":
+      return "Downloaded";
   }
 }
