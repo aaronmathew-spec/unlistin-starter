@@ -14,41 +14,36 @@ const CreateSchema = z.object({
 
 const UpdateSchema = z.object({
   id: z.number().int().positive(),
+  surface: z.string().min(1).max(200).optional(),
   status: z.enum(["open", "in_progress", "resolved"]).optional(),
-  note: z.string().max(2000).optional(),
   weight: z.number().positive().max(9999).optional(),
+  note: z.string().max(2000).optional(),
+});
+
+const DeleteSchema = z.object({
+  id: z.number().int().positive(),
 });
 
 export async function GET(req: NextRequest) {
   const supabase = createSupabaseServerClient();
   const { searchParams } = new URL(req.url);
-
   const limit = clamp(searchParams.get("limit"), 50, 1, 200);
   const cursor = searchParams.get("cursor");
   const brokerId = searchParams.get("broker_id");
-  const status = searchParams.get("status");
-  const q = (searchParams.get("q") || "").trim();
 
-  let query = supabase
+  let q = supabase
     .from("coverage")
     .select("id, broker_id, surface, status, weight, note, created_at, updated_at")
     .order("id", { ascending: false })
     .limit(limit);
 
-  if (brokerId) query = query.eq("broker_id", Number(brokerId));
-  if (status && ["open", "in_progress", "resolved"].includes(status)) {
-    query = query.eq("status", status);
-  }
-  if (q) {
-    const needle = `%${escapeIlike(q)}%`;
-    query = query.or(`surface.ilike.${needle},note.ilike.${needle}`);
-  }
+  if (brokerId) q = q.eq("broker_id", Number(brokerId));
   if (cursor) {
     const c = Number(cursor);
-    if (!Number.isNaN(c)) query = query.lt("id", c);
+    if (!Number.isNaN(c)) q = q.lt("id", c);
   }
 
-  const { data, error } = await query;
+  const { data, error } = await q;
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
   const list = data ?? [];
@@ -84,7 +79,6 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ coverage: data }, { status: 201 });
 }
 
-// Keep collection PATCH for convenience (id + fields)
 export async function PATCH(req: NextRequest) {
   const supabase = createSupabaseServerClient();
   const json = await req.json().catch(() => ({}));
@@ -94,6 +88,7 @@ export async function PATCH(req: NextRequest) {
   }
 
   const { id, ...fields } = parsed.data;
+
   const { data, error } = await supabase
     .from("coverage")
     .update(fields)
@@ -106,11 +101,33 @@ export async function PATCH(req: NextRequest) {
   return NextResponse.json({ coverage: data });
 }
 
+export async function DELETE(req: NextRequest) {
+  const supabase = createSupabaseServerClient();
+  let body: unknown = {};
+  try {
+    body = await req.json();
+  } catch {
+    // allow also ?id= in query
+  }
+
+  const url = new URL(req.url);
+  const idFromQuery = url.searchParams.get("id");
+  const parsed = DeleteSchema.safeParse({
+    id: idFromQuery ? Number(idFromQuery) : (body as any)?.id,
+  });
+
+  if (!parsed.success) {
+    return NextResponse.json({ error: "id is required" }, { status: 400 });
+  }
+
+  const { error } = await supabase.from("coverage").delete().eq("id", parsed.data.id);
+  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+
+  return NextResponse.json({ ok: true, deletedId: parsed.data.id });
+}
+
 /* --------------------- */
 function clamp(val: string | null, fallback: number, min: number, max: number) {
   const n = Number(val);
   return Number.isFinite(n) ? Math.max(min, Math.min(max, Math.floor(n))) : fallback;
-}
-function escapeIlike(s: string) {
-  return s.replace(/[%_]/g, (m) => `\\${m}`);
 }
