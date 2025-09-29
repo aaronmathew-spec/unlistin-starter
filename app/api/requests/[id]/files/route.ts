@@ -1,14 +1,18 @@
+// app/api/requests/[id]/files/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 const BUCKET = "request-files";
 
 /**
- * GET  /api/requests/[id]/files
- * POST /api/requests/[id]/files
- * DELETE /api/requests/[id]/files   (→ deletes a single file by fileId)
+ * GET    /api/requests/[id]/files?limit=20&cursor=123
+ * POST   /api/requests/[id]/files    (FormData: file, mime?)
+ * DELETE /api/requests/[id]/files?fileId=123  (or JSON: { fileId })
  *
- * NOTE: RLS is enabled per request owner. We rely on that for DB actions.
+ * Notes
+ * - RLS must be enabled on public.request_files and public.requests (owner scoped).
+ * - Storage policies must allow select/insert/delete for the owner.
+ * - Download is handled by /api/requests/[id]/files/[fileId]/download (separate route).
  */
 
 export async function GET(
@@ -18,63 +22,90 @@ export async function GET(
   const supabase = createSupabaseServerClient();
   const requestId = Number(params.id);
 
-  const { data, error } = await supabase
+  const { searchParams } = new URL(req.url);
+  const limit = clampInt(searchParams.get("limit"), 20, 1, 100);
+  const cursor = searchParams.get("cursor");
+
+  let q = supabase
     .from("request_files")
     .select("id, request_id, path, name, mime, size_bytes, created_at")
     .eq("request_id", requestId)
-    .order("created_at", { ascending: false });
+    .order("id", { ascending: false })
+    .limit(limit);
 
+  if (cursor) {
+    const cursorId = Number(cursor);
+    if (!Number.isNaN(cursorId)) {
+      q = q.lt("id", cursorId);
+    }
+  }
+
+  const { data, error } = await q;
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 400 });
   }
-  return NextResponse.json({ files: data ?? [] });
+
+  const nextCursor =
+    data && data.length === limit ? String(data[data.length - 1].id) : null;
+
+  return NextResponse.json({ files: data ?? [], nextCursor });
 }
 
 export async function POST(
   req: NextRequest,
   { params }: { params: { id: string } }
 ) {
-  // Assuming you already implemented this; keeping a minimal safe version for completeness.
   const supabase = createSupabaseServerClient();
   const requestId = Number(params.id);
 
-  // Expecting a FormData upload with file & mime (as you mentioned)
-  const form = await req.formData();
+  let form: FormData;
+  try {
+    form = await req.formData();
+  } catch {
+    return NextResponse.json({ error: "Expected multipart/form-data" }, { status: 400 });
+  }
+
   const file = form.get("file") as File | null;
-  const mime = (form.get("mime") as string) || file?.type || "application/octet-stream";
+  const mime =
+    (form.get("mime") as string) ||
+    (file?.type && String(file.type)) ||
+    "application/octet-stream";
 
   if (!file) {
     return NextResponse.json({ error: "Missing file" }, { status: 400 });
   }
 
-  const timestamp = Date.now();
-  const path = `${requestId}/${timestamp}-${file.name}`;
+  const safeName = sanitizeFileName(file.name || "upload.bin");
+  const path = `${requestId}/${Date.now()}-${safeName}`;
 
-  // Upload to storage
+  // 1) Upload to Storage (RLS policy must allow insert)
   const { error: upErr } = await supabase.storage
     .from(BUCKET)
-    .upload(path, file, { contentType: mime });
+    .upload(path, file, {
+      contentType: mime,
+      upsert: false,
+    });
 
   if (upErr) {
     return NextResponse.json({ error: upErr.message }, { status: 400 });
   }
 
-  // Insert DB record (RLS enforces that you own the request)
+  // 2) Insert DB record (RLS enforces ownership via requests table)
   const { data, error: insErr } = await supabase
     .from("request_files")
     .insert({
       request_id: requestId,
       path,
-      name: file.name,
+      name: file.name || safeName,
       mime,
-      size_bytes: file.size,
+      size_bytes: file.size ?? null,
     })
     .select("id, request_id, path, name, mime, size_bytes, created_at")
     .single();
 
   if (insErr) {
-    // Attempt cleanup
-    await supabase.storage.from(BUCKET).remove([path]);
+    // Attempt to clean up storage if DB insert fails
+    await supabase.storage.from(BUCKET).remove([path]).catch(() => {});
     return NextResponse.json({ error: insErr.message }, { status: 400 });
   }
 
@@ -93,6 +124,7 @@ export async function DELETE(
   const url = new URL(req.url);
   const q = url.searchParams.get("fileId");
   if (q) fileId = Number(q);
+
   if (!fileId) {
     try {
       const body = await req.json().catch(() => ({}));
@@ -101,11 +133,12 @@ export async function DELETE(
       /* ignore */
     }
   }
-  if (!fileId) {
+
+  if (!fileId || Number.isNaN(fileId)) {
     return NextResponse.json({ error: "fileId is required" }, { status: 400 });
   }
 
-  // 1) Fetch the file row (RLS ensures you can only see your own)
+  // 1) Fetch the file row (RLS will restrict to owner)
   const { data: fileRow, error: fetchErr } = await supabase
     .from("request_files")
     .select("id, request_id, path")
@@ -114,17 +147,23 @@ export async function DELETE(
     .single();
 
   if (fetchErr || !fileRow) {
-    return NextResponse.json({ error: fetchErr?.message || "Not found" }, { status: 404 });
+    return NextResponse.json(
+      { error: fetchErr?.message || "File not found" },
+      { status: 404 }
+    );
   }
 
-  // 2) Delete from storage first (avoid orphan record if storage policy forbids)
-  const { error: stErr } = await supabase.storage.from(BUCKET).remove([fileRow.path]);
+  // 2) Remove from Storage first (ensures no orphaned blob on DB failure)
+  const { error: stErr } = await supabase.storage
+    .from(BUCKET)
+    .remove([fileRow.path]);
+
   if (stErr) {
-    // Common cause: storage RLS not yet configured to allow delete for this user
+    // Most common cause: storage policy does not authorize delete for this user
     return NextResponse.json({ error: stErr.message }, { status: 403 });
   }
 
-  // 3) Delete DB record (RLS will enforce ownership)
+  // 3) Delete the DB record (RLS enforces ownership)
   const { error: delErr } = await supabase
     .from("request_files")
     .delete()
@@ -135,5 +174,29 @@ export async function DELETE(
     return NextResponse.json({ error: delErr.message }, { status: 400 });
   }
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, deletedId: fileId });
+}
+
+/* ----------------------------- helpers ----------------------------- */
+
+function sanitizeFileName(name: string) {
+  // Remove path separators and control chars; keep a reasonable length
+  const base = name.replace(/[\/\\]+/g, " ").replace(/[\x00-\x1F\x7F]+/g, "");
+  // Collapse whitespace and trim
+  const collapsed = base.replace(/\s+/g, " ").trim();
+  // Limit to 180 chars to keep total path length safe
+  return collapsed.slice(0, 180) || "file";
+}
+
+function clampInt(
+  val: string | null,
+  fallback: number,
+  min: number,
+  max: number
+): number {
+  const n = Number(val);
+  if (Number.isFinite(n)) {
+    return Math.max(min, Math.min(max, Math.floor(n)));
+  }
+  return fallback;
 }
