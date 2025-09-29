@@ -1,61 +1,73 @@
 'use client';
 
-import * as React from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
+import { createClient } from '@supabase/supabase-js';
 
 type FileRow = {
-  id: string;
-  name: string | null;
-  path: string;
-  contentType: string | null;
-  size: number | null;
+  id: number;
+  request_id: number;
+  name: string;
+  mime: string;            // ← use mime (DB column), not content_type
+  size_bytes: number;
   created_at: string;
-  signedUrl: string | null;
+  path: string | null;
 };
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+  { auth: { persistSession: true } }
+);
 
 export default function RequestFilesPage() {
   const params = useParams<{ id: string }>();
-  const requestId = params?.id as string;
+  const requestId = useMemo(() => Number(params?.id), [params?.id]);
 
-  const [files, setFiles] = React.useState<FileRow[]>([]);
-  const [loading, setLoading] = React.useState(true);
-  const [uploading, setUploading] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [rows, setRows] = useState<FileRow[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
 
-  const load = React.useCallback(async () => {
-    if (!requestId) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(`/api/requests/${requestId}/files`, { cache: 'no-store' });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body?.error || `Failed to load files (${res.status})`);
+  // Load files
+  useEffect(() => {
+    let active = true;
+    async function load() {
+      if (!requestId) return;
+      setLoading(true);
+      setError(null);
+
+      const { data, error } = await supabase
+        .from('request_files')
+        // IMPORTANT: ask for mime, not content_type
+        .select('id, request_id, name, mime, size_bytes, created_at, path')
+        .eq('request_id', requestId)
+        .order('created_at', { ascending: false });
+
+      if (!active) return;
+      if (error) {
+        setError(error.message);
+      } else {
+        setRows((data ?? []) as FileRow[]);
       }
-      const body = (await res.json()) as { files: FileRow[] };
-      setFiles(body.files ?? []);
-    } catch (e: any) {
-      console.error(e);
-      setError(e.message || 'Failed to load files.');
-      alert('Failed to load the request.');
-    } finally {
       setLoading(false);
     }
+    load();
+    return () => {
+      active = false;
+    };
   }, [requestId]);
 
-  React.useEffect(() => {
-    load();
-  }, [load]);
-
-  async function onSelectFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0];
-    if (!f || !requestId) return;
+  async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || !requestId) return;
 
     setUploading(true);
     setError(null);
+
     try {
       const form = new FormData();
-      form.append('file', f);
+      form.append('file', file);
 
       const res = await fetch(`/api/requests/${requestId}/files`, {
         method: 'POST',
@@ -63,111 +75,76 @@ export default function RequestFilesPage() {
       });
 
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body?.error || `Upload failed (${res.status})`);
+        const text = await res.text().catch(() => '');
+        throw new Error(text || `Upload failed (${res.status})`);
       }
 
-      const { file } = (await res.json()) as { file: FileRow };
-      setFiles((prev) => [file, ...prev]);
-    } catch (e: any) {
-      console.error(e);
-      setError(e.message || 'Upload failed.');
-      alert('Upload failed.');
+      // reload list
+      const { data, error } = await supabase
+        .from('request_files')
+        .select('id, request_id, name, mime, size_bytes, created_at, path')
+        .eq('request_id', requestId)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setRows((data ?? []) as FileRow[]);
+    } catch (err: any) {
+      setError(err.message ?? 'Upload failed');
     } finally {
       setUploading(false);
-      // reset input so same file can be selected again
-      e.currentTarget.value = '';
+      e.currentTarget.value = ''; // reset input
     }
   }
 
   return (
-    <div style={{ maxWidth: 880, margin: '32px auto', padding: '0 16px' }}>
-      <h1 style={{ marginBottom: 16 }}>Request Files</h1>
-
-      <div style={{ marginBottom: 16 }}>
-        <label
-          style={{
-            display: 'inline-block',
-            padding: '10px 14px',
-            borderRadius: 8,
-            background: '#000',
-            color: '#fff',
-            cursor: uploading ? 'not-allowed' : 'pointer',
-            opacity: uploading ? 0.6 : 1,
-          }}
-        >
-          {uploading ? 'Uploading…' : 'Upload file'}
+    <div className="space-y-4">
+      <div className="flex items-center gap-4">
+        <label className="inline-flex items-center px-3 py-2 rounded bg-black text-white cursor-pointer">
           <input
             type="file"
-            onChange={onSelectFile}
+            className="hidden"
+            onChange={handleUpload}
             disabled={uploading}
-            style={{ display: 'none' }}
           />
+          {uploading ? 'Uploading…' : 'Upload file'}
         </label>
       </div>
 
-      {loading ? (
-        <p>Loading…</p>
-      ) : error ? (
-        <p style={{ color: 'crimson' }}>{error}</p>
-      ) : files.length === 0 ? (
-        <p>No files yet.</p>
-      ) : (
-        <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-          {files.map((f) => (
-            <li
-              key={f.id}
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                gap: 12,
-                padding: '10px 0',
-                borderBottom: '1px solid #eee',
-              }}
-            >
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontWeight: 600, wordBreak: 'break-word' }}>
-                  {f.name ?? f.path.split('/').pop()}
-                </div>
-                <div style={{ color: '#666', fontSize: 12 }}>
-                  {f.contentType ?? 'unknown'} • {formatBytes(f.size)} •{' '}
-                  {new Date(f.created_at).toLocaleString()}
-                </div>
-              </div>
-              <div style={{ flexShrink: 0 }}>
-                {f.signedUrl ? (
-                  <a
-                    href={f.signedUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{
-                      textDecoration: 'none',
-                      padding: '8px 10px',
-                      border: '1px solid #ddd',
-                      borderRadius: 6,
-                    }}
-                  >
-                    View
-                  </a>
-                ) : (
-                  <span style={{ color: '#999' }}>No preview</span>
-                )}
-              </div>
-            </li>
-          ))}
-        </ul>
+      {loading && <p>Loading…</p>}
+      {error && <p className="text-red-600">{error}</p>}
+
+      {!loading && !error && (
+        <div className="space-y-2">
+          {rows.length === 0 ? (
+            <p className="text-gray-600">No files uploaded yet.</p>
+          ) : (
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="text-left border-b">
+                  <th className="py-2 pr-4">Name</th>
+                  <th className="py-2 pr-4">MIME</th>
+                  <th className="py-2 pr-4">Size</th>
+                  <th className="py-2 pr-4">Uploaded</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.id} className="border-b">
+                    <td className="py-2 pr-4">{r.name}</td>
+                    <td className="py-2 pr-4">{r.mime}</td>
+                    <td className="py-2 pr-4">
+                      {Intl.NumberFormat().format(r.size_bytes)} B
+                    </td>
+                    <td className="py-2 pr-4">
+                      {new Date(r.created_at).toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
       )}
     </div>
   );
-}
-
-function formatBytes(n: number | null | undefined) {
-  const v = typeof n === 'number' ? n : 0;
-  if (v < 1024) return `${v} B`;
-  const kb = v / 1024;
-  if (kb < 1024) return `${kb.toFixed(1)} KB`;
-  const mb = kb / 1024;
-  if (mb < 1024) return `${mb.toFixed(1)} MB`;
-  const gb = mb / 1024;
-  return `${gb.toFixed(1)} GB`;
 }
