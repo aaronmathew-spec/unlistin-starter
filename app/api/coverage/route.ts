@@ -3,6 +3,7 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { logActivity } from "@/lib/activity";
 
 const CreateSchema = z.object({
   broker_id: z.number().int().positive(),
@@ -76,6 +77,13 @@ export async function POST(req: NextRequest) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
+  await logActivity({
+    entity_type: "coverage",
+    entity_id: data.id,
+    action: "create",
+    meta: { surface: data.surface, broker_id: data.broker_id },
+  });
+
   return NextResponse.json({ coverage: data }, { status: 201 });
 }
 
@@ -89,6 +97,12 @@ export async function PATCH(req: NextRequest) {
 
   const { id, ...fields } = parsed.data;
 
+  const { data: before } = await supabase
+    .from("coverage")
+    .select("id, surface, status, weight, note")
+    .eq("id", id)
+    .single();
+
   const { data, error } = await supabase
     .from("coverage")
     .update(fields)
@@ -98,6 +112,18 @@ export async function PATCH(req: NextRequest) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
+  const changed: Record<string, { from: unknown; to: unknown }> = {};
+  for (const k of Object.keys(fields)) {
+    changed[k] = { from: (before as any)?.[k], to: (data as any)?.[k] };
+  }
+  const action = fields.status ? "status" : "update";
+  await logActivity({
+    entity_type: "coverage",
+    entity_id: data.id,
+    action,
+    meta: changed,
+  });
+
   return NextResponse.json({ coverage: data });
 }
 
@@ -106,9 +132,7 @@ export async function DELETE(req: NextRequest) {
   let body: unknown = {};
   try {
     body = await req.json();
-  } catch {
-    // allow also ?id= in query
-  }
+  } catch {}
 
   const url = new URL(req.url);
   const idFromQuery = url.searchParams.get("id");
@@ -120,8 +144,21 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ error: "id is required" }, { status: 400 });
   }
 
+  const { data: row } = await supabase
+    .from("coverage")
+    .select("id, surface, broker_id")
+    .eq("id", parsed.data.id)
+    .single();
+
   const { error } = await supabase.from("coverage").delete().eq("id", parsed.data.id);
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+
+  await logActivity({
+    entity_type: "coverage",
+    entity_id: parsed.data.id,
+    action: "delete",
+    meta: { surface: row?.surface ?? null, broker_id: row?.broker_id ?? null },
+  });
 
   return NextResponse.json({ ok: true, deletedId: parsed.data.id });
 }
