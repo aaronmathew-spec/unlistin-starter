@@ -22,23 +22,33 @@ const UpdateSchema = z.object({
 export async function GET(req: NextRequest) {
   const supabase = createSupabaseServerClient();
   const { searchParams } = new URL(req.url);
+
   const limit = clamp(searchParams.get("limit"), 50, 1, 200);
   const cursor = searchParams.get("cursor");
   const brokerId = searchParams.get("broker_id");
+  const status = searchParams.get("status");
+  const q = (searchParams.get("q") || "").trim();
 
-  let q = supabase
+  let query = supabase
     .from("coverage")
     .select("id, broker_id, surface, status, weight, note, created_at, updated_at")
     .order("id", { ascending: false })
     .limit(limit);
 
-  if (brokerId) q = q.eq("broker_id", Number(brokerId));
+  if (brokerId) query = query.eq("broker_id", Number(brokerId));
+  if (status && ["open", "in_progress", "resolved"].includes(status)) {
+    query = query.eq("status", status);
+  }
+  if (q) {
+    const needle = `%${escapeIlike(q)}%`;
+    query = query.or(`surface.ilike.${needle},note.ilike.${needle}`);
+  }
   if (cursor) {
     const c = Number(cursor);
-    if (!Number.isNaN(c)) q = q.lt("id", c);
+    if (!Number.isNaN(c)) query = query.lt("id", c);
   }
 
-  const { data, error } = await q;
+  const { data, error } = await query;
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
   const list = data ?? [];
@@ -74,6 +84,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ coverage: data }, { status: 201 });
 }
 
+// Keep collection PATCH for convenience (id + fields)
 export async function PATCH(req: NextRequest) {
   const supabase = createSupabaseServerClient();
   const json = await req.json().catch(() => ({}));
@@ -83,7 +94,6 @@ export async function PATCH(req: NextRequest) {
   }
 
   const { id, ...fields } = parsed.data;
-
   const { data, error } = await supabase
     .from("coverage")
     .update(fields)
@@ -100,4 +110,7 @@ export async function PATCH(req: NextRequest) {
 function clamp(val: string | null, fallback: number, min: number, max: number) {
   const n = Number(val);
   return Number.isFinite(n) ? Math.max(min, Math.min(max, Math.floor(n))) : fallback;
+}
+function escapeIlike(s: string) {
+  return s.replace(/[%_]/g, (m) => `\\${m}`);
 }
