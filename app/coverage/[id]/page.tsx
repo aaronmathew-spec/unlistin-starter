@@ -1,5 +1,7 @@
 "use client";
 
+export const dynamic = "force-dynamic";
+
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useToast } from "@/components/providers/ToastProvider";
@@ -74,7 +76,7 @@ export default function CoverageDetailPage({ params }: { params: { id: string } 
   async function fetchCoverage() {
     const u = new URL("/api/coverage", window.location.origin);
     u.searchParams.set("limit", "1");
-    u.searchParams.set("cursor", String(id + 1)); // trick to fetch <= id then filter
+    u.searchParams.set("cursor", String(id + 1)); // simple way to fetch a page covering this id
     const list = await fetch(u.toString(), { cache: "no-store" }).then((r) => r.json());
     const items: CoverageRow[] = list.coverage ?? [];
     const found = items.find((c) => c.id === id) ?? null;
@@ -102,7 +104,6 @@ export default function CoverageDetailPage({ params }: { params: { id: string } 
 
   async function fetchActivity(cursor?: string | null) {
     setActLoading(true);
-    // Reuse global activity API with entity filters
     const u = new URL("/api/activity", window.location.origin);
     u.searchParams.set("limit", "50");
     u.searchParams.set("entity_type", "coverage");
