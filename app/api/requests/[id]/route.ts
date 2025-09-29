@@ -4,8 +4,9 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 /**
  * GET   /api/requests/[id]
- * PATCH /api/requests/[id]  -> body: { status?: 'open'|'in_progress'|'resolved'|'closed', title?: string, description?: string }
- * - On PATCH, if status changes, we insert an event into request_status_events
+ * PATCH /api/requests/[id]
+ *   body: { status?: 'open'|'in_progress'|'resolved'|'closed', title?: string, description?: string, note?: string }
+ * - On status change, inserts into request_activity
  */
 
 export async function GET(
@@ -21,9 +22,7 @@ export async function GET(
     .eq("id", requestId)
     .single();
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 404 });
-  }
+  if (error) return NextResponse.json({ error: error.message }, { status: 404 });
   return NextResponse.json({ request: data });
 }
 
@@ -41,7 +40,7 @@ export async function PATCH(
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  // Fetch current row (for old_status)
+  // Fetch current row (for comparison)
   const { data: current, error: curErr } = await supabase
     .from("requests")
     .select("id, title, description, status")
@@ -87,29 +86,34 @@ export async function PATCH(
     .select("*")
     .single();
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 400 });
-  }
+  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
-  // If status changed, write an event
+  // If status changed, write activity record
   const newStatus = updated.status as string | undefined;
   const oldStatus = current.status as string | undefined;
   if (newStatus && oldStatus && newStatus !== oldStatus) {
-    // optional note can come from body.note or be auto-generated
     const note =
       typeof body.note === "string" && body.note.trim().length > 0
         ? body.note.trim().slice(0, 2000)
-        : `Status changed from ${labelForStatus(oldStatus as any)} to ${labelForStatus(newStatus as any)}`;
+        : undefined;
+
+    const message = note
+      ? `Status changed: ${labelForStatus(oldStatus as any)} → ${labelForStatus(newStatus as any)} — ${note}`
+      : `Status changed: ${labelForStatus(oldStatus as any)} → ${labelForStatus(newStatus as any)}`;
 
     await supabase
-      .from("request_status_events")
+      .from("request_activity")
       .insert({
         request_id: requestId,
-        old_status: oldStatus,
-        new_status: newStatus,
-        note,
+        type: "status_changed",
+        message,
+        meta: {
+          old_status: oldStatus,
+          new_status: newStatus,
+          note: note ?? null,
+        },
       });
-    // Ignore insert error here to avoid failing the UI save if event write fails
+    // Ignore insert errors to avoid failing the PATCH response
   }
 
   return NextResponse.json({ request: updated });
