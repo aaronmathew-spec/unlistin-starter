@@ -1,18 +1,27 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 
 const allowHostsEnv = (process.env.ALLOW_HTTP_GET_HOSTS ?? "")
   .split(",")
-  .map(s => s.trim().toLowerCase())
+  .map((s) => s.trim().toLowerCase())
   .filter(Boolean);
 
 function getSupabaseSSR() {
   const cookieStore = cookies();
-  return createClient(
+  return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { cookies: { get: (key) => cookieStore.get(key)?.value } }
+    {
+      cookies: {
+        get(name: string) {
+          return cookieStore.get(name)?.value;
+        },
+        // no-ops for App Router API routes
+        set() {},
+        remove() {},
+      },
+    }
   );
 }
 
@@ -21,7 +30,7 @@ function hostAllowed(url: string) {
   try {
     const u = new URL(url);
     const h = u.hostname.toLowerCase();
-    return allowHostsEnv.some(ah => h === ah || h.endsWith(`.${ah}`));
+    return allowHostsEnv.some((ah) => h === ah || h.endsWith(`.${ah}`));
   } catch {
     return false;
   }
