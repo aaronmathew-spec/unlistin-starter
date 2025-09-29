@@ -25,6 +25,15 @@ type FileRow = {
   created_at: string;
 };
 
+type Act = {
+  id: number;
+  entity_type: "request" | "coverage" | "broker" | "file";
+  entity_id: number;
+  action: "create" | "update" | "status" | "delete" | "upload" | "download";
+  meta: Record<string, unknown> | null;
+  created_at: string;
+};
+
 const STATUSES: RequestRow["status"][] = ["open", "in_progress", "resolved", "closed"];
 
 export default function RequestDetailPage({ params }: { params: { id: string } }) {
@@ -46,6 +55,11 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
   const [uploadBusy, setUploadBusy] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewName, setPreviewName] = useState<string | null>(null);
+
+  // timeline
+  const [activity, setActivity] = useState<Act[]>([]);
+  const [actCursor, setActCursor] = useState<string | null>(null);
+  const [actLoading, setActLoading] = useState(true);
 
   const createdAt = useMemo(
     () => (reqRow?.created_at ? new Date(reqRow.created_at).toLocaleString() : "—"),
@@ -83,9 +97,22 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
     setNextCursor(j.nextCursor ?? null);
   }
 
+  async function fetchActivity(cursor?: string | null) {
+    setActLoading(true);
+    const u = new URL(`/api/requests/${id}/activity`, window.location.origin);
+    u.searchParams.set("limit", "50");
+    if (cursor) u.searchParams.set("cursor", cursor);
+    const j = await fetch(u.toString(), { cache: "no-store" }).then((r) => r.json());
+    const list = (j.activity ?? []) as Act[];
+    if (cursor) setActivity((prev) => [...prev, ...list]);
+    else setActivity(list);
+    setActCursor(j.nextCursor ?? null);
+    setActLoading(false);
+  }
+
   async function refreshAll() {
     setLoading(true);
-    await Promise.all([fetchRequest(), fetchFiles(null)]);
+    await Promise.all([fetchRequest(), fetchFiles(null), fetchActivity(null)]);
     setLoading(false);
   }
 
@@ -109,7 +136,7 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
     });
     if (res.ok) {
       toast("Saved");
-      await fetchRequest();
+      await Promise.all([fetchRequest(), fetchActivity(null)]);
     } else {
       const j = await res.json().catch(() => ({}));
       toast(j?.error || "Update failed");
@@ -125,27 +152,34 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
     });
     if (res.ok) {
       toast(`Marked ${label(s)}`);
-      await fetchRequest();
+      await Promise.all([fetchRequest(), fetchActivity(null)]);
     } else {
       const j = await res.json().catch(() => ({}));
       toast(j?.error || "Status update failed");
     }
   }
 
-  async function onUpload(file: File) {
+  async function uploadOne(file: File) {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("mime", file.type || "application/octet-stream");
+    const res = await fetch(`/api/requests/${id}/files`, { method: "POST", body: fd });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      throw new Error(j?.error || `Upload failed: ${file.name}`);
+    }
+  }
+
+  async function onUploadMany(filesList: FileList) {
     setUploadBusy(true);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      fd.append("mime", file.type || "application/octet-stream");
-      const res = await fetch(`/api/requests/${id}/files`, { method: "POST", body: fd });
-      if (res.ok) {
-        toast("Uploaded");
-        await fetchFiles(null);
-      } else {
-        const j = await res.json().catch(() => ({}));
-        toast(j?.error || "Upload failed");
-      }
+      const arr = Array.from(filesList);
+      // Upload sequentially for simpler progress/ordering. Parallel is fine too if desired.
+      for (const f of arr) await uploadOne(f);
+      toast(`Uploaded ${arr.length} file${arr.length > 1 ? "s" : ""}`);
+      await Promise.all([fetchFiles(null), fetchActivity(null)]);
+    } catch (e: any) {
+      toast(e?.message || "Upload error");
     } finally {
       setUploadBusy(false);
     }
@@ -158,11 +192,11 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
     if (res.ok) {
       setFiles((prev) => prev.filter((f) => f.id !== fileId));
       toast("Deleted");
-      // close preview if the same file
       if (previewUrl && previewName) {
         setPreviewUrl(null);
         setPreviewName(null);
       }
+      await fetchActivity(null);
     } else {
       const j = await res.json().catch(() => ({}));
       toast(j?.error || "Delete failed");
@@ -182,7 +216,6 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
   }
 
   async function previewFile(fileId: number, name: string, mime: string | null) {
-    // only image/pdf inline; others will just trigger a download
     const isImage = (mime || "").startsWith("image/");
     const isPdf = mime === "application/pdf" || (name || "").toLowerCase().endsWith(".pdf");
     if (!isImage && !isPdf) {
@@ -308,8 +341,9 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
           <label className="text-sm">
             <input
               type="file"
+              multiple
               disabled={uploadBusy}
-              onChange={(e) => e.target.files?.[0] && onUpload(e.target.files[0])}
+              onChange={(e) => e.target.files && onUploadMany(e.target.files)}
               className="hidden"
               id="fileInput"
             />
@@ -318,7 +352,7 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
                 uploadBusy ? "opacity-60 pointer-events-none" : ""
               }`}
             >
-              {uploadBusy ? "Uploading…" : "Upload"}
+              {uploadBusy ? "Uploading…" : "Upload files"}
             </span>
           </label>
         </div>
@@ -411,6 +445,46 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
           </div>
         )}
       </section>
+
+      {/* Timeline */}
+      <section className="border rounded-xl p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="font-medium">Timeline</h2>
+          {actCursor && (
+            <button
+              onClick={() => fetchActivity(actCursor)}
+              className="px-3 py-1 rounded border hover:bg-gray-50"
+            >
+              Load more
+            </button>
+          )}
+        </div>
+        {actLoading ? (
+          <div>Loading…</div>
+        ) : activity.length === 0 ? (
+          <div className="text-sm text-gray-600">No activity yet.</div>
+        ) : (
+          <ul className="space-y-2">
+            {activity.map((a) => (
+              <li key={a.id} className="border rounded p-3 text-sm flex items-start justify-between">
+                <div className="pr-4">
+                  <div className="font-medium">
+                    {prettyEntity(a.entity_type)} #{a.entity_id} — {prettyAction(a.action)}
+                  </div>
+                  {a.meta ? (
+                    <pre className="mt-1 text-xs text-gray-600 whitespace-pre-wrap break-words">
+                      {JSON.stringify(a.meta, null, 2)}
+                    </pre>
+                  ) : null}
+                </div>
+                <div className="text-xs text-gray-500 whitespace-nowrap">
+                  {new Date(a.created_at).toLocaleString()}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
     </div>
   );
 }
@@ -451,4 +525,23 @@ function statusStyle(s: RequestRow["status"]) {
 
 function isPdfName(name: string | null) {
   return (name || "").toLowerCase().endsWith(".pdf");
+}
+
+function prettyEntity(t: Act["entity_type"]) {
+  switch (t) {
+    case "request": return "Request";
+    case "coverage": return "Coverage";
+    case "broker": return "Broker";
+    case "file": return "File";
+  }
+}
+function prettyAction(a: Act["action"]) {
+  switch (a) {
+    case "create": return "Created";
+    case "update": return "Updated";
+    case "status": return "Status Changed";
+    case "delete": return "Deleted";
+    case "upload": return "Uploaded";
+    case "download": return "Downloaded";
+  }
 }
