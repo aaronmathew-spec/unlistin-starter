@@ -13,11 +13,11 @@ type RequestRow = {
   updated_at?: string;
 };
 
-type EventRow = {
+type ActivityRow = {
   id: number;
-  old_status: RequestRow["status"] | null;
-  new_status: RequestRow["status"];
-  note: string | null;
+  type: "status_changed" | "file_uploaded" | "file_deleted";
+  message: string;
+  meta: any | null;
   created_at: string;
 };
 
@@ -41,12 +41,12 @@ export default function RequestDetailPage() {
   const [title, setTitle] = useState("");
   const [desc, setDesc] = useState("");
   const [status, setStatus] = useState<RequestRow["status"]>("open");
-  const [note, setNote] = useState(""); // optional note for status change
+  const [note, setNote] = useState("");
 
-  // events
-  const [events, setEvents] = useState<EventRow[]>([]);
-  const [evtNextCursor, setEvtNextCursor] = useState<string | null>(null);
-  const [evtLoading, setEvtLoading] = useState(false);
+  // activity
+  const [activity, setActivity] = useState<ActivityRow[]>([]);
+  const [actNextCursor, setActNextCursor] = useState<string | null>(null);
+  const [actLoading, setActLoading] = useState(false);
 
   const refreshRequest = async () => {
     setLoading(true);
@@ -64,37 +64,37 @@ export default function RequestDetailPage() {
     setLoading(false);
   };
 
-  const fetchEventsPage = async (cursor?: string | null) => {
-    setEvtLoading(true);
-    const u = new URL(`/api/requests/${requestId}/events`, window.location.origin);
+  const fetchActivityPage = async (cursor?: string | null) => {
+    setActLoading(true);
+    const u = new URL(`/api/requests/${requestId}/activity`, window.location.origin);
     u.searchParams.set("limit", "20");
     if (cursor) u.searchParams.set("cursor", cursor);
     const res = await fetch(u.toString(), { cache: "no-store" });
     const json = await res.json();
-    setEvtLoading(false);
+    setActLoading(false);
     if (!res.ok) {
-      push({ message: json?.error || "Failed to load timeline", type: "error" });
-      return { items: [] as EventRow[], next: null as string | null };
+      push({ message: json?.error || "Failed to load activity", type: "error" });
+      return { items: [] as ActivityRow[], next: null as string | null };
     }
-    return { items: (json.events || []) as EventRow[], next: json.nextCursor ?? null };
+    return { items: (json.activity || []) as ActivityRow[], next: json.nextCursor ?? null };
   };
 
-  const refreshEvents = async () => {
-    const { items, next } = await fetchEventsPage(null);
-    setEvents(items);
-    setEvtNextCursor(next);
+  const refreshActivity = async () => {
+    const { items, next } = await fetchActivityPage(null);
+    setActivity(items);
+    setActNextCursor(next);
   };
 
-  const loadMoreEvents = async () => {
-    if (!evtNextCursor) return;
-    const { items, next } = await fetchEventsPage(evtNextCursor);
-    setEvents((prev) => [...prev, ...items]);
-    setEvtNextCursor(next);
+  const loadMoreActivity = async () => {
+    if (!actNextCursor) return;
+    const { items, next } = await fetchActivityPage(actNextCursor);
+    setActivity((prev) => [...prev, ...items]);
+    setActNextCursor(next);
   };
 
   useEffect(() => {
     refreshRequest();
-    refreshEvents();
+    refreshActivity();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requestId]);
 
@@ -133,8 +133,8 @@ export default function RequestDetailPage() {
       setStatus(j.request.status);
       setNote("");
       push({ message: "Saved", type: "success" });
-      // Refresh timeline (status may have changed)
-      await refreshEvents();
+      // Refresh activity (in case status changed)
+      await refreshActivity();
     });
   };
 
@@ -224,46 +224,41 @@ export default function RequestDetailPage() {
           >
             Reset
           </button>
-        </div>
+      </div>
       </div>
 
-      {/* Timeline */}
+      {/* Activity */}
       <div className="space-y-3">
-        <h2 className="text-lg font-semibold">Status timeline</h2>
-        {events.length === 0 ? (
+        <h2 className="text-lg font-semibold">Activity</h2>
+        {activity.length === 0 ? (
           <div className="text-gray-500">No activity yet.</div>
         ) : (
           <ul className="space-y-2">
-            {events.map((ev) => (
+            {activity.map((ev) => (
               <li key={ev.id} className="border rounded-lg p-3">
                 <div className="flex items-center justify-between">
-                  <div className="text-sm">
-                    <span className="font-medium">
-                      {ev.old_status ? `${labelForStatus(ev.old_status)} → ` : ""}
-                      {labelForStatus(ev.new_status)}
-                    </span>
-                  </div>
+                  <div className="text-sm font-medium">{formatActivityMessage(ev)}</div>
                   <div className="text-xs text-gray-500">
                     {new Date(ev.created_at).toLocaleString()}
                   </div>
                 </div>
-                {ev.note && (
-                  <div className="mt-1 text-sm text-gray-700 whitespace-pre-wrap">
-                    {ev.note}
-                  </div>
+                {ev.meta && Object.keys(ev.meta).length > 0 && (
+                  <pre className="mt-1 text-xs bg-gray-50 border rounded p-2 overflow-auto">
+                    {JSON.stringify(ev.meta, null, 2)}
+                  </pre>
                 )}
               </li>
             ))}
           </ul>
         )}
-        {evtNextCursor && (
+        {actNextCursor && (
           <div className="flex justify-center">
             <button
-              disabled={evtLoading}
-              onClick={loadMoreEvents}
+              disabled={actLoading}
+              onClick={loadMoreActivity}
               className="px-4 py-2 rounded-lg border hover:bg-gray-50 disabled:opacity-50"
             >
-              {evtLoading ? "Loading…" : "Load more"}
+              {actLoading ? "Loading…" : "Load more"}
             </button>
           </div>
         )}
@@ -294,4 +289,17 @@ function StatusPill({ status }: { status: RequestRow["status"] }) {
       {labelForStatus(status)}
     </span>
   );
+}
+
+function formatActivityMessage(ev: ActivityRow) {
+  switch (ev.type) {
+    case "status_changed":
+      return ev.message;
+    case "file_uploaded":
+      return ev.message;
+    case "file_deleted":
+      return ev.message;
+    default:
+      return ev.message;
+  }
 }
