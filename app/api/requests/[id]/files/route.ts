@@ -8,11 +8,6 @@ const BUCKET = "request-files";
  * GET    /api/requests/[id]/files?limit=20&cursor=123
  * POST   /api/requests/[id]/files    (FormData: file, mime?)
  * DELETE /api/requests/[id]/files?fileId=123  (or JSON: { fileId })
- *
- * Notes
- * - RLS must be enabled on public.request_files and public.requests (owner scoped).
- * - Storage policies must allow select/insert/delete for the owner.
- * - Download is handled by /api/requests/[id]/files/[fileId]/download (separate route).
  */
 
 export async function GET(
@@ -35,15 +30,11 @@ export async function GET(
 
   if (cursor) {
     const cursorId = Number(cursor);
-    if (!Number.isNaN(cursorId)) {
-      q = q.lt("id", cursorId);
-    }
+    if (!Number.isNaN(cursorId)) q = q.lt("id", cursorId);
   }
 
   const { data, error } = await q;
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 400 });
-  }
+  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
   const nextCursor =
     data && data.length === limit ? String(data[data.length - 1].id) : null;
@@ -78,19 +69,14 @@ export async function POST(
   const safeName = sanitizeFileName(file.name || "upload.bin");
   const path = `${requestId}/${Date.now()}-${safeName}`;
 
-  // 1) Upload to Storage (RLS policy must allow insert)
+  // Upload to Storage
   const { error: upErr } = await supabase.storage
     .from(BUCKET)
-    .upload(path, file, {
-      contentType: mime,
-      upsert: false,
-    });
+    .upload(path, file, { contentType: mime, upsert: false });
 
-  if (upErr) {
-    return NextResponse.json({ error: upErr.message }, { status: 400 });
-  }
+  if (upErr) return NextResponse.json({ error: upErr.message }, { status: 400 });
 
-  // 2) Insert DB record (RLS enforces ownership via requests table)
+  // Insert DB row
   const { data, error: insErr } = await supabase
     .from("request_files")
     .insert({
@@ -104,10 +90,22 @@ export async function POST(
     .single();
 
   if (insErr) {
-    // Attempt to clean up storage if DB insert fails
     await supabase.storage.from(BUCKET).remove([path]).catch(() => {});
     return NextResponse.json({ error: insErr.message }, { status: 400 });
   }
+
+  // Log activity (best-effort)
+  await supabase.from("request_activity").insert({
+    request_id: requestId,
+    type: "file_uploaded",
+    message: `File uploaded: ${data.name}`,
+    meta: {
+      file_id: data.id,
+      path: data.path,
+      mime: data.mime,
+      size_bytes: data.size_bytes,
+    },
+  });
 
   return NextResponse.json({ file: data }, { status: 201 });
 }
@@ -119,12 +117,10 @@ export async function DELETE(
   const supabase = createSupabaseServerClient();
   const requestId = Number(params.id);
 
-  // Accept ?fileId=... or JSON body { fileId }
   let fileId: number | null = null;
   const url = new URL(req.url);
   const q = url.searchParams.get("fileId");
   if (q) fileId = Number(q);
-
   if (!fileId) {
     try {
       const body = await req.json().catch(() => ({}));
@@ -133,15 +129,14 @@ export async function DELETE(
       /* ignore */
     }
   }
-
   if (!fileId || Number.isNaN(fileId)) {
     return NextResponse.json({ error: "fileId is required" }, { status: 400 });
   }
 
-  // 1) Fetch the file row (RLS will restrict to owner)
+  // Fetch the row (RLS enforces ownership)
   const { data: fileRow, error: fetchErr } = await supabase
     .from("request_files")
-    .select("id, request_id, path")
+    .select("id, request_id, path, name, mime, size_bytes")
     .eq("id", fileId)
     .eq("request_id", requestId)
     .single();
@@ -153,26 +148,31 @@ export async function DELETE(
     );
   }
 
-  // 2) Remove from Storage first (ensures no orphaned blob on DB failure)
-  const { error: stErr } = await supabase.storage
-    .from(BUCKET)
-    .remove([fileRow.path]);
+  // Delete from storage
+  const { error: stErr } = await supabase.storage.from(BUCKET).remove([fileRow.path]);
+  if (stErr) return NextResponse.json({ error: stErr.message }, { status: 403 });
 
-  if (stErr) {
-    // Most common cause: storage policy does not authorize delete for this user
-    return NextResponse.json({ error: stErr.message }, { status: 403 });
-  }
-
-  // 3) Delete the DB record (RLS enforces ownership)
+  // Delete DB row
   const { error: delErr } = await supabase
     .from("request_files")
     .delete()
     .eq("id", fileId)
     .eq("request_id", requestId);
 
-  if (delErr) {
-    return NextResponse.json({ error: delErr.message }, { status: 400 });
-  }
+  if (delErr) return NextResponse.json({ error: delErr.message }, { status: 400 });
+
+  // Log activity (best-effort)
+  await supabase.from("request_activity").insert({
+    request_id: requestId,
+    type: "file_deleted",
+    message: `File deleted: ${fileRow.name}`,
+    meta: {
+      file_id: fileRow.id,
+      path: fileRow.path,
+      mime: fileRow.mime,
+      size_bytes: fileRow.size_bytes,
+    },
+  });
 
   return NextResponse.json({ ok: true, deletedId: fileId });
 }
@@ -180,11 +180,8 @@ export async function DELETE(
 /* ----------------------------- helpers ----------------------------- */
 
 function sanitizeFileName(name: string) {
-  // Remove path separators and control chars; keep a reasonable length
   const base = name.replace(/[\/\\]+/g, " ").replace(/[\x00-\x1F\x7F]+/g, "");
-  // Collapse whitespace and trim
   const collapsed = base.replace(/\s+/g, " ").trim();
-  // Limit to 180 chars to keep total path length safe
   return collapsed.slice(0, 180) || "file";
 }
 
