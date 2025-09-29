@@ -1,0 +1,20 @@
+name: E2E (manual)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+      - run: npm ci
+      - run: npm run build
+      - run: npm run e2e:install
+      - run: npm run e2e
+        env:
+          E2E_BASE_URL: http://localhost:3000
