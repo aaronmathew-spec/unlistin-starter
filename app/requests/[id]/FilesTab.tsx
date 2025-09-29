@@ -16,18 +16,34 @@ export default function FilesTab({ requestId }: { requestId: number }) {
   const [files, setFiles] = useState<FileRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<number | null>(null); // holds fileId during delete
+  const [busy, setBusy] = useState<number | null>(null);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(true);
+  const PAGE = 20;
 
-  async function load() {
-    setLoading(true);
-    setError(null);
+  async function fetchPage(opts?: { reset?: boolean }) {
+    const reset = !!opts?.reset;
+    if (reset) {
+      setFiles([]);
+      setCursor(null);
+      setHasMore(true);
+      setError(null);
+      setLoading(true);
+    }
     try {
-      const res = await fetch(`/api/requests/${requestId}/files`, {
+      const qs = new URLSearchParams();
+      qs.set("limit", String(PAGE));
+      if (!reset && cursor) qs.set("cursor", cursor);
+
+      const res = await fetch(`/api/requests/${requestId}/files?` + qs.toString(), {
         cache: "no-store",
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Failed to load files");
-      setFiles((data.files as FileRow[]) ?? []);
+
+      setFiles((cur) => (reset ? data.files : cur.concat(data.files)));
+      setCursor(data.nextCursor ?? null);
+      setHasMore(Boolean(data.nextCursor));
     } catch (e: any) {
       setError(e?.message ?? "Failed to load files");
     } finally {
@@ -36,7 +52,7 @@ export default function FilesTab({ requestId }: { requestId: number }) {
   }
 
   useEffect(() => {
-    load();
+    fetchPage({ reset: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requestId]);
 
@@ -49,7 +65,6 @@ export default function FilesTab({ requestId }: { requestId: number }) {
   async function handleDelete(fileId: number) {
     setBusy(fileId);
     setError(null);
-    // optimistic remove
     const prev = files;
     setFiles((cur) => cur.filter((f) => f.id !== fileId));
     try {
@@ -61,8 +76,7 @@ export default function FilesTab({ requestId }: { requestId: number }) {
         throw new Error(data?.error || "Delete failed");
       }
     } catch (e: any) {
-      // rollback
-      setFiles(prev);
+      setFiles(prev); // rollback
       setError(e?.message ?? "Delete failed");
     } finally {
       setBusy(null);
@@ -76,7 +90,7 @@ export default function FilesTab({ requestId }: { requestId: number }) {
     return `${(n / (1024 * 1024)).toFixed(1)} MB`;
   }
 
-  if (loading) {
+  if (loading && files.length === 0) {
     return (
       <div className="rounded-md border p-4 text-sm text-neutral-600">
         Loading files…
@@ -95,16 +109,24 @@ export default function FilesTab({ requestId }: { requestId: number }) {
       <div className="flex items-center justify-between">
         <div className="text-sm text-neutral-600">
           {files.length} file{files.length === 1 ? "" : "s"}
-          {files.length > 0 && (
-            <> • total {toKb(totalSize)}</>
+          {files.length > 0 && <> • total {toKb(totalSize)}</>}
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => fetchPage({ reset: true })}
+            className="rounded-md border px-3 py-1 text-sm hover:bg-neutral-50"
+          >
+            Refresh
+          </button>
+          {hasMore && (
+            <button
+              onClick={() => fetchPage()}
+              className="rounded-md border px-3 py-1 text-sm hover:bg-neutral-50"
+            >
+              Load more
+            </button>
           )}
         </div>
-        <button
-          onClick={load}
-          className="rounded-md border px-3 py-1 text-sm hover:bg-neutral-50"
-        >
-          Refresh
-        </button>
       </div>
 
       <div className="overflow-hidden rounded-md border">
@@ -160,6 +182,10 @@ export default function FilesTab({ requestId }: { requestId: number }) {
           </tbody>
         </table>
       </div>
+
+      {loading && files.length > 0 && (
+        <div className="text-sm text-neutral-500">Loading…</div>
+      )}
     </div>
   );
 }
