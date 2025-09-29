@@ -1,77 +1,81 @@
-export const dynamic = "force-dynamic";
-export const fetchCache = "default-no-store";
+export const runtime = "nodejs";
 
-import Link from "next/link";
-import CommentsSection from "./_components/CommentsSection";
-import EventsSection from "./_components/EventsSection";
-import StatusChanger from "./_components/StatusChanger";
+import { cookies } from "next/headers";
+import { createServerClient } from "@supabase/ssr";
+import FilesTab from "./FilesTab";
+
+function supa() {
+  const jar = cookies();
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    { cookies: { get: (k) => jar.get(k)?.value } }
+  );
+}
 
 type RequestRow = {
   id: number;
-  title?: string | null;
-  description?: string | null;
-  status?: string | null;
+  title: string;
+  description: string | null;
+  status: string;
+  created_at: string;
 };
 
-async function fetchJSON<T>(path: string) {
-  const res = await fetch(path, { cache: "no-store" });
-  if (!res.ok) throw new Error(await res.text());
-  return (await res.json()) as T;
+async function getRequest(id: number) {
+  const db = supa();
+  const { data, error } = await db.from("requests").select("*").eq("id", id).single();
+  if (error) throw new Error(error.message);
+  return data as RequestRow;
 }
 
-async function getInitial(id: number) {
-  try {
-    const r = await fetchJSON<{ request: RequestRow }>(`/api/requests/${id}`);
-    return r.request;
-  } catch {
-    return { id, title: `Request #${id}`, description: null, status: "open" };
+export default async function RequestPage(props: { params: { id: string } }) {
+  const id = Number(props.params.id);
+  if (!Number.isFinite(id)) {
+    return (
+      <div className="p-6">
+        <div className="rounded-md border border-red-300 bg-red-50 p-3 text-red-800">
+          Invalid request id.
+        </div>
+      </div>
+    );
   }
-}
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section className="border rounded-md p-4">
-      <h2 className="text-lg font-semibold mb-3">{title}</h2>
-      {children}
-    </section>
-  );
-}
+  let reqRow: RequestRow | null = null;
+  let err: string | null = null;
+  try {
+    reqRow = await getRequest(id);
+  } catch (e: any) {
+    err = e?.message ?? "Failed to load request";
+  }
 
-function Field({ label, value }: { label: string; value?: React.ReactNode }) {
-  return (
-    <div className="flex gap-2 text-sm">
-      <div className="w-24 text-gray-500">{label}</div>
-      <div className="flex-1">{value ?? <span className="text-gray-400">—</span>}</div>
-    </div>
-  );
-}
-
-export default async function RequestDetailPage({ params }: { params: { id: string } }) {
-  const id = Number(params.id);
-  const request = await getInitial(id);
+  if (err || !reqRow) {
+    return (
+      <div className="p-6">
+        <div className="rounded-md border border-red-300 bg-red-50 p-3 text-red-800">
+          {err || "Not found"}
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="max-w-5xl mx-auto px-4 py-8 space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">
-          Request #{id} {request.title ? `— ${request.title}` : ""}
-        </h1>
-        <Link href="/requests" className="rounded-md border px-3 py-1.5 text-sm hover:bg-gray-50">
-          Back
-        </Link>
+    <div className="p-6 space-y-6">
+      <div className="flex flex-col gap-1">
+        <h1 className="text-xl font-semibold">{reqRow.title}</h1>
+        <div className="text-sm text-neutral-600">
+          Status: <span className="font-medium">{reqRow.status}</span> • Created{" "}
+          {new Date(reqRow.created_at).toLocaleString()}
+        </div>
+        {reqRow.description && (
+          <p className="mt-2 whitespace-pre-wrap text-neutral-800">{reqRow.description}</p>
+        )}
       </div>
 
-      <Section title="Overview">
-        <div className="space-y-2">
-          <Field label="Title" value={request.title} />
-          <Field label="Status" value={request.status} />
-          <Field label="Description" value={request.description} />
-        </div>
-      </Section>
-
-      <StatusChanger requestId={id} initial={request.status} />
-      <CommentsSection requestId={id} />
-      <EventsSection requestId={id} />
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold">Files</h2>
+        {/* Client tab with Download/Delete actions */}
+        <FilesTab requestId={reqRow.id} />
+      </section>
     </div>
   );
 }
