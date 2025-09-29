@@ -2,32 +2,36 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { z } from "zod";
+import { logActivity } from "@/lib/activity";
 
-const BUCKET = "coverage-files";
+const COV_BUCKET = "coverage-files";     // adjust if needed
+const COV_TABLE  = "coverage_files";     // columns: id, coverage_id, path, name, mime, size_bytes, created_at
 
-type FileRow = {
-  id: number;
-  coverage_id: number;
-  path: string;
-  name: string;
-  mime: string | null;
-  size_bytes: number | null;
-  created_at: string;
-};
+const ListQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(20),
+  cursor: z.string().optional().nullable(),
+});
 
-export async function GET(
-  req: NextRequest,
-  { params }: { params: { id: string } }
-) {
+export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
   const supabase = createSupabaseServerClient();
   const coverageId = Number(params.id);
+  if (!Number.isFinite(coverageId)) {
+    return NextResponse.json({ error: "invalid coverage id" }, { status: 400 });
+  }
 
-  const { searchParams } = new URL(req.url);
-  const limit = clampInt(searchParams.get("limit"), 20, 1, 100);
-  const cursor = searchParams.get("cursor");
+  const url = new URL(req.url);
+  const parsed = ListQuery.safeParse({
+    limit: url.searchParams.get("limit") ?? undefined,
+    cursor: url.searchParams.get("cursor") ?? undefined,
+  });
+  if (!parsed.success) {
+    return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+  }
+  const { limit, cursor } = parsed.data;
 
   let q = supabase
-    .from("coverage_files")
+    .from(COV_TABLE)
     .select("id, coverage_id, path, name, mime, size_bytes, created_at")
     .eq("coverage_id", coverageId)
     .order("id", { ascending: false })
@@ -41,128 +45,105 @@ export async function GET(
   const { data, error } = await q;
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
-  const list = (data ?? []) as FileRow[];
+  const list = data ?? [];
   const nextCursor = list.length === limit ? String(list[list.length - 1]!.id) : null;
 
   return NextResponse.json({ files: list, nextCursor });
 }
 
-export async function POST(
-  req: NextRequest,
-  { params }: { params: { id: string } }
-) {
+export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const supabase = createSupabaseServerClient();
   const coverageId = Number(params.id);
-
-  let form: FormData;
-  try {
-    form = await req.formData();
-  } catch {
-    return NextResponse.json({ error: "Expected multipart/form-data" }, { status: 400 });
+  if (!Number.isFinite(coverageId)) {
+    return NextResponse.json({ error: "invalid coverage id" }, { status: 400 });
   }
 
-  const file = form.get("file") as File | null;
-  const mime =
-    (form.get("mime") as string) ||
-    (file?.type && String(file.type)) ||
-    "application/octet-stream";
-
-  if (!file) return NextResponse.json({ error: "Missing file" }, { status: 400 });
-
-  // quick guard: ensure coverage row belongs to user (RLS will also enforce)
-  const { data: owned } = await supabase
-    .from("coverage")
-    .select("id")
-    .eq("id", coverageId)
-    .limit(1);
-  if (!owned || owned.length === 0) {
-    return NextResponse.json({ error: "Coverage not found" }, { status: 404 });
+  const form = await req.formData();
+  const bin = form.get("file");
+  if (!(bin instanceof File)) {
+    return NextResponse.json({ error: "file is required" }, { status: 400 });
   }
 
-  const safeName = sanitizeFileName(file.name || "upload.bin");
-  const path = `${coverageId}/${Date.now()}-${safeName}`;
+  const mime = (form.get("mime") as string) || (bin as File).type || "application/octet-stream";
+  const name = (bin as File).name || `upload-${Date.now()}`;
+  const size_bytes = (bin as File).size;
 
-  // 1) Upload to storage
-  const { error: upErr } = await supabase.storage
-    .from(BUCKET)
-    .upload(path, file, { contentType: mime, upsert: false });
+  const ext = name.includes(".") ? name.split(".").pop() : undefined;
+  const storageName = `${cryptoRandom()}${ext ? "." + ext : ""}`;
+  const storagePath = `${coverageId}/${storageName}`;
+
+  const { error: upErr } = await supabase.storage.from(COV_BUCKET).upload(storagePath, bin, {
+    contentType: mime,
+    upsert: false,
+  });
   if (upErr) return NextResponse.json({ error: upErr.message }, { status: 400 });
 
-  // 2) Insert row
-  const { data, error: insErr } = await supabase
-    .from("coverage_files")
+  const { data, error } = await supabase
+    .from(COV_TABLE)
     .insert({
       coverage_id: coverageId,
-      path,
-      name: file.name || safeName,
+      path: storagePath,
+      name,
       mime,
-      size_bytes: file.size ?? null,
+      size_bytes,
     })
     .select("id, coverage_id, path, name, mime, size_bytes, created_at")
     .single();
 
-  if (insErr) {
-    await supabase.storage.from(BUCKET).remove([path]).catch(() => {});
-    return NextResponse.json({ error: insErr.message }, { status: 400 });
+  if (error) {
+    await supabase.storage.from(COV_BUCKET).remove([storagePath]).catch(() => {});
+    return NextResponse.json({ error: error.message }, { status: 400 });
   }
+
+  await logActivity({
+    entity_type: "file",
+    entity_id: data.id,
+    action: "upload",
+    meta: { scope: "coverage", coverage_id: coverageId, name: data.name, mime: data.mime, size_bytes: data.size_bytes },
+  });
 
   return NextResponse.json({ file: data }, { status: 201 });
 }
 
-export async function DELETE(
-  req: NextRequest,
-  { params }: { params: { id: string } }
-) {
+export async function DELETE(req: NextRequest, { params }: { params: { id: string } }) {
   const supabase = createSupabaseServerClient();
   const coverageId = Number(params.id);
-
-  let fileId: number | null = null;
-  const url = new URL(req.url);
-  const q = url.searchParams.get("fileId");
-  if (q) fileId = Number(q);
-  if (!fileId) {
-    try {
-      const body = (await req.json().catch(() => ({}))) as { fileId?: unknown };
-      if (body?.fileId) fileId = Number(body.fileId);
-    } catch {}
+  if (!Number.isFinite(coverageId)) {
+    return NextResponse.json({ error: "invalid coverage id" }, { status: 400 });
   }
-  if (!fileId || Number.isNaN(fileId)) {
+
+  const url = new URL(req.url);
+  const fileId = Number(url.searchParams.get("fileId"));
+  if (!Number.isFinite(fileId)) {
     return NextResponse.json({ error: "fileId is required" }, { status: 400 });
   }
 
-  // Fetch row (RLS)
-  const { data: row, error: fe } = await supabase
-    .from("coverage_files")
+  const { data: row, error: getErr } = await supabase
+    .from(COV_TABLE)
     .select("id, coverage_id, path, name")
     .eq("id", fileId)
     .eq("coverage_id", coverageId)
     .single();
 
-  if (fe || !row) {
-    return NextResponse.json({ error: fe?.message || "File not found" }, { status: 404 });
-  }
+  if (getErr) return NextResponse.json({ error: getErr.message }, { status: 400 });
 
-  const { error: stErr } = await supabase.storage.from(BUCKET).remove([row.path]);
-  if (stErr) return NextResponse.json({ error: stErr.message }, { status: 403 });
-
-  const { error: delErr } = await supabase
-    .from("coverage_files")
-    .delete()
-    .eq("id", row.id)
-    .eq("coverage_id", coverageId);
-
+  await supabase.storage.from(COV_BUCKET).remove([row.path]).catch(() => {});
+  const { error: delErr } = await supabase.from(COV_TABLE).delete().eq("id", row.id);
   if (delErr) return NextResponse.json({ error: delErr.message }, { status: 400 });
+
+  await logActivity({
+    entity_type: "file",
+    entity_id: row.id,
+    action: "delete",
+    meta: { scope: "coverage", coverage_id: coverageId, name: row.name },
+  });
 
   return NextResponse.json({ ok: true, deletedId: row.id });
 }
 
-/* ----------------------------- */
-function sanitizeFileName(name: string) {
-  const base = name.replace(/[\/\\]+/g, " ").replace(/[\x00-\x1F\x7F]+/g, "");
-  const collapsed = base.replace(/\s+/g, " ").trim();
-  return collapsed.slice(0, 180) || "file";
-}
-function clampInt(v: string | null, fallback: number, min: number, max: number) {
-  const n = Number(v);
-  return Number.isFinite(n) ? Math.max(min, Math.min(max, Math.floor(n))) : fallback;
+/* utils */
+function cryptoRandom() {
+  const a = new Uint8Array(16);
+  crypto.getRandomValues(a);
+  return Array.from(a, (b) => b.toString(16).padStart(2, "0")).join("");
 }
