@@ -14,6 +14,40 @@ function supa() {
   );
 }
 
+type BodyIn = {
+  query?: string;
+  limit?: number;
+  kinds?: ("request" | "file")[];
+};
+
+type DocRow = {
+  kind: "request" | "file";
+  ref_id: number;
+  content: string;
+  embedding?: number[] | null;
+};
+
+function isNumberArray(a: unknown): a is number[] {
+  return Array.isArray(a) && a.every((v) => typeof v === "number");
+}
+
+// Cosine with total safety (treat any missing entry as 0)
+function cosineSafe(a: number[], b: number[]): number {
+  const len = Math.min(a.length, b.length);
+  let dp = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < len; i++) {
+    const x = typeof a[i] === "number" ? (a[i] as number) : 0;
+    const y = typeof b[i] === "number" ? (b[i] as number) : 0;
+    dp += x * y;
+    na += x * x;
+    nb += y * y;
+  }
+  if (na === 0 || nb === 0) return 0;
+  return dp / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
 export async function POST(req: Request) {
   try {
     if (process.env.FEATURE_AI_SERVER !== "1") {
@@ -23,74 +57,49 @@ export async function POST(req: Request) {
       );
     }
 
-    const body = (await req.json().catch(() => ({}))) as {
-      query?: string;
-      limit?: number;
-      kinds?: ("request" | "file")[];
-    };
-
+    // Parse and narrow body
+    const raw: unknown = await req.json().catch(() => null);
+    const body: BodyIn = raw && typeof raw === "object" ? (raw as BodyIn) : {};
     const query = (body.query ?? "").trim();
     const limit = Math.max(1, Math.min(50, Number(body.limit) || 10));
-    const kinds = body.kinds ?? ["request", "file"];
+    const kinds =
+      Array.isArray(body.kinds) && body.kinds.length
+        ? (body.kinds.filter((k) => k === "request" || k === "file") as ("request" | "file")[])
+        : (["request", "file"] as const);
 
     if (!query) return NextResponse.json({ matches: [] });
 
     const qvec = await embedText(query);
     const db = supa();
 
-    // PostgREST cannot directly accept "embedding <-> qvec" unless we send vector as JSON array.
-    // We pass it via RPC-less filter using PostgREST's "match" on vector json; Supabase accepts array for vector.
+    // Pull a reasonably large slice and rank in-process (RLS enforced).
+    // Later we can replace with an SQL view that orders by vector operator.
     const { data, error } = await db
       .from("ai_documents")
-      .select("kind, ref_id, content")
-      // Order by cosine distance using vector operators
-      .order("embedding", { ascending: true, foreignTable: undefined, nullsFirst: false }) // no-op for operators; we use filter below
-      .limit(limit)
-      .filter("kind", "in", `(${kinds.map((k) => `"${k}"`).join(",")})`)
-      // Supabase JS lacks direct operator binding; use the RPC-like filter via `select` with computed similarity using `ai_match` view if needed.
-      ;
+      .select("kind, ref_id, content, embedding")
+      .filter(
+        "kind",
+        "in",
+        `(${kinds
+          .map((k) => `"${k}"`)
+          .join(",")})`
+      )
+      .limit(400);
 
-    // Workaround: since PostgREST ordering by vector operator isn't directly expressible in @supabase/ssr,
-    // create a dedicated SQL view is overkill here. We'll fetch a wider slice and sort in app.
-    let docs = (data ?? []) as { kind: "request" | "file"; ref_id: number; content: string }[];
+    if (error) throw new Error(error.message);
 
-    // Fetch more to sort client-side
-    if ((docs?.length ?? 0) < limit) {
-      const { data: more } = await db
-        .from("ai_documents")
-        .select("kind, ref_id, content, embedding")
-        .filter("kind", "in", `(${kinds.map((k) => `"${k}"`).join(",")})`)
-        .limit(200);
-      docs = (more ?? []) as any;
-    }
+    const docs = (data ?? []) as DocRow[];
 
-    // Cosine similarity on server is ideal; here we compute cosine client-side for correctness.
-    // (embedding is returned as number[] when selected)
-    type Doc = { kind: "request" | "file"; ref_id: number; content: string; embedding?: number[] };
-    const vecDocs = docs.filter((d: any) => Array.isArray(d.embedding)) as Doc[];
-
-    function cosine(a: number[], b: number[]) {
-      let dp = 0, na = 0, nb = 0;
-      for (let i = 0; i < a.length && i < b.length; i++) {
-        const x = a[i], y = b[i];
-        dp += x * y;
-        na += x * x;
-        nb += y * y;
-      }
-      if (na === 0 || nb === 0) return 0;
-      return dp / (Math.sqrt(na) * Math.sqrt(nb));
-    }
-
-    const ranked = vecDocs
-      .map((d) => ({ ...d, score: cosine(d.embedding!, qvec) }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, limit)
+    const ranked = docs
+      .filter((d) => isNumberArray(d.embedding))
       .map((d) => ({
         kind: d.kind,
         ref_id: d.ref_id,
         content: d.content,
-        score: d.score,
-      }));
+        score: cosineSafe(d.embedding as number[], qvec),
+      }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit);
 
     return NextResponse.json({ matches: ranked });
   } catch (err: any) {
