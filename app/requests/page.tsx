@@ -9,6 +9,7 @@ type Row = {
   title?: string | null;
   status: "open" | "in_progress" | "resolved" | "closed";
   created_at?: string | null;
+  updated_at?: string | null;
 };
 
 export default function RequestsListPage() {
@@ -48,7 +49,7 @@ export default function RequestsListPage() {
   useEffect(() => { refresh(); }, []);
 
   return (
-    <div className="p-6 max-w-4xl mx-auto">
+    <div className="p-6 max-w-5xl mx-auto">
       <h1 className="text-xl font-semibold mb-4">Requests</h1>
       {loading ? (
         <div>Loading…</div>
@@ -64,6 +65,7 @@ export default function RequestsListPage() {
                   <th className="text-left px-4 py-2">Title</th>
                   <th className="text-left px-4 py-2">Status</th>
                   <th className="text-left px-4 py-2">Created</th>
+                  <th className="text-left px-4 py-2">Updated</th>
                   <th className="text-right px-4 py-2">Open</th>
                 </tr>
               </thead>
@@ -78,6 +80,9 @@ export default function RequestsListPage() {
                     <td className="px-4 py-2">
                       {r.created_at ? new Date(r.created_at).toLocaleString() : "—"}
                     </td>
+                    <td className="px-4 py-2">
+                      {r.updated_at ? new Date(r.updated_at).toLocaleString() : "—"}
+                    </td>
                     <td className="px-4 py-2 text-right">
                       <Link
                         href={`/requests/${r.id}`}
@@ -91,6 +96,7 @@ export default function RequestsListPage() {
               </tbody>
             </table>
           </div>
+
           {nextCursor && (
             <div className="flex justify-center mt-4">
               <button
