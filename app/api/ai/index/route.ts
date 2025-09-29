@@ -92,6 +92,10 @@ async function upsertFile(fileId: number) {
   return { ok: true, kind: "file", id: f.id };
 }
 
+type IndexBody =
+  | { kind?: "request" | "file"; id?: number; reindexAll?: boolean }
+  | undefined;
+
 export async function POST(req: Request) {
   try {
     if (process.env.FEATURE_AI_SERVER !== "1") {
@@ -101,10 +105,13 @@ export async function POST(req: Request) {
       );
     }
 
-    const body = await req.json().catch(() => ({}));
-    const { kind, id, reindexAll } = body as
-      | { kind?: "request" | "file"; id?: number; reindexAll?: boolean }
-      | undefined;
+    // SAFE parse & narrow
+    const raw: unknown = await req.json().catch(() => null);
+    const body: IndexBody = (raw && typeof raw === "object" ? (raw as any) : undefined) as IndexBody;
+
+    const kind = body?.kind;
+    const id = body?.id;
+    const reindexAll = body?.reindexAll;
 
     const db = supa();
 
@@ -116,6 +123,7 @@ export async function POST(req: Request) {
         .select("id")
         .order("id", { ascending: true })
         .limit(1000);
+
       const results: any[] = [];
       for (const r of reqs ?? []) {
         try {
@@ -124,12 +132,14 @@ export async function POST(req: Request) {
           results.push({ ok: false, kind: "request", id: r.id, error: e?.message });
         }
       }
+
       // Files
       const { data: files } = await db
         .from("request_files")
         .select("id")
         .order("id", { ascending: true })
         .limit(2000);
+
       for (const f of files ?? []) {
         try {
           results.push(await upsertFile(f.id));
@@ -137,6 +147,7 @@ export async function POST(req: Request) {
           results.push({ ok: false, kind: "file", id: f.id, error: e?.message });
         }
       }
+
       return NextResponse.json({ ok: true, results });
     }
 
