@@ -1,17 +1,19 @@
-import "./globals.css";
 import type { Metadata } from "next";
-import { ToastProvider } from "@/app/components/Toast";
+import "./globals.css";
+import { ToastProvider } from "@/components/providers/ToastProvider";
 
 export const metadata: Metadata = {
-  title: "UnlistIN",
-  description: "UnlistIN Starter",
+  title: { default: "Unlistin", template: "%s · Unlistin" },
+  description: "Unlistin — requests, coverage, evidence",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <body>
-        <ToastProvider>{children}</ToastProvider>
+        {children}
+        {/* Global toasts (client component) */}
+        <ToastProvider />
       </body>
     </html>
   );
