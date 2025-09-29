@@ -4,8 +4,9 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useToast } from "@/components/providers/ToastProvider";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
-import { FEATURE_AI_UI } from "@/lib/flags";
+import { FEATURE_AI_UI, FEATURE_AGENTS_UI } from "@/lib/flags";
 
+/** === Types (local) === */
 type RequestRow = {
   id: number;
   title: string | null;
@@ -33,6 +34,24 @@ type CommentRow = {
   created_at: string;
 };
 
+type PlanRow = {
+  id: number;
+  request_id: number;
+  goal: string;
+  status: "proposed" | "approved" | "rejected" | "executed" | "failed";
+  created_at: string;
+};
+type StepRow = {
+  id: number;
+  plan_id: number;
+  idx: number;
+  tool_key: string;
+  action: any;
+  status: "proposed" | "approved" | "queued" | "running" | "succeeded" | "failed";
+  error: string | null;
+  created_at: string;
+};
+
 export default function RequestDetailPage({ params }: { params: { id: string } }) {
   const { toast } = useToast();
   const rid = Number(params.id);
@@ -53,15 +72,22 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
   // per-file action state
   const [busyFile, setBusyFile] = useState<Record<number, boolean>>({});
 
-  // comments state
+  // comments
   const [addingComment, setAddingComment] = useState(false);
   const [newBody, setNewBody] = useState("");
   const [busyComment, setBusyComment] = useState<Record<number, boolean>>({});
 
-  // AI Assist state (flagged)
+  // AI Assist (Phase 1 UI)
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
   const [aiOutput, setAiOutput] = useState<string | null>(null);
+
+  // Agent Plan (Phase 2 UI)
+  const [planGoal, setPlanGoal] = useState("");
+  const [planBusy, setPlanBusy] = useState(false);
+  const [proposedPlan, setProposedPlan] = useState<PlanRow | null>(null);
+  const [proposedSteps, setProposedSteps] = useState<StepRow[]>([]);
+  const [approving, setApproving] = useState(false);
 
   const sizeFmt = (n?: number | null) =>
     !n && n !== 0
@@ -86,11 +112,8 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
     if (cursor) url.searchParams.set("cursor", cursor);
     const j = await fetch(url.toString(), { cache: "no-store" }).then((r) => r.json());
     const rows = (j.comments ?? []) as CommentRow[];
-    if (cursor) {
-      setComments((prev) => [...prev, ...rows]);
-    } else {
-      setComments(rows);
-    }
+    if (cursor) setComments((prev) => [...prev, ...rows]);
+    else setComments(rows);
     setCommentsCursor(j.nextCursor ?? null);
   }
 
@@ -106,55 +129,39 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rid]);
 
-  // Realtime subscriptions
+  // Realtime
   useEffect(() => {
     if (!Number.isFinite(rid)) return;
     const supabase = createSupabaseBrowserClient();
 
     const chComments = supabase
       .channel(`rc:${rid}`)
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "request_comments", filter: `request_id=eq.${rid}` },
-        (payload) => {
-          const row = payload.new as any;
-          setComments((prev) => [{ ...(row as CommentRow) }, ...prev]);
-        }
-      )
-      .on(
-        "postgres_changes",
-        { event: "DELETE", schema: "public", table: "request_comments", filter: `request_id=eq.${rid}` },
-        (payload) => {
-          const oldRow = payload.old as any;
-          setComments((prev) => prev.filter((c) => c.id !== Number(oldRow.id)));
-        }
-      )
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "request_comments", filter: `request_id=eq.${rid}` }, (payload) => {
+        const row = payload.new as any;
+        setComments((prev) => [{ ...(row as CommentRow) }, ...prev]);
+      })
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "request_comments", filter: `request_id=eq.${rid}` }, (payload) => {
+        const oldRow = payload.old as any;
+        setComments((prev) => prev.filter((c) => c.id !== Number(oldRow.id)));
+      })
       .subscribe();
 
     const chFiles = supabase
       .channel(`rf:${rid}`)
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "request_files", filter: `request_id=eq.${rid}` },
-        async () => { await fetchFiles(); }
-      )
-      .on(
-        "postgres_changes",
-        { event: "DELETE", schema: "public", table: "request_files", filter: `request_id=eq.${rid}` },
-        async () => { await fetchFiles(); }
-      )
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "request_files", filter: `request_id=eq.${rid}` }, async () => {
+        await fetchFiles();
+      })
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "request_files", filter: `request_id=eq.${rid}` }, async () => {
+        await fetchFiles();
+      })
       .subscribe();
 
     const chReq = supabase
       .channel(`rq:${rid}`)
-      .on(
-        "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "requests", filter: `id=eq.${rid}` },
-        (payload) => {
-          const row = payload.new as any;
-          setReqRow((prev) => (prev ? { ...prev, status: row.status, updated_at: row.updated_at } : prev));
-        }
-      )
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "requests", filter: `id=eq.${rid}` }, (payload) => {
+        const row = payload.new as any;
+        setReqRow((prev) => (prev ? { ...prev, status: row.status, updated_at: row.updated_at } : prev));
+      })
       .subscribe();
 
     return () => {
@@ -180,10 +187,8 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
       toast("Please choose a file");
       return;
     }
-
     const fd = new FormData();
     fd.append("file", file, file.name);
-
     setUploading(true);
     setUploadError(null);
     try {
@@ -260,12 +265,9 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
     }
   }
 
-  // Comment actions
+  // Comments
   async function addComment() {
-    if (!newBody.trim()) {
-      toast("Write something first");
-      return;
-    }
+    if (!newBody.trim()) { toast("Write something first"); return; }
     setAddingComment(true);
     try {
       const res = await fetch(`/api/requests/${rid}/comments`, {
@@ -285,7 +287,6 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
       setAddingComment(false);
     }
   }
-
   async function deleteComment(id: number) {
     if (!confirm("Delete this comment?")) return;
     setBusyComment((m) => ({ ...m, [id]: true }));
@@ -307,7 +308,7 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
     }
   }
 
-  // AI Assist action (flagged)
+  // AI Assist (Phase 1)
   async function runAiAssist() {
     if (!aiPrompt.trim()) { toast("Enter a prompt"); return; }
     setAiBusy(true);
@@ -330,12 +331,47 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
     }
   }
 
+  // Agent Plan (Phase 2)
+  async function proposePlan() {
+    if (!planGoal.trim()) { toast("Enter a goal for the plan"); return; }
+    setPlanBusy(true);
+    setProposedPlan(null);
+    setProposedSteps([]);
+    try {
+      const res = await fetch(`/api/agents/plan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ request_id: rid, goal: planGoal.trim() }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j?.error || `Plan error (${res.status})`);
+      setProposedPlan(j.plan as PlanRow);
+      setProposedSteps((j.steps as StepRow[]) ?? []);
+      toast("Plan proposed");
+    } catch (e: any) {
+      toast(e?.message || "Failed to propose plan");
+    } finally {
+      setPlanBusy(false);
+    }
+  }
+
+  async function approvePlan() {
+    if (!proposedPlan) return;
+    setApproving(true);
+    try {
+      const res = await fetch(`/api/agents/plan/${proposedPlan.id}/approve`, { method: "POST" });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j?.error || `Approve error (${res.status})`);
+      toast(`Queued ${j.queued ?? 0} step(s)`);
+    } catch (e: any) {
+      toast(e?.message || "Failed to approve plan");
+    } finally {
+      setApproving(false);
+    }
+  }
+
   if (!Number.isFinite(rid)) {
-    return (
-      <div className="p-6">
-        <div className="text-red-600">Invalid request id</div>
-      </div>
-    );
+    return <div className="p-6"><div className="text-red-600">Invalid request id</div></div>;
   }
 
   return (
@@ -349,41 +385,68 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
         </Link>
       </header>
 
-      {/* AI Assist (flagged) */}
+      {/* AI Assist (Phase 1, flagged) */}
       {FEATURE_AI_UI && (
         <section className="border rounded-xl p-4 space-y-3 bg-gray-50/40">
           <div className="font-medium">AI Assist</div>
-          <div className="text-xs text-gray-600">
-            Generates a concise draft or summary for this request. Safe by design (HITL).
-          </div>
-          <textarea
-            value={aiPrompt}
-            onChange={(e) => setAiPrompt(e.target.value)}
-            placeholder="e.g., Summarize this request and propose a 3-step next action plan."
-            className="border rounded-lg px-3 py-2 w-full min-h-[80px] bg-white"
-          />
+          <div className="text-xs text-gray-600">Generates a concise draft or summary for this request. Safe by design (HITL).</div>
+          <textarea value={aiPrompt} onChange={(e) => setAiPrompt(e.target.value)}
+            placeholder="e.g., Summarize and propose a 3-step next action plan."
+            className="border rounded-lg px-3 py-2 w-full min-h-[80px] bg-white" />
           <div className="flex items-center gap-2">
-            <button
-              onClick={runAiAssist}
-              disabled={aiBusy}
-              className="px-3 py-1 rounded border hover:bg-gray-50 text-sm"
-            >
+            <button onClick={runAiAssist} disabled={aiBusy} className="px-3 py-1 rounded border hover:bg-gray-50 text-sm">
               {aiBusy ? "Thinking…" : "Generate Draft"}
             </button>
             {aiOutput && (
-              <button
-                className="px-3 py-1 rounded border hover:bg-gray-50 text-sm"
-                onClick={async () => {
-                  await navigator.clipboard.writeText(aiOutput!);
-                  toast("Copied");
-                }}
-              >
+              <button className="px-3 py-1 rounded border hover:bg-gray-50 text-sm"
+                onClick={async () => { await navigator.clipboard.writeText(aiOutput!); toast("Copied"); }}>
                 Copy Output
               </button>
             )}
           </div>
-          {aiOutput && (
-            <pre className="whitespace-pre-wrap text-sm border rounded-lg bg-white p-3">{aiOutput}</pre>
+          {aiOutput && <pre className="whitespace-pre-wrap text-sm border rounded-lg bg-white p-3">{aiOutput}</pre>}
+        </section>
+      )}
+
+      {/* Agent Plan (Phase 2, flagged) */}
+      {FEATURE_AGENTS_UI && (
+        <section className="border rounded-xl p-4 space-y-3">
+          <div className="font-medium">Agent Plan (HITL)</div>
+          <div className="text-xs text-gray-600">
+            Propose a safe multi-step plan. You must approve it to queue tasks. Tools are allowlisted and validated.
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              value={planGoal}
+              onChange={(e) => setPlanGoal(e.target.value)}
+              placeholder="Goal (e.g., draft outreach + check coverage + note)"
+              className="border rounded px-3 py-2 flex-1"
+            />
+            <button onClick={proposePlan} disabled={planBusy} className="px-3 py-2 rounded border hover:bg-gray-50">
+              {planBusy ? "Proposing…" : "Propose Plan"}
+            </button>
+          </div>
+
+          {proposedPlan && (
+            <div className="border rounded-lg p-3 bg-gray-50">
+              <div className="text-sm font-medium mb-2">Proposed Steps</div>
+              <ol className="list-decimal ml-5 space-y-1 text-sm">
+                {proposedSteps.map((s) => (
+                  <li key={s.id}>
+                    <span className="font-mono">{s.tool_key}</span>
+                    {"  "}
+                    <code className="bg-white rounded px-1">{JSON.stringify(s.action)}</code>
+                    {"  "}
+                    <span className="text-xs text-gray-500">[{s.status}]</span>
+                  </li>
+                ))}
+              </ol>
+              <div className="mt-3 flex gap-2">
+                <button onClick={approvePlan} disabled={approving} className="px-3 py-1 rounded border hover:bg-gray-50 text-sm">
+                  {approving ? "Queuing…" : "Approve & Queue"}
+                </button>
+              </div>
+            </div>
           )}
         </section>
       )}
@@ -397,17 +460,14 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
           {/* Tabs */}
           <nav className="flex gap-2 border-b pb-2">
             {(["about", "files", "comments"] as const).map((t) => (
-              <button
-                key={t}
-                onClick={() => setActiveTab(t)}
-                className={`px-3 py-1 rounded-t ${activeTab === t ? "bg-gray-100 border border-b-0" : "border-transparent"}`}
-              >
+              <button key={t} onClick={() => setActiveTab(t)}
+                className={`px-3 py-1 rounded-t ${activeTab === t ? "bg-gray-100 border border-b-0" : "border-transparent"}`}>
                 {t === "about" ? "About" : t === "files" ? "Files" : "Comments"}
               </button>
             ))}
           </nav>
 
-          {/* About Tab */}
+          {/* About */}
           {activeTab === "about" && (
             <section className="border rounded-b-xl p-4 space-y-2">
               <div className="font-medium">About</div>
@@ -415,13 +475,11 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
                 <div><span className="text-gray-600">Status:</span> {reqRow.status.replace("_", " ")}</div>
                 <div><span className="text-gray-600">Updated:</span> {reqRow.updated_at ? new Date(reqRow.updated_at).toLocaleString() : "—"}</div>
               </div>
-              {reqRow.description && (
-                <p className="text-sm text-gray-800 whitespace-pre-wrap">{reqRow.description}</p>
-              )}
+              {reqRow.description && <p className="text-sm text-gray-800 whitespace-pre-wrap">{reqRow.description}</p>}
             </section>
           )}
 
-          {/* Files Tab */}
+          {/* Files */}
           {activeTab === "files" && (
             <section className="border rounded-b-xl p-4 space-y-4">
               <div className="flex items-center justify-between">
@@ -476,7 +534,7 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
             </section>
           )}
 
-          {/* Comments Tab */}
+          {/* Comments */}
           {activeTab === "comments" && (
             <section className="border rounded-b-xl p-4 space-y-4">
               <div className="flex items-center justify-between">
@@ -490,12 +548,8 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
 
               {/* New comment */}
               <div className="space-y-2">
-                <textarea
-                  value={newBody}
-                  onChange={(e) => setNewBody(e.target.value)}
-                  placeholder="Write a comment…"
-                  className="border rounded-lg px-3 py-2 w-full min-h-[80px]"
-                />
+                <textarea value={newBody} onChange={(e) => setNewBody(e.target.value)}
+                  placeholder="Write a comment…" className="border rounded-lg px-3 py-2 w-full min-h-[80px]" />
                 <div className="flex gap-2">
                   <button onClick={addComment} disabled={addingComment || !newBody.trim()} className="px-3 py-1 rounded border hover:bg-gray-50 text-sm">
                     {addingComment ? "Posting…" : "Post"}
@@ -520,12 +574,8 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
                         <div className="text-xs text-gray-500">{new Date(c.created_at).toLocaleString()}</div>
                         <div className="whitespace-pre-wrap text-sm my-1">{c.body}</div>
                         <div className="flex justify-end">
-                          <button
-                            disabled={isBusy}
-                            onClick={() => deleteComment(c.id)}
-                            className="px-2 py-1 rounded border hover:bg-gray-50 text-xs"
-                            title="Delete"
-                          >
+                          <button disabled={isBusy} onClick={() => deleteComment(c.id)}
+                            className="px-2 py-1 rounded border hover:bg-gray-50 text-xs" title="Delete">
                             {isBusy ? "…" : "Delete"}
                           </button>
                         </div>
