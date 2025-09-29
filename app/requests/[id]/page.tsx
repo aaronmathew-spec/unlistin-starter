@@ -1,593 +1,307 @@
-"use client";
+export const dynamic = "force-dynamic";
+export const fetchCache = "default-no-store";
 
-import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useToast } from "@/components/providers/ToastProvider";
-import { createSupabaseBrowserClient } from "@/lib/supabase/client";
-import { FEATURE_AI_UI, FEATURE_AGENTS_UI } from "@/lib/flags";
 
-/** === Types (local) === */
-type RequestRow = {
-  id: number;
-  title: string | null;
-  description: string | null;
-  status: "open" | "in_progress" | "resolved" | "closed";
-  created_at: string | null;
-  updated_at: string | null;
-};
-
-type FileRow = {
-  id: number;
-  request_id: number;
-  path: string;
-  name: string;
-  mime: string;
-  size_bytes: number | null;
-  created_at: string | null;
-};
-
+// ---- Types ----
 type CommentRow = {
   id: number;
   request_id: number;
   user_id: string;
   body: string;
+  is_deleted: boolean;
   created_at: string;
+  updated_at: string | null;
 };
 
-type PlanRow = {
+type EventRow = {
   id: number;
   request_id: number;
-  goal: string;
-  status: "proposed" | "approved" | "rejected" | "executed" | "failed";
+  user_id: string;
+  event_type: string;
+  meta: any;
   created_at: string;
 };
-type StepRow = {
+
+type RequestRow = {
   id: number;
-  plan_id: number;
-  idx: number;
-  tool_key: string;
-  action: any;
-  status: "proposed" | "approved" | "queued" | "running" | "succeeded" | "failed";
-  error: string | null;
-  created_at: string;
+  title?: string | null;
+  description?: string | null;
+  status?: string | null;
 };
 
-export default function RequestDetailPage({ params }: { params: { id: string } }) {
-  const { toast } = useToast();
-  const rid = Number(params.id);
+async function fetchJSON<T>(path: string) {
+  const res = await fetch(path, { cache: "no-store" });
+  if (!res.ok) throw new Error(await res.text());
+  return (await res.json()) as T;
+}
 
-  const [activeTab, setActiveTab] = useState<"about" | "files" | "comments">("about");
-
-  const [reqRow, setReqRow] = useState<RequestRow | null>(null);
-  const [files, setFiles] = useState<FileRow[]>([]);
-  const [comments, setComments] = useState<CommentRow[]>([]);
-  const [commentsCursor, setCommentsCursor] = useState<string | null>(null);
-
-  const [loading, setLoading] = useState(true);
-
-  // upload state
-  const [uploading, setUploading] = useState(false);
-  const [uploadError, setUploadError] = useState<string | null>(null);
-
-  // per-file action state
-  const [busyFile, setBusyFile] = useState<Record<number, boolean>>({});
-
-  // comments
-  const [addingComment, setAddingComment] = useState(false);
-  const [newBody, setNewBody] = useState("");
-  const [busyComment, setBusyComment] = useState<Record<number, boolean>>({});
-
-  // AI Assist (Phase 1 UI)
-  const [aiPrompt, setAiPrompt] = useState("");
-  const [aiBusy, setAiBusy] = useState(false);
-  const [aiOutput, setAiOutput] = useState<string | null>(null);
-
-  // Agent Plan (Phase 2 UI)
-  const [planGoal, setPlanGoal] = useState("");
-  const [planBusy, setPlanBusy] = useState(false);
-  const [proposedPlan, setProposedPlan] = useState<PlanRow | null>(null);
-  const [proposedSteps, setProposedSteps] = useState<StepRow[]>([]);
-  const [approving, setApproving] = useState(false);
-
-  const sizeFmt = (n?: number | null) =>
-    !n && n !== 0
-      ? "—"
-      : n < 1024
-      ? `${n} B`
-      : n < 1024 * 1024
-      ? `${(n / 1024).toFixed(1)} KB`
-      : `${(n / (1024 * 1024)).toFixed(1)} MB`;
-
-  async function fetchRequest() {
-    const j = await fetch(`/api/requests/${rid}`, { cache: "no-store" }).then((r) => r.json());
-    setReqRow(j.request ?? null);
+async function getInitial(id: number) {
+  // Basic request info (reuse your existing API if you have one; fallback to page-local fetch)
+  try {
+    const r = await fetchJSON<{ request: RequestRow }>(`/api/requests/${id}`);
+    return r.request;
+  } catch {
+    return { id, title: `Request #${id}`, description: null, status: "open" };
   }
-  async function fetchFiles() {
-    const j = await fetch(`/api/requests/${rid}/files`, { cache: "no-store" }).then((r) => r.json());
-    setFiles((j.files ?? []) as FileRow[]);
+}
+
+// ---- Client components kept small and safe ----
+function fromNow(d: string) {
+  try {
+    const ms = Date.now() - new Date(d).getTime();
+    const m = Math.floor(ms / 60000);
+    if (m < 1) return "just now";
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ago`;
+    const days = Math.floor(h / 24);
+    return `${days}d ago`;
+  } catch {
+    return d;
   }
-  async function fetchComments(cursor?: string | null) {
-    const url = new URL(`/api/requests/${rid}/comments`, window.location.origin);
-    url.searchParams.set("limit", "30");
-    if (cursor) url.searchParams.set("cursor", cursor);
-    const j = await fetch(url.toString(), { cache: "no-store" }).then((r) => r.json());
-    const rows = (j.comments ?? []) as CommentRow[];
-    if (cursor) setComments((prev) => [...prev, ...rows]);
-    else setComments(rows);
-    setCommentsCursor(j.nextCursor ?? null);
-  }
+}
 
-  async function refreshAll() {
-    setLoading(true);
-    await Promise.all([fetchRequest(), fetchFiles(), fetchComments(null)]);
-    setLoading(false);
-  }
-
-  useEffect(() => {
-    if (!Number.isFinite(rid)) return;
-    refreshAll();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rid]);
-
-  // Realtime
-  useEffect(() => {
-    if (!Number.isFinite(rid)) return;
-    const supabase = createSupabaseBrowserClient();
-
-    const chComments = supabase
-      .channel(`rc:${rid}`)
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "request_comments", filter: `request_id=eq.${rid}` }, (payload) => {
-        const row = payload.new as any;
-        setComments((prev) => [{ ...(row as CommentRow) }, ...prev]);
-      })
-      .on("postgres_changes", { event: "DELETE", schema: "public", table: "request_comments", filter: `request_id=eq.${rid}` }, (payload) => {
-        const oldRow = payload.old as any;
-        setComments((prev) => prev.filter((c) => c.id !== Number(oldRow.id)));
-      })
-      .subscribe();
-
-    const chFiles = supabase
-      .channel(`rf:${rid}`)
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "request_files", filter: `request_id=eq.${rid}` }, async () => {
-        await fetchFiles();
-      })
-      .on("postgres_changes", { event: "DELETE", schema: "public", table: "request_files", filter: `request_id=eq.${rid}` }, async () => {
-        await fetchFiles();
-      })
-      .subscribe();
-
-    const chReq = supabase
-      .channel(`rq:${rid}`)
-      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "requests", filter: `id=eq.${rid}` }, (payload) => {
-        const row = payload.new as any;
-        setReqRow((prev) => (prev ? { ...prev, status: row.status, updated_at: row.updated_at } : prev));
-      })
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(chComments);
-      supabase.removeChannel(chFiles);
-      supabase.removeChannel(chReq);
-      supabase.removeAllChannels();
-    };
-  }, [rid]);
-
-  const title = useMemo(
-    () => (reqRow?.title ? `Request #${rid} – ${reqRow.title}` : `Request #${rid}`),
-    [rid, reqRow?.title]
+async function loadComments(id: number) {
+  return fetchJSON<{ comments: CommentRow[]; nextCursor: string | null }>(
+    `/api/requests/${id}/comments?limit=20`
   );
+}
+async function loadEvents(id: number) {
+  return fetchJSON<{ events: EventRow[]; nextCursor: string | null }>(
+    `/api/requests/${id}/events?limit=20`
+  );
+}
 
-  // Upload handler
-  async function onUpload(ev: React.FormEvent<HTMLFormElement>) {
-    ev.preventDefault();
-    const form = ev.currentTarget;
-    const input = form.elements.namedItem("file") as HTMLInputElement | null;
-    const file = input?.files?.[0];
-    if (!file) {
-      toast("Please choose a file");
-      return;
-    }
-    const fd = new FormData();
-    fd.append("file", file, file.name);
-    setUploading(true);
-    setUploadError(null);
-    try {
-      const res = await fetch(`/api/requests/${rid}/files`, { method: "POST", body: fd });
-      if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        throw new Error(j?.error || `Upload failed (${res.status})`);
-      }
-      toast("File uploaded");
-      if (input) input.value = "";
-      await fetchFiles();
-      setActiveTab("files");
-    } catch (e: any) {
-      setUploadError(e?.message || "Upload failed");
-    } finally {
-      setUploading(false);
-    }
-  }
+// Simple server action style POST using fetch from the client (no special hooks)
+async function postComment(id: number, body: string) {
+  const res = await fetch(`/api/requests/${id}/comments`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ body }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json() as Promise<{ comment: CommentRow }>;
+}
+async function patchStatus(id: number, status: string) {
+  const res = await fetch(`/api/requests/${id}/status`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json() as Promise<{ updated: boolean; status: string }>;
+}
 
-  async function signAndOpen(fid: number) {
-    setBusyFile((m) => ({ ...m, [fid]: true }));
-    try {
-      const j = await fetch(`/api/requests/${rid}/files/${fid}/sign`).then((r) => r.json());
-      const url = j?.signedUrl as string | undefined;
-      if (!url) throw new Error(j?.error || "Could not sign URL");
-      window.open(url, "_blank", "noopener,noreferrer");
-    } catch (e: any) {
-      toast(e?.message || "Download failed");
-    } finally {
-      setBusyFile((m) => {
-        const n = { ...m };
-        delete n[fid];
-        return n;
-      });
-    }
-  }
-  async function signAndCopy(fid: number) {
-    setBusyFile((m) => ({ ...m, [fid]: true }));
-    try {
-      const j = await fetch(`/api/requests/${rid}/files/${fid}/sign`).then((r) => r.json());
-      const url = j?.signedUrl as string | undefined;
-      if (!url) throw new Error(j?.error || "Could not sign URL");
-      await navigator.clipboard.writeText(url);
-      toast("Link copied");
-    } catch (e: any) {
-      toast(e?.message || "Copy failed");
-    } finally {
-      setBusyFile((m) => {
-        const n = { ...m };
-        delete n[fid];
-        return n;
-      });
-    }
-  }
-  async function removeFile(fid: number) {
-    if (!confirm("Delete this file?")) return;
-    setBusyFile((m) => ({ ...m, [fid]: true }));
-    try {
-      const res = await fetch(`/api/requests/${rid}/files/${fid}/delete`, { method: "DELETE" });
-      if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        throw new Error(j?.error || `Delete failed (${res.status})`);
-      }
-      setFiles((prev) => prev.filter((f) => f.id !== fid));
-      toast("File deleted");
-    } catch (e: any) {
-      toast(e?.message || "Delete failed");
-    } finally {
-      setBusyFile((m) => {
-        const n = { ...m };
-        delete n[fid];
-        return n;
-      });
-    }
-  }
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="border rounded-md p-4">
+      <h2 className="text-lg font-semibold mb-3">{title}</h2>
+      {children}
+    </section>
+  );
+}
 
-  // Comments
-  async function addComment() {
-    if (!newBody.trim()) { toast("Write something first"); return; }
-    setAddingComment(true);
-    try {
-      const res = await fetch(`/api/requests/${rid}/comments`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ body: newBody.trim() }),
-      });
-      if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        throw new Error(j?.error || `Create failed (${res.status})`);
-      }
-      setNewBody("");
-      setActiveTab("comments");
-    } catch (e: any) {
-      toast(e?.message || "Failed to add comment");
-    } finally {
-      setAddingComment(false);
-    }
-  }
-  async function deleteComment(id: number) {
-    if (!confirm("Delete this comment?")) return;
-    setBusyComment((m) => ({ ...m, [id]: true }));
-    try {
-      const res = await fetch(`/api/requests/${rid}/comments/${id}`, { method: "DELETE" });
-      if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        throw new Error(j?.error || `Delete failed (${res.status})`);
-      }
-      setComments((prev) => prev.filter((c) => c.id !== id));
-    } catch (e: any) {
-      toast(e?.message || "Failed to delete");
-    } finally {
-      setBusyComment((m) => {
-        const n = { ...m };
-        delete n[id];
-        return n;
-      });
-    }
-  }
+function Field({ label, value }: { label: string; value?: React.ReactNode }) {
+  return (
+    <div className="flex gap-2 text-sm">
+      <div className="w-24 text-gray-500">{label}</div>
+      <div className="flex-1">{value ?? <span className="text-gray-400">—</span>}</div>
+    </div>
+  );
+}
 
-  // AI Assist (Phase 1)
-  async function runAiAssist() {
-    if (!aiPrompt.trim()) { toast("Enter a prompt"); return; }
-    setAiBusy(true);
-    setAiOutput(null);
-    try {
-      const res = await fetch(`/api/agents/draft`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ request_id: rid, prompt: aiPrompt.trim() }),
-      });
-      const j = await res.json();
-      if (!res.ok) throw new Error(j?.error || `Agent error (${res.status})`);
-      const text = j?.action?.text || j?.task?.payload?.text || "(no output)";
-      setAiOutput(String(text));
-      toast("Draft generated");
-    } catch (e: any) {
-      toast(e?.message || "Agent failed");
-    } finally {
-      setAiBusy(false);
-    }
-  }
+"use client";
+import { useEffect, useState, useTransition } from "react";
 
-  // Agent Plan (Phase 2)
-  async function proposePlan() {
-    if (!planGoal.trim()) { toast("Enter a goal for the plan"); return; }
-    setPlanBusy(true);
-    setProposedPlan(null);
-    setProposedSteps([]);
-    try {
-      const res = await fetch(`/api/agents/plan`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ request_id: rid, goal: planGoal.trim() }),
-      });
-      const j = await res.json();
-      if (!res.ok) throw new Error(j?.error || `Plan error (${res.status})`);
-      setProposedPlan(j.plan as PlanRow);
-      setProposedSteps((j.steps as StepRow[]) ?? []);
-      toast("Plan proposed");
-    } catch (e: any) {
-      toast(e?.message || "Failed to propose plan");
-    } finally {
-      setPlanBusy(false);
-    }
-  }
+function CommentsSection({ requestId }: { requestId: number }) {
+  const [comments, setComments] = useState<CommentRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [body, setBody] = useState("");
+  const [posting, startPost] = useTransition();
 
-  async function approvePlan() {
-    if (!proposedPlan) return;
-    setApproving(true);
-    try {
-      const res = await fetch(`/api/agents/plan/${proposedPlan.id}/approve`, { method: "POST" });
-      const j = await res.json();
-      if (!res.ok) throw new Error(j?.error || `Approve error (${res.status})`);
-      toast(`Queued ${j.queued ?? 0} step(s)`);
-    } catch (e: any) {
-      toast(e?.message || "Failed to approve plan");
-    } finally {
-      setApproving(false);
-    }
-  }
-
-  if (!Number.isFinite(rid)) {
-    return <div className="p-6"><div className="text-red-600">Invalid request id</div></div>;
-  }
+  useEffect(() => {
+    let active = true;
+    loadComments(requestId)
+      .then(({ comments }) => active && setComments(comments))
+      .finally(() => active && setLoading(false));
+    return () => {
+      active = false;
+    };
+  }, [requestId]);
 
   return (
-    <div className="p-6 max-w-5xl mx-auto space-y-8">
-      <header className="flex items-center justify-between gap-4">
-        <h1 className="text-xl font-semibold">
-          {reqRow?.title ? `Request #${rid} – ${reqRow.title}` : `Request #${rid}`}
-        </h1>
-        <Link href="/requests" className="px-3 py-1 rounded border hover:bg-gray-50">
-          Back to Requests
-        </Link>
-      </header>
-
-      {/* AI Assist (Phase 1, flagged) */}
-      {FEATURE_AI_UI && (
-        <section className="border rounded-xl p-4 space-y-3 bg-gray-50/40">
-          <div className="font-medium">AI Assist</div>
-          <div className="text-xs text-gray-600">Generates a concise draft or summary for this request. Safe by design (HITL).</div>
-          <textarea value={aiPrompt} onChange={(e) => setAiPrompt(e.target.value)}
-            placeholder="e.g., Summarize and propose a 3-step next action plan."
-            className="border rounded-lg px-3 py-2 w-full min-h-[80px] bg-white" />
-          <div className="flex items-center gap-2">
-            <button onClick={runAiAssist} disabled={aiBusy} className="px-3 py-1 rounded border hover:bg-gray-50 text-sm">
-              {aiBusy ? "Thinking…" : "Generate Draft"}
-            </button>
-            {aiOutput && (
-              <button className="px-3 py-1 rounded border hover:bg-gray-50 text-sm"
-                onClick={async () => { await navigator.clipboard.writeText(aiOutput!); toast("Copied"); }}>
-                Copy Output
-              </button>
-            )}
-          </div>
-          {aiOutput && <pre className="whitespace-pre-wrap text-sm border rounded-lg bg-white p-3">{aiOutput}</pre>}
-        </section>
-      )}
-
-      {/* Agent Plan (Phase 2, flagged) */}
-      {FEATURE_AGENTS_UI && (
-        <section className="border rounded-xl p-4 space-y-3">
-          <div className="font-medium">Agent Plan (HITL)</div>
-          <div className="text-xs text-gray-600">
-            Propose a safe multi-step plan. You must approve it to queue tasks. Tools are allowlisted and validated.
-          </div>
-          <div className="flex items-center gap-2">
-            <input
-              value={planGoal}
-              onChange={(e) => setPlanGoal(e.target.value)}
-              placeholder="Goal (e.g., draft outreach + check coverage + note)"
-              className="border rounded px-3 py-2 flex-1"
-            />
-            <button onClick={proposePlan} disabled={planBusy} className="px-3 py-2 rounded border hover:bg-gray-50">
-              {planBusy ? "Proposing…" : "Propose Plan"}
-            </button>
-          </div>
-
-          {proposedPlan && (
-            <div className="border rounded-lg p-3 bg-gray-50">
-              <div className="text-sm font-medium mb-2">Proposed Steps</div>
-              <ol className="list-decimal ml-5 space-y-1 text-sm">
-                {proposedSteps.map((s) => (
-                  <li key={s.id}>
-                    <span className="font-mono">{s.tool_key}</span>
-                    {"  "}
-                    <code className="bg-white rounded px-1">{JSON.stringify(s.action)}</code>
-                    {"  "}
-                    <span className="text-xs text-gray-500">[{s.status}]</span>
-                  </li>
-                ))}
-              </ol>
-              <div className="mt-3 flex gap-2">
-                <button onClick={approvePlan} disabled={approving} className="px-3 py-1 rounded border hover:bg-gray-50 text-sm">
-                  {approving ? "Queuing…" : "Approve & Queue"}
-                </button>
-              </div>
-            </div>
-          )}
-        </section>
-      )}
-
+    <Section title="Comments">
       {loading ? (
-        <div>Loading…</div>
-      ) : !reqRow ? (
-        <div className="text-gray-600">Not found.</div>
+        <div className="text-sm text-gray-500">Loading…</div>
+      ) : comments.length === 0 ? (
+        <div className="text-sm text-gray-500">No comments yet.</div>
       ) : (
-        <>
-          {/* Tabs */}
-          <nav className="flex gap-2 border-b pb-2">
-            {(["about", "files", "comments"] as const).map((t) => (
-              <button key={t} onClick={() => setActiveTab(t)}
-                className={`px-3 py-1 rounded-t ${activeTab === t ? "bg-gray-100 border border-b-0" : "border-transparent"}`}>
-                {t === "about" ? "About" : t === "files" ? "Files" : "Comments"}
-              </button>
-            ))}
-          </nav>
-
-          {/* About */}
-          {activeTab === "about" && (
-            <section className="border rounded-b-xl p-4 space-y-2">
-              <div className="font-medium">About</div>
-              <div className="text-sm">
-                <div><span className="text-gray-600">Status:</span> {reqRow.status.replace("_", " ")}</div>
-                <div><span className="text-gray-600">Updated:</span> {reqRow.updated_at ? new Date(reqRow.updated_at).toLocaleString() : "—"}</div>
-              </div>
-              {reqRow.description && <p className="text-sm text-gray-800 whitespace-pre-wrap">{reqRow.description}</p>}
-            </section>
-          )}
-
-          {/* Files */}
-          {activeTab === "files" && (
-            <section className="border rounded-b-xl p-4 space-y-4">
-              <div className="flex items-center justify-between">
-                <h2 className="font-medium">Files</h2>
-                <form onSubmit={onUpload} className="flex items-center gap-2">
-                  <input name="file" type="file" className="text-sm" disabled={uploading} />
-                  <button type="submit" disabled={uploading} className="px-3 py-1 rounded border hover:bg-gray-50 text-sm">
-                    {uploading ? "Uploading…" : "Upload"}
-                  </button>
-                </form>
-              </div>
-              {uploadError && <div className="text-sm text-red-600">{uploadError}</div>}
-              {files.length === 0 ? (
-                <div className="text-gray-600 text-sm">No files yet.</div>
-              ) : (
-                <table className="min-w-full text-sm">
-                  <thead className="bg-gray-50 text-gray-600">
-                    <tr>
-                      <th className="text-left px-4 py-2">Name</th>
-                      <th className="text-left px-4 py-2">Type</th>
-                      <th className="text-left px-4 py-2">Size</th>
-                      <th className="text-left px-4 py-2">Uploaded</th>
-                      <th className="text-right px-4 py-2">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {files.map((f) => {
-                      const isBusy = !!busyFile[f.id];
-                      return (
-                        <tr key={f.id} className="border-t">
-                          <td className="px-4 py-2">{f.name}</td>
-                          <td className="px-4 py-2">{f.mime || "—"}</td>
-                          <td className="px-4 py-2">{sizeFmt(f.size_bytes)}</td>
-                          <td className="px-4 py-2">{f.created_at ? new Date(f.created_at).toLocaleString() : "—"}</td>
-                          <td className="px-4 py-2 text-right space-x-2">
-                            <button disabled={isBusy} onClick={() => signAndOpen(f.id)} className="px-2 py-1 rounded border hover:bg-gray-50">
-                              {isBusy ? "…" : "Download"}
-                            </button>
-                            <button disabled={isBusy} onClick={() => signAndCopy(f.id)} className="px-2 py-1 rounded border hover:bg-gray-50">
-                              {isBusy ? "…" : "Copy link"}
-                            </button>
-                            <button disabled={isBusy} onClick={() => removeFile(f.id)} className="px-2 py-1 rounded border hover:bg-gray-50">
-                              {isBusy ? "…" : "Delete"}
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              )}
-            </section>
-          )}
-
-          {/* Comments */}
-          {activeTab === "comments" && (
-            <section className="border rounded-b-xl p-4 space-y-4">
-              <div className="flex items-center justify-between">
-                <h2 className="font-medium">Comments</h2>
-                {commentsCursor && (
-                  <button className="px-3 py-1 rounded border hover:bg-gray-50 text-sm" onClick={() => fetchComments(commentsCursor)}>
-                    Load older
-                  </button>
-                )}
-              </div>
-
-              {/* New comment */}
-              <div className="space-y-2">
-                <textarea value={newBody} onChange={(e) => setNewBody(e.target.value)}
-                  placeholder="Write a comment…" className="border rounded-lg px-3 py-2 w-full min-h-[80px]" />
-                <div className="flex gap-2">
-                  <button onClick={addComment} disabled={addingComment || !newBody.trim()} className="px-3 py-1 rounded border hover:bg-gray-50 text-sm">
-                    {addingComment ? "Posting…" : "Post"}
-                  </button>
-                  {!!newBody && (
-                    <button onClick={() => setNewBody("")} disabled={addingComment} className="px-3 py-1 rounded border hover:bg-gray-50 text-sm">
-                      Clear
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Comments list */}
-              {comments.length === 0 ? (
-                <div className="text-gray-600 text-sm">No comments yet.</div>
-              ) : (
-                <ul className="space-y-3">
-                  {comments.map((c) => {
-                    const isBusy = !!busyComment[c.id];
-                    return (
-                      <li key={c.id} className="border rounded-lg p-3">
-                        <div className="text-xs text-gray-500">{new Date(c.created_at).toLocaleString()}</div>
-                        <div className="whitespace-pre-wrap text-sm my-1">{c.body}</div>
-                        <div className="flex justify-end">
-                          <button disabled={isBusy} onClick={() => deleteComment(c.id)}
-                            className="px-2 py-1 rounded border hover:bg-gray-50 text-xs" title="Delete">
-                            {isBusy ? "…" : "Delete"}
-                          </button>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </section>
-          )}
-        </>
+        <ul className="space-y-3 mb-4">
+          {comments.map((c) => (
+            <li key={c.id} className="text-sm">
+              <div className="text-gray-800 whitespace-pre-wrap">{c.body}</div>
+              <div className="text-xs text-gray-500">{fromNow(c.created_at)}</div>
+            </li>
+          ))}
+        </ul>
       )}
+
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          const text = body.trim();
+          if (!text) return;
+          startPost(async () => {
+            try {
+              const { comment } = await postComment(requestId, text);
+              setComments((prev) => [comment, ...prev]);
+              setBody("");
+            } catch {
+              // keep silent (no toasts in SSR)
+            }
+          });
+        }}
+        className="flex gap-2"
+      >
+        <textarea
+          className="flex-1 border rounded-md p-2 text-sm"
+          rows={2}
+          placeholder="Write a comment…"
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+        />
+        <button
+          type="submit"
+          disabled={posting || !body.trim()}
+          className="self-start rounded-md border px-3 py-1.5 text-sm hover:bg-gray-50 disabled:opacity-50"
+        >
+          {posting ? "Posting…" : "Post"}
+        </button>
+      </form>
+    </Section>
+  );
+}
+
+function EventsSection({ requestId }: { requestId: number }) {
+  const [events, setEvents] = useState<EventRow[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    loadEvents(requestId)
+      .then(({ events }) => active && setEvents(events))
+      .finally(() => active && setLoading(false));
+    return () => {
+      active = false;
+    };
+  }, [requestId]);
+
+  return (
+    <Section title="Timeline">
+      {loading ? (
+        <div className="text-sm text-gray-500">Loading…</div>
+      ) : events.length === 0 ? (
+        <div className="text-sm text-gray-500">No events yet.</div>
+      ) : (
+        <ul className="space-y-3">
+          {events.map((ev) => (
+            <li key={ev.id} className="text-sm">
+              <div className="font-medium">{ev.event_type}</div>
+              <div className="text-xs text-gray-500">{fromNow(ev.created_at)}</div>
+              {ev.meta && Object.keys(ev.meta).length > 0 && (
+                <pre className="mt-1 text-xs bg-gray-50 p-2 rounded border overflow-x-auto">
+                  {JSON.stringify(ev.meta, null, 2)}
+                </pre>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </Section>
+  );
+}
+
+function StatusChanger({
+  requestId,
+  initial,
+}: {
+  requestId: number;
+  initial?: string | null;
+}) {
+  const [status, setStatus] = useState(initial ?? "open");
+  const [pending, start] = useTransition();
+
+  const opts = ["open", "in_review", "approved", "changes_requested", "done", "archived"];
+
+  return (
+    <Section title="Status">
+      <div className="flex items-center gap-2">
+        <select
+          className="border rounded px-2 py-1 text-sm"
+          value={status}
+          onChange={(e) => setStatus(e.target.value)}
+        >
+          {opts.map((o) => (
+            <option key={o} value={o}>
+              {o}
+            </option>
+          ))}
+        </select>
+        <button
+          className="rounded-md border px-3 py-1.5 text-sm hover:bg-gray-50 disabled:opacity-50"
+          disabled={pending}
+          onClick={() =>
+            start(async () => {
+              try {
+                const res = await patchStatus(requestId, status);
+                if (!res.updated) {
+                  // no-op
+                }
+              } catch {
+                // no toasts in this build
+              }
+            })
+          }
+        >
+          {pending ? "Saving…" : "Save"}
+        </button>
+      </div>
+    </Section>
+  );
+}
+
+// ---- Page (server) ----
+export default async function RequestDetailPage({
+  params,
+}: {
+  params: { id: string };
+}) {
+  const id = Number(params.id);
+  const request = await getInitial(id);
+
+  return (
+    <div className="max-w-5xl mx-auto px-4 py-8 space-y-6">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-semibold">
+          Request #{id} {request.title ? `— ${request.title}` : ""}
+        </h1>
+        <Link href="/requests" className="rounded-md border px-3 py-1.5 text-sm hover:bg-gray-50">
+          Back
+        </Link>
+      </div>
+
+      <Section title="Overview">
+        <div className="space-y-2">
+          <Field label="Title" value={request.title} />
+          <Field label="Status" value={request.status} />
+          <Field label="Description" value={request.description} />
+        </div>
+      </Section>
+
+      <StatusChanger requestId={id} initial={request.status} />
+      <CommentsSection requestId={id} />
+      <EventsSection requestId={id} />
     </div>
   );
 }
