@@ -1,21 +1,59 @@
-import { NextRequest, NextResponse } from "next/server";
-import { getServerSupabase } from "@/lib/supabaseServer";
+export const runtime = "nodejs";
 
-export async function POST(req: NextRequest) {
-  const supabase = getServerSupabase();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
+import { createServerClient } from "@supabase/ssr";
+import { queueIndex } from "@/lib/ai/indexQueue";
 
-  const body = await req.json().catch(() => ({}));
-  const category = body?.category ?? null;
-  const notes = body?.notes ?? null;
+function supa() {
+  const jar = cookies();
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    { cookies: { get: (k) => jar.get(k)?.value } }
+  );
+}
 
-  const { data, error } = await supabase
-    .from("requests")
-    .insert({ owner: user.id, category, status: "new", notes })
-    .select("id")
-    .single();
+type BodyIn = {
+  title?: string;
+  description?: string;
+  status?: string;
+};
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
-  return NextResponse.json({ id: data.id });
+export async function POST(req: Request) {
+  try {
+    const payload = (await req.json().catch(() => ({}))) as BodyIn;
+    const title = (payload.title ?? "").trim();
+    const description = (payload.description ?? "").trim();
+    const status = (payload.status ?? "open").trim();
+
+    if (!title) {
+      return NextResponse.json({ error: "Title is required" }, { status: 400 });
+    }
+
+    const db = supa();
+
+    // Insert under RLS; user_id is set via policies/trigger or inferred from auth
+    const { data, error } = await db
+      .from("requests")
+      .insert({ title, description, status })
+      .select("id")
+      .single();
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+
+    // Fire-and-forget AI index
+    if (data?.id) {
+      queueIndex("request", data.id);
+    }
+
+    return NextResponse.json({ id: data?.id, ok: true });
+  } catch (err: any) {
+    return NextResponse.json(
+      { error: err?.message ?? "Unexpected error" },
+      { status: 500 }
+    );
+  }
 }
