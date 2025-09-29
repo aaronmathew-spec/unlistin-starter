@@ -1,522 +1,338 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useToast } from "@/components/providers/ToastProvider";
 
-type Broker = { id: number; name: string; url?: string | null; created_at?: string };
-type Cov = {
+type Coverage = {
   id: number;
   broker_id: number;
   surface: string;
   status: "open" | "in_progress" | "resolved";
-  weight: number;
-  note?: string | null;
-  created_at?: string;
-};
-type FileRow = {
-  id: number;
-  coverage_id: number;
-  path: string;
-  name: string;
-  mime: string | null;
-  size_bytes: number | null;
-  created_at: string;
+  weight: number | null;
+  note: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
 };
 
-const STATUSES: Cov["status"][] = ["open", "in_progress", "resolved"];
+type EditRow = { surface: string; status: Coverage["status"]; weight: string; note: string };
 
-export default function CoveragePage() {
-  const [brokers, setBrokers] = useState<Broker[]>([]);
-  const [cov, setCov] = useState<Cov[]>([]);
+export default function CoverageIndexPage() {
+  const { toast } = useToast();
+
+  const [rows, setRows] = useState<Coverage[]>([]);
   const [loading, setLoading] = useState(true);
-  const [score, setScore] = useState<number>(0);
-
-  // filters + paging
-  const [filterBroker, setFilterBroker] = useState<number | "">("");
-  const [filterStatus, setFilterStatus] = useState<"" | Cov["status"]>("");
-  const [search, setSearch] = useState("");
   const [nextCursor, setNextCursor] = useState<string | null>(null);
 
-  // create form
-  const [bName, setBName] = useState("");
-  const [bUrl, setBUrl] = useState("");
-  const [selBroker, setSelBroker] = useState<number | "">("");
+  const [q, setQ] = useState("");
+  const [status, setStatus] = useState<"" | Coverage["status"]>("");
+
+  // create
+  const [brokerId, setBrokerId] = useState("");
   const [surface, setSurface] = useState("");
-  const [status, setStatus] = useState<Cov["status"]>("open");
-  const [weight, setWeight] = useState<number>(1);
   const [note, setNote] = useState("");
+  const [weight, setWeight] = useState("1");
 
-  // evidence drawer state per coverage id
-  const [openEvidence, setOpenEvidence] = useState<Record<number, boolean>>({});
-  const [filesByCov, setFilesByCov] = useState<Record<number, { items: FileRow[]; next: string | null }>>({});
+  // edit
+  const [edit, setEdit] = useState<Record<number, EditRow>>({});
 
-  // inline edit state per row
-  const [edit, setEdit] = useState<Record<number, Partial<Pick<Cov, "surface" | "status" | "weight" | "note">>>>({});
-
-  const filtered = useMemo(() => {
-    let items = [...cov];
-    if (filterBroker) items = items.filter((c) => c.broker_id === Number(filterBroker));
-    if (filterStatus) items = items.filter((c) => c.status === filterStatus);
-    const q = search.trim().toLowerCase();
-    if (q) items = items.filter((c) => c.surface.toLowerCase().includes(q) || (c.note ?? "").toLowerCase().includes(q));
-    return items;
-  }, [cov, filterBroker, filterStatus, search]);
-
-  const grouped = useMemo(() => {
-    const map = new Map<number, { broker: Broker; items: Cov[] }>();
-    for (const b of brokers) map.set(b.id, { broker: b, items: [] });
-    for (const c of filtered) {
-      const g = map.get(c.broker_id) ?? null;
-      if (g) g.items.push(c);
-    }
-    return Array.from(map.values()).filter((g) => g.items.length > 0);
-  }, [brokers, filtered]);
-
-  async function fetchCoverage(cursor?: string | null) {
+  async function fetchPage(cursor?: string | null) {
     const u = new URL("/api/coverage", window.location.origin);
     u.searchParams.set("limit", "50");
-    if (filterBroker) u.searchParams.set("broker_id", String(filterBroker));
     if (cursor) u.searchParams.set("cursor", cursor);
-    const res = await fetch(u.toString(), { cache: "no-store" });
-    const j = await res.json();
-    return { items: (j.coverage ?? []) as Cov[], next: j.nextCursor ?? null };
+    const j = await fetch(u.toString(), { cache: "no-store" }).then((r) => r.json());
+    return { rows: (j.coverage ?? []) as Coverage[], next: j.nextCursor ?? null };
   }
 
-  const refreshAll = async () => {
+  async function refresh() {
     setLoading(true);
-    const [b, first, s] = await Promise.all([
-      fetch("/api/brokers").then((r) => r.json()),
-      fetchCoverage(null),
-      fetch("/api/exposure").then((r) => r.json()),
-    ]);
-    setBrokers(b.brokers ?? []);
-    setCov(first.items);
-    setNextCursor(first.next);
-    setScore(typeof s.score === "number" ? s.score : 0);
-    setLoading(false);
-  };
-
-  useEffect(() => { refreshAll(); /* eslint-disable-next-line */ }, [filterBroker]);
-
-  const loadMore = async () => {
-    if (!nextCursor) return;
-    const { items, next } = await fetchCoverage(nextCursor);
-    setCov((prev) => [...prev, ...items]);
+    const { rows, next } = await fetchPage(null);
+    setRows(rows);
     setNextCursor(next);
-  };
+    setLoading(false);
+  }
 
-  const onAddBroker = async () => {
-    if (!bName.trim()) return;
-    const res = await fetch("/api/brokers", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: bName.trim(), url: bUrl.trim() || undefined }),
+  useEffect(() => {
+    refresh();
+  }, []);
+
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return rows.filter((r) => {
+      const okStatus = status ? r.status === status : true;
+      const okQ =
+        !needle ||
+        r.surface.toLowerCase().includes(needle) ||
+        (r.note ?? "").toLowerCase().includes(needle);
+      return okStatus && okQ;
     });
-    if (res.ok) {
-      setBName(""); setBUrl("");
-      await refreshAll();
-    } else {
-      const j = await res.json().catch(() => ({}));
-      alert(j?.error?.message || j?.error || "Failed to add broker");
-    }
-  };
+  }, [rows, q, status]);
 
-  const onAddCoverage = async () => {
-    if (!selBroker || !surface.trim()) return;
+  async function loadMore() {
+    if (!nextCursor) return;
+    const { rows, next } = await fetchPage(nextCursor);
+    setRows((prev) => [...prev, ...rows]);
+    setNextCursor(next);
+  }
+
+  async function onCreate() {
+    const pid = Number(brokerId);
+    if (!surface.trim() || !Number.isFinite(pid) || pid <= 0) {
+      toast("Broker ID and surface are required");
+      return;
+    }
     const res = await fetch("/api/coverage", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        broker_id: Number(selBroker),
+        broker_id: pid,
         surface: surface.trim(),
-        status,
-        weight,
         note: note.trim() || undefined,
+        weight: Number(weight) || 1,
       }),
     });
     if (res.ok) {
-      setSurface(""); setNote(""); setWeight(1);
-      await refreshAll();
+      setBrokerId("");
+      setSurface("");
+      setNote("");
+      setWeight("1");
+      toast("Coverage created");
+      await refresh();
     } else {
       const j = await res.json().catch(() => ({}));
-      alert(j?.error?.message || j?.error || "Failed to add coverage");
-    }
-  };
-
-  const onQuickStatus = async (id: number, newStatus: Cov["status"]) => {
-    const res = await fetch("/api/coverage", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, status: newStatus }),
-    });
-    if (res.ok) {
-      // optimistic
-      setCov((prev) => prev.map((c) => (c.id === id ? { ...c, status: newStatus } : c)));
-      await refreshAll();
-    }
-  };
-
-  const toggleEvidence = async (covId: number) => {
-    setOpenEvidence((m) => ({ ...m, [covId]: !m[covId] }));
-    if (!filesByCov[covId]) {
-      await fetchFiles(covId);
-    }
-  };
-
-  async function fetchFiles(covId: number, cursor?: string | null) {
-    const u = new URL(`/api/coverage/${covId}/files`, window.location.origin);
-    u.searchParams.set("limit", "20");
-    if (cursor) u.searchParams.set("cursor", cursor);
-    const j = await fetch(u).then((r) => r.json());
-    setFilesByCov((prev) => ({
-      ...prev,
-      [covId]: {
-        items: cursor ? [...(prev[covId]?.items ?? []), ...(j.files ?? [])] : (j.files ?? []),
-        next: j.nextCursor ?? null,
-      },
-    }));
-  }
-
-  async function uploadFile(covId: number, file: File) {
-    const fd = new FormData();
-    fd.append("file", file);
-    const res = await fetch(`/api/coverage/${covId}/files`, { method: "POST", body: fd });
-    if (res.ok) await fetchFiles(covId);
-    else {
-      const j = await res.json().catch(() => ({}));
-      alert(j?.error || "Upload failed");
+      alert(j?.error?.message || j?.error || "Create failed");
     }
   }
 
-  async function deleteFile(covId: number, fileId: number) {
-    const res = await fetch(`/api/coverage/${covId}/files?fileId=${fileId}`, { method: "DELETE" });
-    if (res.ok) await fetchFiles(covId);
-    else {
-      const j = await res.json().catch(() => ({}));
-      alert(j?.error || "Delete failed");
-    }
-  }
-
-  // Inline edit helpers
-  const startEdit = (row: Cov) => {
+  function startEdit(r: Coverage) {
     setEdit((m) => ({
       ...m,
-      [row.id]: {
-        surface: row.surface,
-        status: row.status,
-        weight: row.weight,
-        note: row.note ?? "",
+      [r.id]: {
+        surface: r.surface,
+        status: r.status,
+        weight: String(r.weight ?? 1),
+        note: r.note ?? "",
       },
     }));
-  };
-  const cancelEdit = (id: number) => {
+  }
+
+  function cancelEdit(id: number) {
     setEdit((m) => {
-      const { [id]: _, ...rest } = m;
-      return rest;
+      const next: Record<number, EditRow> = {};
+      for (const [k, val] of Object.entries(m)) {
+        const key = Number(k);
+        if (key === id) continue;
+        next[key] = val as EditRow;
+      }
+      return next;
     });
-  };
-  const saveEdit = async (id: number) => {
+  }
+
+  async function saveEdit(id: number) {
     const e = edit[id];
     if (!e) return;
     const res = await fetch("/api/coverage", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, ...e }),
+      body: JSON.stringify({
+        id,
+        surface: e.surface.trim(),
+        status: e.status,
+        weight: Number(e.weight) || 1,
+        note: e.note.trim() || null,
+      }),
     });
     if (res.ok) {
-      await refreshAll();
+      toast("Saved");
+      await refresh();
       cancelEdit(id);
     } else {
       const j = await res.json().catch(() => ({}));
-      alert(j?.error || "Update failed");
+      alert(j?.error?.message || j?.error || "Update failed");
     }
-  };
-  const deleteRow = async (id: number) => {
-    if (!confirm("Delete this coverage item?")) return;
-    const res = await fetch("/api/coverage", {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id }),
-    });
+  }
+
+  async function remove(id: number) {
+    if (!confirm("Delete this coverage?")) return;
+    const res = await fetch("/api/coverage?id=" + id, { method: "DELETE" });
     if (res.ok) {
-      setCov((prev) => prev.filter((x) => x.id !== id));
+      setRows((prev) => prev.filter((r) => r.id !== id));
+      toast("Deleted");
     } else {
       const j = await res.json().catch(() => ({}));
-      alert(j?.error || "Delete failed");
+      alert(j?.error?.message || j?.error || "Delete failed");
     }
-  };
+  }
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-8">
       <header className="flex items-center justify-between gap-4">
-        <h1 className="text-xl font-semibold">Coverage Map</h1>
-        <ScorePill score={score} />
+        <h1 className="text-xl font-semibold">Coverage</h1>
+        <Link href="/" className="px-3 py-1 rounded border hover:bg-gray-50">Dashboard</Link>
       </header>
 
-      {/* Filters */}
-      <section className="border rounded-xl p-4 flex flex-wrap gap-3 items-center">
-        <select
-          value={filterBroker}
-          onChange={(e) => setFilterBroker((e.target.value as any) || "")}
-          className="border rounded-lg px-3 py-2 min-w-[220px]"
-        >
-          <option value="">All brokers</option>
-          {brokers.map((b) => (
-            <option key={b.id} value={b.id}>{b.name}</option>
-          ))}
-        </select>
-
-        <select
-          value={filterStatus}
-          onChange={(e) => setFilterStatus((e.target.value as any) || "")}
-          className="border rounded-lg px-3 py-2"
-        >
-          <option value="">All statuses</option>
-          {STATUSES.map((s) => <option value={s} key={s}>{label(s)}</option>)}
-        </select>
-
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search surface/note…"
-          className="border rounded-lg px-3 py-2 min-w-[260px] flex-1"
-        />
-
-        {(filterBroker || filterStatus || search) && (
-          <button
-            onClick={() => { setFilterBroker(""); setFilterStatus(""); setSearch(""); }}
-            className="px-3 py-2 rounded-lg border hover:bg-gray-50"
-          >
-            Reset
-          </button>
-        )}
-      </section>
-
-      {/* Add broker */}
+      {/* Create */}
       <section className="border rounded-xl p-4 space-y-3">
-        <h2 className="font-medium">Add Broker</h2>
+        <h2 className="font-medium">Add Coverage</h2>
         <div className="flex flex-wrap gap-3">
           <input
-            value={bName}
-            onChange={(e) => setBName(e.target.value)}
-            placeholder="Broker name (e.g., Twitter)"
-            className="border rounded-lg px-3 py-2 min-w-[240px]"
+            value={brokerId}
+            onChange={(e) => setBrokerId(e.target.value)}
+            placeholder="Broker ID"
+            className="border rounded-lg px-3 py-2 w-32"
           />
-          <input
-            value={bUrl}
-            onChange={(e) => setBUrl(e.target.value)}
-            placeholder="URL (optional)"
-            className="border rounded-lg px-3 py-2 min-w-[320px]"
-          />
-          <button onClick={onAddBroker} className="px-4 py-2 rounded-lg border hover:bg-gray-50">
-            Add
-          </button>
-        </div>
-      </section>
-
-      {/* Add coverage */}
-      <section className="border rounded-xl p-4 space-y-3">
-        <h2 className="font-medium">Add Coverage Item</h2>
-        <div className="flex flex-wrap gap-3">
-          <select
-            value={selBroker}
-            onChange={(e) => setSelBroker((e.target.value as any) || "")}
-            className="border rounded-lg px-3 py-2 min-w-[240px]"
-          >
-            <option value="">Choose broker…</option>
-            {brokers.map((b) => (
-              <option value={b.id} key={b.id}>{b.name}</option>
-            ))}
-          </select>
           <input
             value={surface}
             onChange={(e) => setSurface(e.target.value)}
-            placeholder="Surface (e.g., Profile)"
-            className="border rounded-lg px-3 py-2 min-w-[240px]"
+            placeholder="Surface"
+            className="border rounded-lg px-3 py-2 min-w-[260px]"
           />
-          <select
-            value={status}
-            onChange={(e) => setStatus(e.target.value as Cov["status"])}
-            className="border rounded-lg px-3 py-2"
-          >
-            {STATUSES.map((s) => <option key={s} value={s}>{label(s)}</option>)}
-          </select>
           <input
-            type="number"
-            min={0.1}
-            step={0.1}
             value={weight}
-            onChange={(e) => setWeight(Number(e.target.value))}
+            onChange={(e) => setWeight(e.target.value)}
+            placeholder="Weight"
             className="border rounded-lg px-3 py-2 w-28"
-            title="Weight"
+            type="number"
+            min={1}
           />
           <input
             value={note}
             onChange={(e) => setNote(e.target.value)}
             placeholder="Note (optional)"
-            className="border rounded-lg px-3 py-2 min-w-[320px]"
+            className="border rounded-lg px-3 py-2 min-w-[260px]"
           />
-          <button onClick={onAddCoverage} className="px-4 py-2 rounded-lg border hover:bg-gray-50">
+          <button onClick={onCreate} className="px-4 py-2 rounded-lg border hover:bg-gray-50">
             Add
           </button>
         </div>
       </section>
 
-      {/* Listing */}
-      <section className="space-y-4">
-        <h2 className="font-medium">By Broker</h2>
+      {/* Filters */}
+      <section className="border rounded-xl p-4 flex flex-wrap gap-3 items-center">
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Search surface or note…"
+          className="border rounded-lg px-3 py-2 min-w-[260px] flex-1"
+        />
+        <select
+          value={status}
+          onChange={(e) => setStatus((e.target.value as any) || "")}
+          className="border rounded-lg px-3 py-2"
+        >
+          <option value="">All statuses</option>
+          <option value="open">Open</option>
+          <option value="in_progress">In Progress</option>
+          <option value="resolved">Resolved</option>
+        </select>
+        {(q || status) && (
+          <button onClick={() => { setQ(""); setStatus(""); }} className="px-3 py-2 rounded-lg border hover:bg-gray-50">
+            Reset
+          </button>
+        )}
+      </section>
+
+      {/* Table */}
+      <section className="space-y-3">
         {loading ? (
           <div>Loading…</div>
-        ) : grouped.length === 0 ? (
+        ) : filtered.length === 0 ? (
           <div className="text-gray-600">No coverage yet.</div>
         ) : (
-          grouped.map(({ broker, items }) => (
-            <div key={broker.id} className="border rounded-xl overflow-hidden">
-              <div className="px-4 py-3 bg-gray-50 flex items-center justify-between">
-                <div className="font-medium">
-                  {broker.name}{" "}
-                  {broker.url ? (
-                    <a className="text-blue-600 underline ml-2" href={broker.url} target="_blank">link</a>
-                  ) : null}
-                </div>
-                <div className="text-sm text-gray-500">{items.length} item(s)</div>
-              </div>
-              <table className="min-w-full text-sm">
-                <thead className="bg-gray-50 text-gray-600">
-                  <tr>
-                    <th className="text-left px-4 py-2">Surface</th>
-                    <th className="text-left px-4 py-2">Status</th>
-                    <th className="text-left px-4 py-2">Weight</th>
-                    <th className="text-left px-4 py-2">Note</th>
-                    <th className="text-right px-4 py-2">Actions</th>
+          <table className="min-w-full text-sm">
+            <thead className="bg-gray-50 text-gray-600">
+              <tr>
+                <th className="text-left px-4 py-2">ID</th>
+                <th className="text-left px-4 py-2">Broker</th>
+                <th className="text-left px-4 py-2">Surface</th>
+                <th className="text-left px-4 py-2">Status</th>
+                <th className="text-left px-4 py-2">Weight</th>
+                <th className="text-left px-4 py-2">Note</th>
+                <th className="text-right px-4 py-2">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((r) => {
+                const e = edit[r.id];
+                const isEditing = !!e;
+                return (
+                  <tr key={r.id} className="border-t">
+                    <td className="px-4 py-2">
+                      <Link href={`/coverage/${r.id}`} className="underline text-blue-600">#{r.id}</Link>
+                    </td>
+                    <td className="px-4 py-2">{r.broker_id}</td>
+                    <td className="px-4 py-2">
+                      {isEditing ? (
+                        <input
+                          className="border rounded px-2 py-1 w-full"
+                          value={e.surface}
+                          onChange={(ev) => setEdit((m) => ({ ...m, [r.id]: { ...e, surface: ev.target.value } }))}
+                        />
+                      ) : (
+                        r.surface
+                      )}
+                    </td>
+                    <td className="px-4 py-2">
+                      {isEditing ? (
+                        <select
+                          className="border rounded px-2 py-1 w-full"
+                          value={e.status}
+                          onChange={(ev) => setEdit((m) => ({ ...m, [r.id]: { ...e, status: ev.target.value as Coverage["status"] } }))}
+                        >
+                          <option value="open">Open</option>
+                          <option value="in_progress">In Progress</option>
+                          <option value="resolved">Resolved</option>
+                        </select>
+                      ) : (
+                        r.status.replace("_", " ")
+                      )}
+                    </td>
+                    <td className="px-4 py-2">
+                      {isEditing ? (
+                        <input
+                          className="border rounded px-2 py-1 w-full"
+                          type="number"
+                          min={1}
+                          value={e.weight}
+                          onChange={(ev) => setEdit((m) => ({ ...m, [r.id]: { ...e, weight: ev.target.value } }))}
+                        />
+                      ) : (
+                        r.weight ?? 1
+                      )}
+                    </td>
+                    <td className="px-4 py-2">
+                      {isEditing ? (
+                        <input
+                          className="border rounded px-2 py-1 w-full"
+                          value={e.note}
+                          onChange={(ev) => setEdit((m) => ({ ...m, [r.id]: { ...e, note: ev.target.value } }))}
+                        />
+                      ) : (
+                        r.note ?? "—"
+                      )}
+                    </td>
+                    <td className="px-4 py-2 text-right space-x-2">
+                      {isEditing ? (
+                        <>
+                          <button onClick={() => saveEdit(r.id)} className="px-2 py-1 rounded border hover:bg-gray-50">Save</button>
+                          <button onClick={() => cancelEdit(r.id)} className="px-2 py-1 rounded border hover:bg-gray-50">Cancel</button>
+                        </>
+                      ) : (
+                        <>
+                          <button onClick={() => startEdit(r)} className="px-2 py-1 rounded border hover:bg-gray-50">Edit</button>
+                          <button onClick={() => remove(r.id)} className="px-2 py-1 rounded border hover:bg-gray-50">Delete</button>
+                        </>
+                      )}
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {items.map((c) => {
-                    const e = edit[c.id];
-                    const isEditing = !!e;
-                    return (
-                      <tr key={c.id} className="border-t align-top">
-                        <td className="px-4 py-2">
-                          {isEditing ? (
-                            <input
-                              className="border rounded px-2 py-1 w-full"
-                              value={e.surface ?? ""}
-                              onChange={(ev) =>
-                                setEdit((m) => ({ ...m, [c.id]: { ...m[c.id], surface: ev.target.value } }))
-                              }
-                            />
-                          ) : (
-                            c.surface
-                          )}
-                        </td>
-                        <td className="px-4 py-2">
-                          {isEditing ? (
-                            <select
-                              className="border rounded px-2 py-1"
-                              value={e.status ?? "open"}
-                              onChange={(ev) =>
-                                setEdit((m) => ({ ...m, [c.id]: { ...m[c.id], status: ev.target.value as Cov["status"] } }))
-                              }
-                            >
-                              {STATUSES.map((s) => <option key={s} value={s}>{label(s)}</option>)}
-                            </select>
-                          ) : (
-                            label(c.status)
-                          )}
-                        </td>
-                        <td className="px-4 py-2">
-                          {isEditing ? (
-                            <input
-                              type="number"
-                              min={0.1}
-                              step={0.1}
-                              className="border rounded px-2 py-1 w-24"
-                              value={e.weight ?? 1}
-                              onChange={(ev) =>
-                                setEdit((m) => ({ ...m, [c.id]: { ...m[c.id], weight: Number(ev.target.value) } }))
-                              }
-                            />
-                          ) : (
-                            c.weight
-                          )}
-                        </td>
-                        <td className="px-4 py-2">
-                          {isEditing ? (
-                            <input
-                              className="border rounded px-2 py-1 w-full"
-                              value={e.note ?? ""}
-                              onChange={(ev) =>
-                                setEdit((m) => ({ ...m, [c.id]: { ...m[c.id], note: ev.target.value } }))
-                              }
-                            />
-                          ) : (
-                            c.note ?? "—"
-                          )}
-                        </td>
-                        <td className="px-4 py-2 text-right space-x-2">
-                          {isEditing ? (
-                            <>
-                              <button onClick={() => saveEdit(c.id)} className="px-2 py-1 rounded border hover:bg-gray-50">
-                                Save
-                              </button>
-                              <button onClick={() => cancelEdit(c.id)} className="px-2 py-1 rounded border hover:bg-gray-50">
-                                Cancel
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              <button
-                                onClick={() => onQuickStatus(c.id, "resolved")}
-                                className="px-2 py-1 rounded border hover:bg-gray-50"
-                              >
-                                Mark Resolved
-                              </button>
-                              <button
-                                onClick={() => startEdit(c)}
-                                className="px-2 py-1 rounded border hover:bg-gray-50"
-                              >
-                                Edit
-                              </button>
-                              <button
-                                onClick={() => deleteRow(c.id)}
-                                className="px-2 py-1 rounded border hover:bg-gray-50"
-                              >
-                                Delete
-                              </button>
-                              <button
-                                onClick={() => toggleEvidence(c.id)}
-                                className="px-2 py-1 rounded border hover:bg-gray-50"
-                              >
-                                Evidence
-                              </button>
-                            </>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-
-              {/* Evidence drawers for rows that are open */}
-              {items.map((c) =>
-                openEvidence[c.id] ? (
-                  <EvidenceRow
-                    key={`ev-${c.id}`}
-                    covId={c.id}
-                    state={filesByCov[c.id]}
-                    onLoadMore={() => fetchFiles(c.id, filesByCov[c.id]?.next || null)}
-                    onUpload={(f) => uploadFile(c.id, f)}
-                    onDelete={(fileId) => deleteFile(c.id, fileId)}
-                  />
-                ) : null
-              )}
-            </div>
-          ))
+                );
+              })}
+            </tbody>
+          </table>
         )}
 
         {nextCursor && (
-          <div className="flex justify-center mt-4">
+          <div className="flex justify-center">
             <button onClick={loadMore} className="px-4 py-2 rounded-lg border hover:bg-gray-50">
               Load more
             </button>
@@ -524,92 +340,5 @@ export default function CoveragePage() {
         )}
       </section>
     </div>
-  );
-}
-
-function EvidenceRow({
-  covId,
-  state,
-  onLoadMore,
-  onUpload,
-  onDelete,
-}: {
-  covId: number;
-  state?: { items: FileRow[]; next: string | null };
-  onLoadMore: () => void;
-  onUpload: (f: File) => void;
-  onDelete: (id: number) => void;
-}) {
-  return (
-    <div className="border-t px-4 py-3 bg-white">
-      <div className="flex items-center gap-3">
-        <strong>Evidence</strong>
-        <input
-          type="file"
-          onChange={(e) => e.target.files?.[0] && onUpload(e.target.files[0])}
-          className="text-sm"
-        />
-      </div>
-      <div className="mt-2 text-sm">
-        {(state?.items ?? []).length === 0 ? (
-          <div className="text-gray-500">No files yet.</div>
-        ) : (
-          <ul className="space-y-1">
-            {state!.items.map((f) => (
-              <li key={f.id} className="flex items-center justify-between border rounded p-2">
-                <div className="truncate">
-                  <span className="font-medium">{f.name}</span>
-                  <span className="ml-2 text-gray-500">
-                    {f.mime || "file"} · {(f.size_bytes ?? 0).toLocaleString()} bytes
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <a
-                    href={`/api/coverage/${covId}/files/${f.id}/download`}
-                    className="px-2 py-1 rounded border hover:bg-gray-50"
-                  >
-                    Download
-                  </a>
-                  <button
-                    onClick={() => onDelete(f.id)}
-                    className="px-2 py-1 rounded border hover:bg-gray-50"
-                  >
-                    Delete
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-        {state?.next && (
-          <div className="mt-2">
-            <button onClick={onLoadMore} className="px-3 py-1 rounded border hover:bg-gray-50">
-              Load more files
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function label(s: Cov["status"]) {
-  switch (s) {
-    case "open": return "Open";
-    case "in_progress": return "In Progress";
-    case "resolved": return "Resolved";
-  }
-}
-
-function ScorePill({ score }: { score: number }) {
-  const rounded = Math.round(score);
-  const color =
-    rounded >= 75 ? "bg-red-100 text-red-700" :
-    rounded >= 40 ? "bg-amber-100 text-amber-700" :
-                    "bg-emerald-100 text-emerald-700";
-  return (
-    <span className={`px-3 py-1 rounded-full text-sm font-medium ${color}`}>
-      Exposure: {rounded}
-    </span>
   );
 }
