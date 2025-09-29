@@ -73,16 +73,20 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
     [rid, reqRow?.title]
   );
 
-  // Upload handler — assumes your POST /api/requests/[id]/files is already wired for form-data
+  // Upload handler — uses FormData.append with filename and hard guard for TS
   async function onUpload(ev: React.FormEvent<HTMLFormElement>) {
     ev.preventDefault();
     const form = ev.currentTarget;
     const input = form.elements.namedItem("file") as HTMLInputElement | null;
-    if (!input || !input.files || input.files.length === 0) return;
+    const file = input?.files?.[0];
+    if (!file) {
+      toast("Please choose a file");
+      return;
+    }
 
-    const file = input.files[0];
     const fd = new FormData();
-    fd.set("file", file);
+    fd.append("file", file, file.name);
+
     setUploading(true);
     setUploadError(null);
     try {
@@ -92,7 +96,7 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
         throw new Error(j?.error || `Upload failed (${res.status})`);
       }
       toast("File uploaded");
-      input.value = "";
+      if (input) input.value = "";
       await fetchFiles();
     } catch (e: any) {
       setUploadError(e?.message || "Upload failed");
@@ -107,7 +111,6 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
       const j = await fetch(`/api/requests/${rid}/files/${fid}/sign`).then((r) => r.json());
       const url = j?.signedUrl as string | undefined;
       if (!url) throw new Error(j?.error || "Could not sign URL");
-      // Open in new tab (user gesture assumed from click)
       window.open(url, "_blank", "noopener,noreferrer");
     } catch (e: any) {
       toast(e?.message || "Download failed");
@@ -188,8 +191,14 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
           <section className="border rounded-xl p-4 space-y-2">
             <div className="font-medium">About</div>
             <div className="text-sm">
-              <div><span className="text-gray-600">Status:</span> {reqRow.status.replace("_", " ")}</div>
-              <div><span className="text-gray-600">Updated:</span> {reqRow.updated_at ? new Date(reqRow.updated_at).toLocaleString() : "—"}</div>
+              <div>
+                <span className="text-gray-600">Status:</span>{" "}
+                {reqRow.status.replace("_", " ")}
+              </div>
+              <div>
+                <span className="text-gray-600">Updated:</span>{" "}
+                {reqRow.updated_at ? new Date(reqRow.updated_at).toLocaleString() : "—"}
+              </div>
             </div>
             {reqRow.description && (
               <p className="text-sm text-gray-800 whitespace-pre-wrap">{reqRow.description}</p>
@@ -234,7 +243,9 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
                         <td className="px-4 py-2">{f.name}</td>
                         <td className="px-4 py-2">{f.mime || "—"}</td>
                         <td className="px-4 py-2">{sizeFmt(f.size_bytes)}</td>
-                        <td className="px-4 py-2">{f.created_at ? new Date(f.created_at).toLocaleString() : "—"}</td>
+                        <td className="px-4 py-2">
+                          {f.created_at ? new Date(f.created_at).toLocaleString() : "—"}
+                        </td>
                         <td className="px-4 py-2 text-right space-x-2">
                           <button
                             disabled={isBusy}
