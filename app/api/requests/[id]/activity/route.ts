@@ -3,31 +3,35 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
-type ActivityRow = {
-  id: number;
-  type: "status_changed" | "file_uploaded" | "file_deleted" | "request_created";
-  message: string;
-  meta: unknown | null;
-  created_at: string;
-};
-
 export async function GET(
   req: NextRequest,
   { params }: { params: { id: string } }
 ) {
   const supabase = createSupabaseServerClient();
   const requestId = Number(params.id);
+  if (!Number.isFinite(requestId)) {
+    return NextResponse.json({ error: "invalid request id" }, { status: 400 });
+  }
 
-  const { searchParams } = new URL(req.url);
-  const limit = clampInt(searchParams.get("limit"), 20, 1, 100);
-  const cursor = searchParams.get("cursor");
+  const url = new URL(req.url);
+  const limit = clamp(url.searchParams.get("limit"), 50, 1, 200);
+  const cursor = url.searchParams.get("cursor");
 
+  // We want:
+  //  - entity_type='request' AND entity_id=requestId
+  //  - OR (entity_type='file' AND meta->>'scope'='request' AND meta->>'request_id'=requestId)
+  // Supabase 'or' filter supports JSON path via meta->>key.eq.value
   let q = supabase
-    .from("request_activity")
-    .select("id, type, message, meta, created_at")
-    .eq("request_id", requestId)
+    .from("activity")
+    .select("id, entity_type, entity_id, action, meta, created_at")
     .order("id", { ascending: false })
     .limit(limit);
+
+  const orExpr =
+    `and(entity_type.eq.request,entity_id.eq.${requestId}),` +
+    `and(entity_type.eq.file,meta->>scope.eq.request,meta->>request_id.eq.${requestId})`;
+
+  q = q.or(orExpr);
 
   if (cursor) {
     const c = Number(cursor);
@@ -37,22 +41,12 @@ export async function GET(
   const { data, error } = await q;
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
-  const list = (data ?? []) as ActivityRow[];
+  const list = data ?? [];
   const nextCursor = list.length === limit ? String(list[list.length - 1]!.id) : null;
-
   return NextResponse.json({ activity: list, nextCursor });
 }
 
-/* ----------------------------- helpers ----------------------------- */
-function clampInt(
-  val: string | null,
-  fallback: number,
-  min: number,
-  max: number
-): number {
-  const n = Number(val);
-  if (Number.isFinite(n)) {
-    return Math.max(min, Math.min(max, Math.floor(n)));
-  }
-  return fallback;
+function clamp(v: string | null, fallback: number, min: number, max: number) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.max(min, Math.min(max, Math.floor(n))) : fallback;
 }
