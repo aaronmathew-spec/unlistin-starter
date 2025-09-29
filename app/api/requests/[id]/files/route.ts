@@ -1,11 +1,7 @@
-import { NextResponse } from 'next/server';
+import { NextResponse, type NextRequest } from 'next/server';
 import { cookies } from 'next/headers';
-import { createServerClient, type CookieOptions } from '@supabase/ssr';
-import { randomUUID } from 'crypto';
+import { createServerClient } from '@supabase/ssr';
 
-export const dynamic = 'force-dynamic';
-
-// --- Supabase server client (Next.js cookie bridge)
 function supabaseServer() {
   const cookieStore = cookies();
   return createServerClient(
@@ -16,148 +12,99 @@ function supabaseServer() {
         get(name: string) {
           return cookieStore.get(name)?.value;
         },
-        set(name: string, value: string, options: CookieOptions) {
-          cookieStore.set(name, value, options);
+        set(name: string, value: string, options: any) {
+          cookieStore.set({ name, value, ...options });
         },
-        remove(name: string, options: CookieOptions) {
-          // Next.js doesn't have "delete"; use set with maxAge 0
-          cookieStore.set(name, '', { ...options, maxAge: 0 });
+        remove(name: string, options: any) {
+          cookieStore.set({ name, value: '', ...options, expires: new Date(0) });
         },
       },
     }
   );
 }
 
-const BUCKET = 'request-files'; // <- your storage bucket name
-
-/**
- * GET /api/requests/:id/files
- * Returns metadata from request_files table + short-lived signedUrl
- */
+// GET  /api/requests/:id/files  → list files for a request
 export async function GET(
-  _req: Request,
+  _req: NextRequest,
   { params }: { params: { id: string } }
 ) {
-  const supabase = supabaseServer();
+  try {
+    const requestId = Number(params.id);
+    if (!requestId) {
+      return NextResponse.json({ error: 'Invalid request id' }, { status: 400 });
+    }
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const supabase = supabaseServer();
+    const { data, error } = await supabase
+      .from('request_files')
+      // IMPORTANT: ask for "mime"
+      .select('id, request_id, name, mime, size_bytes, created_at, path')
+      .eq('request_id', requestId)
+      .order('created_at', { ascending: false });
 
-  const { data, error } = await supabase
-    .from('request_files')
-    .select('id,name,path,content_type,size,created_at')
-    .eq('request_id', params.id)
-    .order('created_at', { ascending: true });
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 400 });
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    return NextResponse.json({ files: data ?? [] });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message ?? 'Unexpected error' }, { status: 500 });
   }
-
-  const files = await Promise.all(
-    (data ?? []).map(async (row) => {
-      let signedUrl: string | null = null;
-      if (row.path) {
-        const { data: sign } = await supabase
-          .storage
-          .from(BUCKET)
-          .createSignedUrl(row.path, 60 * 10); // 10 minutes
-        signedUrl = sign?.signedUrl ?? null;
-      }
-      return {
-        id: row.id,
-        name: row.name,
-        path: row.path,
-        contentType: row.content_type,
-        size: row.size,
-        created_at: row.created_at,
-        signedUrl,
-      };
-    })
-  );
-
-  return NextResponse.json({ files });
 }
 
-/**
- * POST /api/requests/:id/files
- * Content-Type: multipart/form-data
- *  - file: <File>
- */
+// POST  /api/requests/:id/files  → upload a file and create a DB row
 export async function POST(
-  req: Request,
+  req: NextRequest,
   { params }: { params: { id: string } }
 ) {
-  const supabase = supabaseServer();
+  try {
+    const requestId = Number(params.id);
+    if (!requestId) {
+      return NextResponse.json({ error: 'Invalid request id' }, { status: 400 });
+    }
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const form = await req.formData();
+    const file = form.get('file') as File | null;
 
-  const form = await req.formData();
-  const file = form.get('file');
+    if (!file) {
+      return NextResponse.json({ error: 'No file provided' }, { status: 400 });
+    }
 
-  if (!(file instanceof File)) {
-    return NextResponse.json({ error: 'No file provided' }, { status: 400 });
+    const supabase = supabaseServer();
+
+    // (Optional but recommended) put file into a storage bucket
+    // Make sure a bucket named "request-files" exists
+    const arrayBuffer = await file.arrayBuffer();
+    const fileBytes = new Uint8Array(arrayBuffer);
+    const filename = `${Date.now()}_${file.name}`;
+    const storagePath = `${requestId}/${filename}`;
+
+    const { data: uploadRes, error: uploadErr } = await supabase.storage
+      .from('request-files')
+      .upload(storagePath, fileBytes, { contentType: file.type });
+
+    if (uploadErr) {
+      // If you do not want storage, you can remove the upload block
+      // and only insert a DB row — but then remember path can be ''
+      return NextResponse.json({ error: uploadErr.message }, { status: 400 });
+    }
+
+    const { data, error } = await supabase
+      .from('request_files')
+      .insert({
+        request_id: requestId,
+        path: uploadRes?.path ?? '',    // path can be empty string if you don’t store files
+        name: file.name,
+        mime: file.type,                // ← store into "mime"
+        size_bytes: file.size,
+      })
+      .select('id, request_id, name, mime, size_bytes, created_at, path')
+      .single();
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    return NextResponse.json({ file: data }, { status: 201 });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message ?? 'Unexpected error' }, { status: 500 });
   }
-
-  const requestId = params.id;
-  const fileId = randomUUID();
-  const ext = (file.name?.split('.').pop() || 'bin').toLowerCase();
-  const objectPath = `${user.id}/${requestId}/${fileId}.${ext}`;
-
-  // 1) Upload to Storage
-  const { error: upErr } = await supabase.storage
-    .from(BUCKET)
-    .upload(objectPath, file, {
-      cacheControl: '3600',
-      upsert: false,
-      contentType: file.type || 'application/octet-stream',
-    });
-
-  if (upErr) {
-    return NextResponse.json({ error: upErr.message }, { status: 400 });
-  }
-
-  // 2) Insert DB metadata row
-  const { data: inserted, error: insErr } = await supabase
-    .from('request_files')
-    .insert({
-      id: fileId, // remove this if your table auto-generates UUIDs
-      request_id: requestId,
-      name: file.name || null,
-      path: objectPath,
-      content_type: file.type || null,
-      size: file.size || null,
-    })
-    .select('id,name,path,content_type,size,created_at')
-    .single();
-
-  if (insErr) {
-    // rollback the object if DB insert fails
-    await supabase.storage.from(BUCKET).remove([objectPath]);
-    return NextResponse.json({ error: insErr.message }, { status: 400 });
-  }
-
-  // 3) Sign the object for immediate preview
-  const { data: sign } = await supabase
-    .storage
-    .from(BUCKET)
-    .createSignedUrl(inserted.path, 60 * 10);
-
-  const signedUrl = sign?.signedUrl ?? null;
-
-  return NextResponse.json({
-    file: {
-      id: inserted.id,
-      name: inserted.name,
-      path: inserted.path,
-      contentType: inserted.content_type,
-      size: inserted.size,
-      created_at: inserted.created_at,
-      signedUrl,
-    },
-  });
 }
