@@ -36,8 +36,9 @@ export async function GET(req: Request) {
 
   const rows: CoverageRow[] = (data ?? []) as CoverageRow[];
 
-  const lastId = rows.length ? rows[rows.length - 1].id : null;
-  const nextCursor = rows.length === limit && lastId != null ? String(lastId) : null;
+  // Use .at(-1) and optional chaining to avoid "possibly undefined"
+  const lastId = rows.at(-1)?.id ?? null;
+  const nextCursor = rows.length === limit && lastId !== null ? String(lastId) : null;
 
   return NextResponse.json({ coverage: rows, nextCursor });
 }
