@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useToast } from "@/components/providers/ToastProvider";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 type RequestRow = {
   id: number;
@@ -23,12 +24,25 @@ type FileRow = {
   created_at: string | null;
 };
 
+type CommentRow = {
+  id: number;
+  request_id: number;
+  user_id: string;
+  body: string;
+  created_at: string;
+};
+
 export default function RequestDetailPage({ params }: { params: { id: string } }) {
   const { toast } = useToast();
   const rid = Number(params.id);
 
+  const [activeTab, setActiveTab] = useState<"about" | "files" | "comments">("about");
+
   const [reqRow, setReqRow] = useState<RequestRow | null>(null);
   const [files, setFiles] = useState<FileRow[]>([]);
+  const [comments, setComments] = useState<CommentRow[]>([]);
+  const [commentsCursor, setCommentsCursor] = useState<string | null>(null);
+
   const [loading, setLoading] = useState(true);
 
   // upload state
@@ -36,7 +50,12 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
   const [uploadError, setUploadError] = useState<string | null>(null);
 
   // per-file action state
-  const [busy, setBusy] = useState<Record<number, boolean>>({});
+  const [busyFile, setBusyFile] = useState<Record<number, boolean>>({});
+
+  // comments state
+  const [addingComment, setAddingComment] = useState(false);
+  const [newBody, setNewBody] = useState("");
+  const [busyComment, setBusyComment] = useState<Record<number, boolean>>({});
 
   const sizeFmt = (n?: number | null) =>
     !n && n !== 0
@@ -55,17 +74,123 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
     const j = await fetch(`/api/requests/${rid}/files`, { cache: "no-store" }).then((r) => r.json());
     setFiles((j.files ?? []) as FileRow[]);
   }
+  async function fetchComments(cursor?: string | null) {
+    const url = new URL(`/api/requests/${rid}/comments`, window.location.origin);
+    url.searchParams.set("limit", "30");
+    if (cursor) url.searchParams.set("cursor", cursor);
+    const j = await fetch(url.toString(), { cache: "no-store" }).then((r) => r.json());
+    const rows = (j.comments ?? []) as CommentRow[];
+    if (cursor) {
+      setComments((prev) => [...prev, ...rows]);
+    } else {
+      setComments(rows);
+    }
+    setCommentsCursor(j.nextCursor ?? null);
+  }
 
-  async function refresh() {
+  async function refreshAll() {
     setLoading(true);
-    await Promise.all([fetchRequest(), fetchFiles()]);
+    await Promise.all([fetchRequest(), fetchFiles(), fetchComments(null)]);
     setLoading(false);
   }
 
   useEffect(() => {
     if (!Number.isFinite(rid)) return;
-    refresh();
+    // Initial load
+    refreshAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rid]);
+
+  // Realtime subscriptions
+  useEffect(() => {
+    if (!Number.isFinite(rid)) return;
+    const supabase = createSupabaseBrowserClient();
+
+    // Comments: INSERT/DELETE on this request
+    const chComments = supabase
+      .channel(`rc:${rid}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "request_comments",
+          filter: `request_id=eq.${rid}`,
+        },
+        (payload) => {
+          const row = payload.new as any;
+          setComments((prev) => [{ ...(row as CommentRow) }, ...prev]);
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "DELETE",
+          schema: "public",
+          table: "request_comments",
+          filter: `request_id=eq.${rid}`,
+        },
+        (payload) => {
+          const oldRow = payload.old as any;
+          setComments((prev) => prev.filter((c) => c.id !== Number(oldRow.id)));
+        }
+      )
+      .subscribe();
+
+    // Files: INSERT/DELETE on this request
+    const chFiles = supabase
+      .channel(`rf:${rid}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "request_files",
+          filter: `request_id=eq.${rid}`,
+        },
+        async () => {
+          // Refresh list cheaply: just re-fetch files
+          await fetchFiles();
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "DELETE",
+          schema: "public",
+          table: "request_files",
+          filter: `request_id=eq.${rid}`,
+        },
+        async () => {
+          await fetchFiles();
+        }
+      )
+      .subscribe();
+
+    // Request status: UPDATE (watch updated row)
+    const chReq = supabase
+      .channel(`rq:${rid}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "requests",
+          filter: `id=eq.${rid}`,
+        },
+        (payload) => {
+          const row = payload.new as any;
+          setReqRow((prev) => (prev ? { ...prev, status: row.status, updated_at: row.updated_at } : prev));
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(chComments);
+      supabase.removeChannel(chFiles);
+      supabase.removeChannel(chReq);
+      supabase.removeAllChannels();
+    };
   }, [rid]);
 
   const title = useMemo(
@@ -97,7 +222,9 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
       }
       toast("File uploaded");
       if (input) input.value = "";
+      // files list will also refresh via realtime INSERT; but we still refresh for safety
       await fetchFiles();
+      setActiveTab("files");
     } catch (e: any) {
       setUploadError(e?.message || "Upload failed");
     } finally {
@@ -105,8 +232,9 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
     }
   }
 
+  // File actions
   async function signAndOpen(fid: number) {
-    setBusy((m) => ({ ...m, [fid]: true }));
+    setBusyFile((m) => ({ ...m, [fid]: true }));
     try {
       const j = await fetch(`/api/requests/${rid}/files/${fid}/sign`).then((r) => r.json());
       const url = j?.signedUrl as string | undefined;
@@ -115,16 +243,15 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
     } catch (e: any) {
       toast(e?.message || "Download failed");
     } finally {
-      setBusy((m) => {
+      setBusyFile((m) => {
         const n = { ...m };
         delete n[fid];
         return n;
       });
     }
   }
-
   async function signAndCopy(fid: number) {
-    setBusy((m) => ({ ...m, [fid]: true }));
+    setBusyFile((m) => ({ ...m, [fid]: true }));
     try {
       const j = await fetch(`/api/requests/${rid}/files/${fid}/sign`).then((r) => r.json());
       const url = j?.signedUrl as string | undefined;
@@ -134,7 +261,29 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
     } catch (e: any) {
       toast(e?.message || "Copy failed");
     } finally {
-      setBusy((m) => {
+      setBusyFile((m) => {
+        const n = { ...m };
+        delete n[fid];
+        return n;
+      });
+    }
+  }
+  async function removeFile(fid: number) {
+    if (!confirm("Delete this file?")) return;
+    setBusyFile((m) => ({ ...m, [fid]: true }));
+    try {
+      const res = await fetch(`/api/requests/${rid}/files/${fid}/delete`, { method: "DELETE" });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j?.error || `Delete failed (${res.status})`);
+      }
+      // list refreshes via realtime DELETE; also adjust immediately
+      setFiles((prev) => prev.filter((f) => f.id !== fid));
+      toast("File deleted");
+    } catch (e: any) {
+      toast(e?.message || "Delete failed");
+    } finally {
+      setBusyFile((m) => {
         const n = { ...m };
         delete n[fid];
         return n;
@@ -142,23 +291,50 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
     }
   }
 
-  async function removeFile(fid: number) {
-    if (!confirm("Delete this file?")) return;
-    setBusy((m) => ({ ...m, [fid]: true }));
+  // Comment actions
+  async function addComment() {
+    if (!newBody.trim()) {
+      toast("Write something first");
+      return;
+    }
+    setAddingComment(true);
     try {
-      const res = await fetch(`/api/requests/${rid}/files/${fid}/delete`, { method: "DELETE" });
+      const res = await fetch(`/api/requests/${rid}/comments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: newBody.trim() }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j?.error || `Create failed (${res.status})`);
+      }
+      // Realtime INSERT will prepend the item; we can also prepend optimistically
+      setNewBody("");
+      setActiveTab("comments");
+    } catch (e: any) {
+      toast(e?.message || "Failed to add comment");
+    } finally {
+      setAddingComment(false);
+    }
+  }
+
+  async function deleteComment(id: number) {
+    if (!confirm("Delete this comment?")) return;
+    setBusyComment((m) => ({ ...m, [id]: true }));
+    try {
+      const res = await fetch(`/api/requests/${rid}/comments/${id}`, { method: "DELETE" });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
         throw new Error(j?.error || `Delete failed (${res.status})`);
       }
-      setFiles((prev) => prev.filter((f) => f.id !== fid));
-      toast("File deleted");
+      // Realtime DELETE will remove it; remove locally too
+      setComments((prev) => prev.filter((c) => c.id !== id));
     } catch (e: any) {
-      toast(e?.message || "Delete failed");
+      toast(e?.message || "Failed to delete");
     } finally {
-      setBusy((m) => {
+      setBusyComment((m) => {
         const n = { ...m };
-        delete n[fid];
+        delete n[id];
         return n;
       });
     }
@@ -175,7 +351,9 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-8">
       <header className="flex items-center justify-between gap-4">
-        <h1 className="text-xl font-semibold">{title}</h1>
+        <h1 className="text-xl font-semibold">
+          {reqRow?.title ? `Request #${rid} – ${reqRow.title}` : `Request #${rid}`}
+        </h1>
         <Link href="/requests" className="px-3 py-1 rounded border hover:bg-gray-50">
           Back to Requests
         </Link>
@@ -187,95 +365,188 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
         <div className="text-gray-600">Not found.</div>
       ) : (
         <>
-          {/* About */}
-          <section className="border rounded-xl p-4 space-y-2">
-            <div className="font-medium">About</div>
-            <div className="text-sm">
-              <div>
-                <span className="text-gray-600">Status:</span>{" "}
-                {reqRow.status.replace("_", " ")}
-              </div>
-              <div>
-                <span className="text-gray-600">Updated:</span>{" "}
-                {reqRow.updated_at ? new Date(reqRow.updated_at).toLocaleString() : "—"}
-              </div>
-            </div>
-            {reqRow.description && (
-              <p className="text-sm text-gray-800 whitespace-pre-wrap">{reqRow.description}</p>
-            )}
-          </section>
+          {/* Tabs */}
+          <nav className="flex gap-2 border-b pb-2">
+            {(["about", "files", "comments"] as const).map((t) => (
+              <button
+                key={t}
+                onClick={() => setActiveTab(t)}
+                className={`px-3 py-1 rounded-t ${
+                  activeTab === t ? "bg-gray-100 border border-b-0" : "border-transparent"
+                }`}
+              >
+                {t === "about" ? "About" : t === "files" ? "Files" : "Comments"}
+              </button>
+            ))}
+          </nav>
 
-          {/* Files */}
-          <section className="border rounded-xl p-4 space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="font-medium">Files</h2>
-              <form onSubmit={onUpload} className="flex items-center gap-2">
-                <input name="file" type="file" className="text-sm" disabled={uploading} />
-                <button
-                  type="submit"
-                  disabled={uploading}
-                  className="px-3 py-1 rounded border hover:bg-gray-50 text-sm"
-                >
-                  {uploading ? "Uploading…" : "Upload"}
-                </button>
-              </form>
-            </div>
-            {uploadError && <div className="text-sm text-red-600">{uploadError}</div>}
+          {/* About Tab */}
+          {activeTab === "about" && (
+            <section className="border rounded-b-xl p-4 space-y-2">
+              <div className="font-medium">About</div>
+              <div className="text-sm">
+                <div>
+                  <span className="text-gray-600">Status:</span>{" "}
+                  {reqRow.status.replace("_", " ")}
+                </div>
+                <div>
+                  <span className="text-gray-600">Updated:</span>{" "}
+                  {reqRow.updated_at ? new Date(reqRow.updated_at).toLocaleString() : "—"}
+                </div>
+              </div>
+              {reqRow.description && (
+                <p className="text-sm text-gray-800 whitespace-pre-wrap">{reqRow.description}</p>
+              )}
+            </section>
+          )}
 
-            {files.length === 0 ? (
-              <div className="text-gray-600 text-sm">No files yet.</div>
-            ) : (
-              <table className="min-w-full text-sm">
-                <thead className="bg-gray-50 text-gray-600">
-                  <tr>
-                    <th className="text-left px-4 py-2">Name</th>
-                    <th className="text-left px-4 py-2">Type</th>
-                    <th className="text-left px-4 py-2">Size</th>
-                    <th className="text-left px-4 py-2">Uploaded</th>
-                    <th className="text-right px-4 py-2">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {files.map((f) => {
-                    const isBusy = !!busy[f.id];
+          {/* Files Tab */}
+          {activeTab === "files" && (
+            <section className="border rounded-b-xl p-4 space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="font-medium">Files</h2>
+                <form onSubmit={onUpload} className="flex items-center gap-2">
+                  <input name="file" type="file" className="text-sm" disabled={uploading} />
+                  <button
+                    type="submit"
+                    disabled={uploading}
+                    className="px-3 py-1 rounded border hover:bg-gray-50 text-sm"
+                  >
+                    {uploading ? "Uploading…" : "Upload"}
+                  </button>
+                </form>
+              </div>
+              {uploadError && <div className="text-sm text-red-600">{uploadError}</div>}
+
+              {files.length === 0 ? (
+                <div className="text-gray-600 text-sm">No files yet.</div>
+              ) : (
+                <table className="min-w-full text-sm">
+                  <thead className="bg-gray-50 text-gray-600">
+                    <tr>
+                      <th className="text-left px-4 py-2">Name</th>
+                      <th className="text-left px-4 py-2">Type</th>
+                      <th className="text-left px-4 py-2">Size</th>
+                      <th className="text-left px-4 py-2">Uploaded</th>
+                      <th className="text-right px-4 py-2">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {files.map((f) => {
+                      const isBusy = !!busyFile[f.id];
+                      return (
+                        <tr key={f.id} className="border-t">
+                          <td className="px-4 py-2">{f.name}</td>
+                          <td className="px-4 py-2">{f.mime || "—"}</td>
+                          <td className="px-4 py-2">{sizeFmt(f.size_bytes)}</td>
+                          <td className="px-4 py-2">
+                            {f.created_at ? new Date(f.created_at).toLocaleString() : "—"}
+                          </td>
+                          <td className="px-4 py-2 text-right space-x-2">
+                            <button
+                              disabled={isBusy}
+                              onClick={() => signAndOpen(f.id)}
+                              className="px-2 py-1 rounded border hover:bg-gray-50"
+                            >
+                              {isBusy ? "…" : "Download"}
+                            </button>
+                            <button
+                              disabled={isBusy}
+                              onClick={() => signAndCopy(f.id)}
+                              className="px-2 py-1 rounded border hover:bg-gray-50"
+                            >
+                              {isBusy ? "…" : "Copy link"}
+                            </button>
+                            <button
+                              disabled={isBusy}
+                              onClick={() => removeFile(f.id)}
+                              className="px-2 py-1 rounded border hover:bg-gray-50"
+                            >
+                              {isBusy ? "…" : "Delete"}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </section>
+          )}
+
+          {/* Comments Tab */}
+          {activeTab === "comments" && (
+            <section className="border rounded-b-xl p-4 space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="font-medium">Comments</h2>
+                {commentsCursor && (
+                  <button
+                    className="px-3 py-1 rounded border hover:bg-gray-50 text-sm"
+                    onClick={() => fetchComments(commentsCursor)}
+                  >
+                    Load older
+                  </button>
+                )}
+              </div>
+
+              {/* New comment */}
+              <div className="space-y-2">
+                <textarea
+                  value={newBody}
+                  onChange={(e) => setNewBody(e.target.value)}
+                  placeholder="Write a comment…"
+                  className="border rounded-lg px-3 py-2 w-full min-h-[80px]"
+                />
+                <div className="flex gap-2">
+                  <button
+                    onClick={addComment}
+                    disabled={addingComment || !newBody.trim()}
+                    className="px-3 py-1 rounded border hover:bg-gray-50 text-sm"
+                  >
+                    {addingComment ? "Posting…" : "Post"}
+                  </button>
+                  {!!newBody && (
+                    <button
+                      onClick={() => setNewBody("")}
+                      disabled={addingComment}
+                      className="px-3 py-1 rounded border hover:bg-gray-50 text-sm"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Comments list */}
+              {comments.length === 0 ? (
+                <div className="text-gray-600 text-sm">No comments yet.</div>
+              ) : (
+                <ul className="space-y-3">
+                  {comments.map((c) => {
+                    const isBusy = !!busyComment[c.id];
                     return (
-                      <tr key={f.id} className="border-t">
-                        <td className="px-4 py-2">{f.name}</td>
-                        <td className="px-4 py-2">{f.mime || "—"}</td>
-                        <td className="px-4 py-2">{sizeFmt(f.size_bytes)}</td>
-                        <td className="px-4 py-2">
-                          {f.created_at ? new Date(f.created_at).toLocaleString() : "—"}
-                        </td>
-                        <td className="px-4 py-2 text-right space-x-2">
+                      <li key={c.id} className="border rounded-lg p-3">
+                        <div className="text-xs text-gray-500">
+                          {new Date(c.created_at).toLocaleString()}
+                        </div>
+                        <div className="whitespace-pre-wrap text-sm my-1">{c.body}</div>
+                        <div className="flex justify-end">
                           <button
                             disabled={isBusy}
-                            onClick={() => signAndOpen(f.id)}
-                            className="px-2 py-1 rounded border hover:bg-gray-50"
-                          >
-                            {isBusy ? "…" : "Download"}
-                          </button>
-                          <button
-                            disabled={isBusy}
-                            onClick={() => signAndCopy(f.id)}
-                            className="px-2 py-1 rounded border hover:bg-gray-50"
-                          >
-                            {isBusy ? "…" : "Copy link"}
-                          </button>
-                          <button
-                            disabled={isBusy}
-                            onClick={() => removeFile(f.id)}
-                            className="px-2 py-1 rounded border hover:bg-gray-50"
+                            onClick={() => deleteComment(c.id)}
+                            className="px-2 py-1 rounded border hover:bg-gray-50 text-xs"
+                            title="Delete"
                           >
                             {isBusy ? "…" : "Delete"}
                           </button>
-                        </td>
-                      </tr>
+                        </div>
+                      </li>
                     );
                   })}
-                </tbody>
-              </table>
-            )}
-          </section>
+                </ul>
+              )}
+            </section>
+          )}
         </>
       )}
     </div>
