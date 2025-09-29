@@ -1,209 +1,212 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useToast } from "@/components/toast";
 
-type Row = {
+type Req = {
   id: number;
-  title?: string | null;
+  title: string | null;
   status: "open" | "in_progress" | "resolved" | "closed";
-  created_at?: string | null;
-  updated_at?: string | null;
+  created_at: string | null;
+  updated_at: string | null;
 };
 
-const STATUS_OPTIONS: Array<{ value: "" | Row["status"]; label: string }> = [
-  { value: "", label: "All statuses" },
-  { value: "open", label: "Open" },
-  { value: "in_progress", label: "In Progress" },
-  { value: "resolved", label: "Resolved" },
-  { value: "closed", label: "Closed" },
-];
+const STATUSES: Req["status"][] = ["open", "in_progress", "resolved", "closed"];
 
-export default function RequestsListPage() {
-  const { push } = useToast();
-
-  // table state
-  const [rows, setRows] = useState<Row[]>([]);
+export default function RequestsPage() {
+  // list + filters
+  const [items, setItems] = useState<Req[]>([]);
   const [loading, setLoading] = useState(true);
+  const [status, setStatus] = useState<"" | Req["status"]>("");
+  const [q, setQ] = useState("");
   const [nextCursor, setNextCursor] = useState<string | null>(null);
 
-  // filters
-  const [q, setQ] = useState("");
-  const [status, setStatus] = useState<"" | Row["status"]>("");
+  // create form
+  const [title, setTitle] = useState("");
+  const [desc, setDesc] = useState("");
 
-  // debounced search term
-  const [debouncedQ, setDebouncedQ] = useState("");
-  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // ephemeral inline message (replaces toasts)
+  const [msg, setMsg] = useState<string | null>(null);
+  const flash = (m: string) => {
+    setMsg(m);
+    setTimeout(() => setMsg(null), 2500);
+  };
 
-  // debounce q changes
-  useEffect(() => {
-    if (debounceTimer.current) clearTimeout(debounceTimer.current);
-    debounceTimer.current = setTimeout(() => {
-      setDebouncedQ(q.trim());
-    }, 300);
-    return () => {
-      if (debounceTimer.current) clearTimeout(debounceTimer.current);
-    };
-  }, [q]);
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    let rows = [...items];
+    if (status) rows = rows.filter((r) => r.status === status);
+    if (needle) rows = rows.filter((r) => (r.title ?? "").toLowerCase().includes(needle));
+    return rows;
+  }, [items, status, q]);
 
-  const fetchPage = async (cursor?: string | null, opts?: { replace?: boolean }) => {
+  async function fetchPage(cursor?: string | null) {
     const u = new URL("/api/requests", window.location.origin);
-    u.searchParams.set("limit", "20");
+    u.searchParams.set("limit", "50");
     if (cursor) u.searchParams.set("cursor", cursor);
-    if (debouncedQ) u.searchParams.set("q", debouncedQ);
     if (status) u.searchParams.set("status", status);
+    if (q.trim()) u.searchParams.set("q", q.trim());
+    const j = await fetch(u.toString(), { cache: "no-store" }).then((r) => r.json());
+    return { rows: (j.requests ?? []) as Req[], next: j.nextCursor ?? null };
+  }
 
-    const res = await fetch(u.toString(), { cache: "no-store" });
-    const json = await res.json();
-    if (!res.ok) {
-      push({ message: json?.error || "Failed to load requests", type: "error" });
-      return { items: [] as Row[], next: null as string | null, replace: !!opts?.replace };
-    }
-    return {
-      items: (json.requests || []) as Row[],
-      next: json.nextCursor ?? null,
-      replace: !!opts?.replace,
-    };
-  };
-
-  // initial load + when filters change, reset paging
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      setLoading(true);
-      const { items, next } = await fetchPage(null, { replace: true });
-      if (cancelled) return;
-      setRows(items);
-      setNextCursor(next);
-      setLoading(false);
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedQ, status]);
-
-  const loadMore = async () => {
-    if (!nextCursor) return;
-    const { items, next } = await fetchPage(nextCursor);
-    setRows((prev) => [...prev, ...items]);
+  const refresh = async () => {
+    setLoading(true);
+    const { rows, next } = await fetchPage(null);
+    setItems(rows);
     setNextCursor(next);
+    setLoading(false);
   };
 
-  const hasActiveFilters = useMemo(() => !!debouncedQ || !!status, [debouncedQ, status]);
+  useEffect(() => {
+    // reload when filters change
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, q]);
+
+  async function onCreate() {
+    const t = title.trim();
+    if (!t) return;
+    const res = await fetch("/api/requests", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: t, description: desc.trim() || undefined }),
+    });
+    if (res.ok) {
+      setTitle(""); setDesc("");
+      flash("Request created");
+      await refresh();
+    } else {
+      const j = await res.json().catch(() => ({}));
+      flash(j?.error || "Create failed");
+    }
+  }
+
+  async function loadMore() {
+    if (!nextCursor) return;
+    const { rows, next } = await fetchPage(nextCursor);
+    setItems((prev) => [...prev, ...rows]);
+    setNextCursor(next);
+  }
 
   return (
-    <div className="p-6 max-w-6xl mx-auto space-y-4">
-      <div className="flex items-center justify-between">
+    <div className="p-6 max-w-6xl mx-auto space-y-8">
+      <header className="flex items-center justify-between gap-4">
         <h1 className="text-xl font-semibold">Requests</h1>
-        <Link
-          href="/requests/new"
-          className="px-3 py-1.5 rounded-md border hover:bg-gray-50"
-        >
-          New request
-        </Link>
-      </div>
+        {msg ? (
+          <span className="px-3 py-1 rounded-full bg-emerald-100 text-emerald-700 text-sm">{msg}</span>
+        ) : null}
+      </header>
+
+      {/* Create */}
+      <section className="border rounded-xl p-4 space-y-3">
+        <h2 className="font-medium">Create Request</h2>
+        <div className="flex flex-wrap gap-3">
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            className="border rounded-lg px-3 py-2 min-w-[260px] flex-1"
+            placeholder="Title"
+          />
+          <input
+            value={desc}
+            onChange={(e) => setDesc(e.target.value)}
+            className="border rounded-lg px-3 py-2 min-w-[320px] flex-1"
+            placeholder="Description (optional)"
+          />
+          <button onClick={onCreate} className="px-4 py-2 rounded-lg border hover:bg-gray-50">
+            Create
+          </button>
+        </div>
+      </section>
 
       {/* Filters */}
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex-1 min-w-[220px]">
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Search title or description…"
-            className="w-full border rounded-lg px-3 py-2"
-          />
-        </div>
-        <div>
-          <select
-            value={status}
-            onChange={(e) => setStatus(e.target.value as any)}
-            className="border rounded-lg px-3 py-2"
-          >
-            {STATUS_OPTIONS.map((opt) => (
-              <option key={opt.value || "all"} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        </div>
-        {hasActiveFilters && (
+      <section className="border rounded-xl p-4 flex flex-wrap gap-3 items-center">
+        <select
+          value={status}
+          onChange={(e) => setStatus((e.target.value as any) || "")}
+          className="border rounded-lg px-3 py-2"
+        >
+          <option value="">All statuses</option>
+          {STATUSES.map((s) => (
+            <option key={s} value={s}>{label(s)}</option>
+          ))}
+        </select>
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Search title…"
+          className="border rounded-lg px-3 py-2 min-w-[260px] flex-1"
+        />
+        {(status || q) && (
           <button
-            onClick={() => {
-              setQ("");
-              setStatus("");
-            }}
+            onClick={() => { setStatus(""); setQ(""); }}
             className="px-3 py-2 rounded-lg border hover:bg-gray-50"
           >
-            Reset filters
+            Reset
           </button>
         )}
-      </div>
+      </section>
 
       {/* Table */}
-      {loading ? (
-        <div>Loading…</div>
-      ) : rows.length === 0 ? (
-        <div className="text-gray-500">
-          {hasActiveFilters ? "No results match your filters." : "No requests yet."}
-        </div>
-      ) : (
-        <>
-          <div className="rounded-xl border overflow-hidden">
-            <table className="min-w-full text-sm">
-              <thead className="bg-gray-50 text-gray-600">
-                <tr>
-                  <th className="text-left px-4 py-2">ID</th>
-                  <th className="text-left px-4 py-2">Title</th>
-                  <th className="text-left px-4 py-2">Status</th>
-                  <th className="text-left px-4 py-2">Created</th>
-                  <th className="text-left px-4 py-2">Updated</th>
-                  <th className="text-right px-4 py-2">Open</th>
+      <section className="space-y-3">
+        {loading ? (
+          <div>Loading…</div>
+        ) : filtered.length === 0 ? (
+          <div className="text-gray-600">No requests found.</div>
+        ) : (
+          <table className="min-w-full text-sm">
+            <thead className="bg-gray-50 text-gray-600">
+              <tr>
+                <th className="text-left px-4 py-2">ID</th>
+                <th className="text-left px-4 py-2">Title</th>
+                <th className="text-left px-4 py-2">Status</th>
+                <th className="text-left px-4 py-2">Created</th>
+                <th className="text-right px-4 py-2">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((r) => (
+                <tr key={r.id} className="border-t">
+                  <td className="px-4 py-2">#{r.id}</td>
+                  <td className="px-4 py-2">{r.title ?? "—"}</td>
+                  <td className="px-4 py-2">{label(r.status)}</td>
+                  <td className="px-4 py-2">{r.created_at ? new Date(r.created_at).toLocaleString() : "—"}</td>
+                  <td className="px-4 py-2 text-right">
+                    <Link
+                      href={`/requests/${r.id}`}
+                      className="px-3 py-1 rounded border hover:bg-gray-50"
+                    >
+                      Open
+                    </Link>
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.id} className="border-t">
-                    <td className="px-4 py-2">{r.id}</td>
-                    <td className="px-4 py-2">{r.title ?? "—"}</td>
-                    <td className="px-4 py-2">
-                      <span className="px-2 py-1 rounded-full bg-gray-100">
-                        {r.status}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2">
-                      {r.created_at ? new Date(r.created_at).toLocaleString() : "—"}
-                    </td>
-                    <td className="px-4 py-2">
-                      {r.updated_at ? new Date(r.updated_at).toLocaleString() : "—"}
-                    </td>
-                    <td className="px-4 py-2 text-right">
-                      <Link
-                        href={`/requests/${r.id}`}
-                        className="px-3 py-1 rounded-md border hover:bg-gray-50"
-                      >
-                        View
-                      </Link>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+              ))}
+            </tbody>
+          </table>
+        )}
 
-          {nextCursor && (
-            <div className="flex justify-center mt-4">
-              <button
-                onClick={loadMore}
-                className="px-4 py-2 rounded-lg border hover:bg-gray-50"
-              >
-                Load more
-              </button>
-            </div>
-          )}
-        </>
-      )}
+        {nextCursor && (
+          <div className="flex justify-center">
+            <button onClick={loadMore} className="px-4 py-2 rounded-lg border hover:bg-gray-50">
+              Load more
+            </button>
+          </div>
+        )}
+      </section>
     </div>
   );
+}
+
+function label(s: Req["status"]) {
+  switch (s) {
+    case "open":
+      return "Open";
+    case "in_progress":
+      return "In Progress";
+    case "resolved":
+      return "Resolved";
+    case "closed":
+      return "Closed";
+  }
 }
