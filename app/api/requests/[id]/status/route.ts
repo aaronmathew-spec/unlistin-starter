@@ -1,23 +1,68 @@
-import { NextRequest, NextResponse } from "next/server";
-import { getServerSupabase } from "@/lib/supabaseServer";
+import { NextResponse } from "next/server";
+import { createServerClient } from "@supabase/ssr";
+import { cookies } from "next/headers";
 
-const ALLOWED = new Set(["new", "queued", "in_progress", "done"]);
+const ALLOWED = new Set(["open", "in_review", "approved", "changes_requested", "done", "archived"]);
 
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
-  const supabase = getServerSupabase();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+function getSSR() {
+  const store = cookies();
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        get(name: string) {
+          return store.get(name)?.value;
+        },
+        set() {},
+        remove() {},
+      },
+    }
+  );
+}
 
-  const body = await req.json().catch(() => ({}));
-  const next = String(body?.next ?? "");
-  if (!ALLOWED.has(next)) return NextResponse.json({ error: `invalid status: ${next}` }, { status: 400 });
+// PATCH /api/requests/:id/status  { status: "in_review" }
+export async function PATCH(
+  req: Request,
+  { params }: { params: { id: string } }
+) {
+  const requestId = Number(params.id);
+  if (!requestId) return NextResponse.json({ error: "Bad id" }, { status: 400 });
 
-  const { error } = await supabase
+  const supabase = getSSR();
+  const { data: auth } = await supabase.auth.getUser();
+  if (!auth?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const payload = await req.json().catch(() => ({}));
+  const status = String(payload?.status ?? "");
+  if (!ALLOWED.has(status))
+    return NextResponse.json({ error: "Invalid status" }, { status: 400 });
+
+  // Read current status
+  const { data: current, error: curErr } = await supabase
     .from("requests")
-    .update({ status: next })
-    .eq("id", params.id)
-    .eq("owner", user.id);
+    .select("status")
+    .eq("id", requestId)
+    .single();
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
-  return NextResponse.json({ ok: true });
+  if (curErr || !current) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  if (current.status === status) {
+    return NextResponse.json({ updated: false, status });
+  }
+
+  const { error: updErr } = await supabase
+    .from("requests")
+    .update({ status })
+    .eq("id", requestId);
+
+  if (updErr) return NextResponse.json({ error: updErr.message }, { status: 400 });
+
+  await supabase.from("request_events").insert({
+    request_id: requestId,
+    event_type: "status_changed",
+    meta: { from: current.status, to: status },
+  });
+
+  return NextResponse.json({ updated: true, status });
 }
