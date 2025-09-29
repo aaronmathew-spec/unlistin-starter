@@ -36,7 +36,7 @@ export default function CoveragePage() {
   const [search, setSearch] = useState("");
   const [nextCursor, setNextCursor] = useState<string | null>(null);
 
-  // form state
+  // create form
   const [bName, setBName] = useState("");
   const [bUrl, setBUrl] = useState("");
   const [selBroker, setSelBroker] = useState<number | "">("");
@@ -48,6 +48,9 @@ export default function CoveragePage() {
   // evidence drawer state per coverage id
   const [openEvidence, setOpenEvidence] = useState<Record<number, boolean>>({});
   const [filesByCov, setFilesByCov] = useState<Record<number, { items: FileRow[]; next: string | null }>>({});
+
+  // inline edit state per row
+  const [edit, setEdit] = useState<Record<number, Partial<Pick<Cov, "surface" | "status" | "weight" | "note">>>>({});
 
   const filtered = useMemo(() => {
     let items = [...cov];
@@ -65,7 +68,6 @@ export default function CoveragePage() {
       const g = map.get(c.broker_id) ?? null;
       if (g) g.items.push(c);
     }
-    // keep only brokers with rows (when filters applied)
     return Array.from(map.values()).filter((g) => g.items.length > 0);
   }, [brokers, filtered]);
 
@@ -146,7 +148,11 @@ export default function CoveragePage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id, status: newStatus }),
     });
-    if (res.ok) await refreshAll();
+    if (res.ok) {
+      // optimistic
+      setCov((prev) => prev.map((c) => (c.id === id ? { ...c, status: newStatus } : c)));
+      await refreshAll();
+    }
   };
 
   const toggleEvidence = async (covId: number) => {
@@ -190,6 +196,55 @@ export default function CoveragePage() {
     }
   }
 
+  // Inline edit helpers
+  const startEdit = (row: Cov) => {
+    setEdit((m) => ({
+      ...m,
+      [row.id]: {
+        surface: row.surface,
+        status: row.status,
+        weight: row.weight,
+        note: row.note ?? "",
+      },
+    }));
+  };
+  const cancelEdit = (id: number) => {
+    setEdit((m) => {
+      const { [id]: _, ...rest } = m;
+      return rest;
+    });
+  };
+  const saveEdit = async (id: number) => {
+    const e = edit[id];
+    if (!e) return;
+    const res = await fetch("/api/coverage", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, ...e }),
+    });
+    if (res.ok) {
+      await refreshAll();
+      cancelEdit(id);
+    } else {
+      const j = await res.json().catch(() => ({}));
+      alert(j?.error || "Update failed");
+    }
+  };
+  const deleteRow = async (id: number) => {
+    if (!confirm("Delete this coverage item?")) return;
+    const res = await fetch("/api/coverage", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
+    if (res.ok) {
+      setCov((prev) => prev.filter((x) => x.id !== id));
+    } else {
+      const j = await res.json().catch(() => ({}));
+      alert(j?.error || "Delete failed");
+    }
+  };
+
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-8">
       <header className="flex items-center justify-between gap-4">
@@ -226,7 +281,7 @@ export default function CoveragePage() {
           className="border rounded-lg px-3 py-2 min-w-[260px] flex-1"
         />
 
-        { (filterBroker || filterStatus || search) && (
+        {(filterBroker || filterStatus || search) && (
           <button
             onClick={() => { setFilterBroker(""); setFilterStatus(""); setSearch(""); }}
             className="px-3 py-2 rounded-lg border hover:bg-gray-50"
@@ -325,7 +380,6 @@ export default function CoveragePage() {
                 </div>
                 <div className="text-sm text-gray-500">{items.length} item(s)</div>
               </div>
-
               <table className="min-w-full text-sm">
                 <thead className="bg-gray-50 text-gray-600">
                   <tr>
@@ -337,35 +391,114 @@ export default function CoveragePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {items.map((c) => (
-                    <tr key={c.id} className="border-t align-top">
-                      <td className="px-4 py-2">{c.surface}</td>
-                      <td className="px-4 py-2">{label(c.status)}</td>
-                      <td className="px-4 py-2">{c.weight}</td>
-                      <td className="px-4 py-2">{c.note ?? "—"}</td>
-                      <td className="px-4 py-2 text-right space-x-2">
-                        {STATUSES.map((s) => (
-                          <button
-                            key={s}
-                            onClick={() => onQuickStatus(c.id, s)}
-                            className="px-2 py-1 rounded border hover:bg-gray-50"
-                          >
-                            {label(s)}
-                          </button>
-                        ))}
-                        <button
-                          onClick={() => toggleEvidence(c.id)}
-                          className="px-2 py-1 rounded border hover:bg-gray-50"
-                        >
-                          Evidence
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  {items.map((c) => {
+                    const e = edit[c.id];
+                    const isEditing = !!e;
+                    return (
+                      <tr key={c.id} className="border-t align-top">
+                        <td className="px-4 py-2">
+                          {isEditing ? (
+                            <input
+                              className="border rounded px-2 py-1 w-full"
+                              value={e.surface ?? ""}
+                              onChange={(ev) =>
+                                setEdit((m) => ({ ...m, [c.id]: { ...m[c.id], surface: ev.target.value } }))
+                              }
+                            />
+                          ) : (
+                            c.surface
+                          )}
+                        </td>
+                        <td className="px-4 py-2">
+                          {isEditing ? (
+                            <select
+                              className="border rounded px-2 py-1"
+                              value={e.status ?? "open"}
+                              onChange={(ev) =>
+                                setEdit((m) => ({ ...m, [c.id]: { ...m[c.id], status: ev.target.value as Cov["status"] } }))
+                              }
+                            >
+                              {STATUSES.map((s) => <option key={s} value={s}>{label(s)}</option>)}
+                            </select>
+                          ) : (
+                            label(c.status)
+                          )}
+                        </td>
+                        <td className="px-4 py-2">
+                          {isEditing ? (
+                            <input
+                              type="number"
+                              min={0.1}
+                              step={0.1}
+                              className="border rounded px-2 py-1 w-24"
+                              value={e.weight ?? 1}
+                              onChange={(ev) =>
+                                setEdit((m) => ({ ...m, [c.id]: { ...m[c.id], weight: Number(ev.target.value) } }))
+                              }
+                            />
+                          ) : (
+                            c.weight
+                          )}
+                        </td>
+                        <td className="px-4 py-2">
+                          {isEditing ? (
+                            <input
+                              className="border rounded px-2 py-1 w-full"
+                              value={e.note ?? ""}
+                              onChange={(ev) =>
+                                setEdit((m) => ({ ...m, [c.id]: { ...m[c.id], note: ev.target.value } }))
+                              }
+                            />
+                          ) : (
+                            c.note ?? "—"
+                          )}
+                        </td>
+                        <td className="px-4 py-2 text-right space-x-2">
+                          {isEditing ? (
+                            <>
+                              <button onClick={() => saveEdit(c.id)} className="px-2 py-1 rounded border hover:bg-gray-50">
+                                Save
+                              </button>
+                              <button onClick={() => cancelEdit(c.id)} className="px-2 py-1 rounded border hover:bg-gray-50">
+                                Cancel
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                onClick={() => onQuickStatus(c.id, "resolved")}
+                                className="px-2 py-1 rounded border hover:bg-gray-50"
+                              >
+                                Mark Resolved
+                              </button>
+                              <button
+                                onClick={() => startEdit(c)}
+                                className="px-2 py-1 rounded border hover:bg-gray-50"
+                              >
+                                Edit
+                              </button>
+                              <button
+                                onClick={() => deleteRow(c.id)}
+                                className="px-2 py-1 rounded border hover:bg-gray-50"
+                              >
+                                Delete
+                              </button>
+                              <button
+                                onClick={() => toggleEvidence(c.id)}
+                                className="px-2 py-1 rounded border hover:bg-gray-50"
+                              >
+                                Evidence
+                              </button>
+                            </>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
 
-              {/* Evidence drawers */}
+              {/* Evidence drawers for rows that are open */}
               {items.map((c) =>
                 openEvidence[c.id] ? (
                   <EvidenceRow
