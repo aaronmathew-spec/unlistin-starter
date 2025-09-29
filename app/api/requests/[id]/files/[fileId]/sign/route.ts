@@ -1,38 +1,44 @@
 // app/api/requests/[id]/files/[fileId]/sign/route.ts
-import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
-const BUCKET = "request-files";
-const TABLE = "request_files";
-
 export async function GET(
-  _req: NextRequest,
+  _req: Request,
   { params }: { params: { id: string; fileId: string } }
 ) {
-  const supabase = createSupabaseServerClient();
   const requestId = Number(params.id);
   const fileId = Number(params.fileId);
   if (!Number.isFinite(requestId) || !Number.isFinite(fileId)) {
-    return NextResponse.json({ error: "invalid ids" }, { status: 400 });
-  }
+    return NextResponse.json({ error: "Invalid id" }, { status: 400 });
+    }
+  const supabase = createSupabaseServerClient();
 
+  // Select the file row; RLS should ensure only the owner can see it
   const { data: row, error } = await supabase
-    .from(TABLE)
+    .from("request_files")
     .select("id, request_id, path, name")
     .eq("id", fileId)
     .eq("request_id", requestId)
     .single();
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 404 });
-
-  const { data: signed, error: urlErr } = await supabase.storage
-    .from(BUCKET)
-    .createSignedUrl(row.path, 300, { download: row.name }); // 5 minutes
-
-  if (urlErr || !signed?.signedUrl) {
-    return NextResponse.json({ error: urlErr?.message || "failed to sign url" }, { status: 400 });
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 400 });
+  }
+  if (!row) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  return NextResponse.json({ signedUrl: signed.signedUrl, filename: row.name });
+  // Sign the storage object path for 5 minutes
+  const { data: signed, error: sErr } = await supabase.storage
+    .from("request-files")
+    .createSignedUrl(row.path, 60 * 5);
+
+  if (sErr || !signed?.signedUrl) {
+    return NextResponse.json(
+      { error: sErr?.message || "Could not sign URL" },
+      { status: 500 }
+    );
+  }
+
+  return NextResponse.json({ signedUrl: signed.signedUrl });
 }
