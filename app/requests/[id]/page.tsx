@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useToast } from "@/components/providers/ToastProvider";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { FEATURE_AI_UI } from "@/lib/flags";
 
 type RequestRow = {
   id: number;
@@ -57,6 +58,11 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
   const [newBody, setNewBody] = useState("");
   const [busyComment, setBusyComment] = useState<Record<number, boolean>>({});
 
+  // AI Assist state (flagged)
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiOutput, setAiOutput] = useState<string | null>(null);
+
   const sizeFmt = (n?: number | null) =>
     !n && n !== 0
       ? "—"
@@ -96,7 +102,6 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
 
   useEffect(() => {
     if (!Number.isFinite(rid)) return;
-    // Initial load
     refreshAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rid]);
@@ -106,17 +111,11 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
     if (!Number.isFinite(rid)) return;
     const supabase = createSupabaseBrowserClient();
 
-    // Comments: INSERT/DELETE on this request
     const chComments = supabase
       .channel(`rc:${rid}`)
       .on(
         "postgres_changes",
-        {
-          event: "INSERT",
-          schema: "public",
-          table: "request_comments",
-          filter: `request_id=eq.${rid}`,
-        },
+        { event: "INSERT", schema: "public", table: "request_comments", filter: `request_id=eq.${rid}` },
         (payload) => {
           const row = payload.new as any;
           setComments((prev) => [{ ...(row as CommentRow) }, ...prev]);
@@ -124,12 +123,7 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
       )
       .on(
         "postgres_changes",
-        {
-          event: "DELETE",
-          schema: "public",
-          table: "request_comments",
-          filter: `request_id=eq.${rid}`,
-        },
+        { event: "DELETE", schema: "public", table: "request_comments", filter: `request_id=eq.${rid}` },
         (payload) => {
           const oldRow = payload.old as any;
           setComments((prev) => prev.filter((c) => c.id !== Number(oldRow.id)));
@@ -137,47 +131,25 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
       )
       .subscribe();
 
-    // Files: INSERT/DELETE on this request
     const chFiles = supabase
       .channel(`rf:${rid}`)
       .on(
         "postgres_changes",
-        {
-          event: "INSERT",
-          schema: "public",
-          table: "request_files",
-          filter: `request_id=eq.${rid}`,
-        },
-        async () => {
-          // Refresh list cheaply: just re-fetch files
-          await fetchFiles();
-        }
+        { event: "INSERT", schema: "public", table: "request_files", filter: `request_id=eq.${rid}` },
+        async () => { await fetchFiles(); }
       )
       .on(
         "postgres_changes",
-        {
-          event: "DELETE",
-          schema: "public",
-          table: "request_files",
-          filter: `request_id=eq.${rid}`,
-        },
-        async () => {
-          await fetchFiles();
-        }
+        { event: "DELETE", schema: "public", table: "request_files", filter: `request_id=eq.${rid}` },
+        async () => { await fetchFiles(); }
       )
       .subscribe();
 
-    // Request status: UPDATE (watch updated row)
     const chReq = supabase
       .channel(`rq:${rid}`)
       .on(
         "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "requests",
-          filter: `id=eq.${rid}`,
-        },
+        { event: "UPDATE", schema: "public", table: "requests", filter: `id=eq.${rid}` },
         (payload) => {
           const row = payload.new as any;
           setReqRow((prev) => (prev ? { ...prev, status: row.status, updated_at: row.updated_at } : prev));
@@ -198,7 +170,7 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
     [rid, reqRow?.title]
   );
 
-  // Upload handler — uses FormData.append with filename and hard guard for TS
+  // Upload handler
   async function onUpload(ev: React.FormEvent<HTMLFormElement>) {
     ev.preventDefault();
     const form = ev.currentTarget;
@@ -222,7 +194,6 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
       }
       toast("File uploaded");
       if (input) input.value = "";
-      // files list will also refresh via realtime INSERT; but we still refresh for safety
       await fetchFiles();
       setActiveTab("files");
     } catch (e: any) {
@@ -232,7 +203,6 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
     }
   }
 
-  // File actions
   async function signAndOpen(fid: number) {
     setBusyFile((m) => ({ ...m, [fid]: true }));
     try {
@@ -277,7 +247,6 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
         const j = await res.json().catch(() => ({}));
         throw new Error(j?.error || `Delete failed (${res.status})`);
       }
-      // list refreshes via realtime DELETE; also adjust immediately
       setFiles((prev) => prev.filter((f) => f.id !== fid));
       toast("File deleted");
     } catch (e: any) {
@@ -308,7 +277,6 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
         const j = await res.json().catch(() => ({}));
         throw new Error(j?.error || `Create failed (${res.status})`);
       }
-      // Realtime INSERT will prepend the item; we can also prepend optimistically
       setNewBody("");
       setActiveTab("comments");
     } catch (e: any) {
@@ -327,7 +295,6 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
         const j = await res.json().catch(() => ({}));
         throw new Error(j?.error || `Delete failed (${res.status})`);
       }
-      // Realtime DELETE will remove it; remove locally too
       setComments((prev) => prev.filter((c) => c.id !== id));
     } catch (e: any) {
       toast(e?.message || "Failed to delete");
@@ -337,6 +304,29 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
         delete n[id];
         return n;
       });
+    }
+  }
+
+  // AI Assist action (flagged)
+  async function runAiAssist() {
+    if (!aiPrompt.trim()) { toast("Enter a prompt"); return; }
+    setAiBusy(true);
+    setAiOutput(null);
+    try {
+      const res = await fetch(`/api/agents/draft`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ request_id: rid, prompt: aiPrompt.trim() }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j?.error || `Agent error (${res.status})`);
+      const text = j?.action?.text || j?.task?.payload?.text || "(no output)";
+      setAiOutput(String(text));
+      toast("Draft generated");
+    } catch (e: any) {
+      toast(e?.message || "Agent failed");
+    } finally {
+      setAiBusy(false);
     }
   }
 
@@ -359,6 +349,45 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
         </Link>
       </header>
 
+      {/* AI Assist (flagged) */}
+      {FEATURE_AI_UI && (
+        <section className="border rounded-xl p-4 space-y-3 bg-gray-50/40">
+          <div className="font-medium">AI Assist</div>
+          <div className="text-xs text-gray-600">
+            Generates a concise draft or summary for this request. Safe by design (HITL).
+          </div>
+          <textarea
+            value={aiPrompt}
+            onChange={(e) => setAiPrompt(e.target.value)}
+            placeholder="e.g., Summarize this request and propose a 3-step next action plan."
+            className="border rounded-lg px-3 py-2 w-full min-h-[80px] bg-white"
+          />
+          <div className="flex items-center gap-2">
+            <button
+              onClick={runAiAssist}
+              disabled={aiBusy}
+              className="px-3 py-1 rounded border hover:bg-gray-50 text-sm"
+            >
+              {aiBusy ? "Thinking…" : "Generate Draft"}
+            </button>
+            {aiOutput && (
+              <button
+                className="px-3 py-1 rounded border hover:bg-gray-50 text-sm"
+                onClick={async () => {
+                  await navigator.clipboard.writeText(aiOutput!);
+                  toast("Copied");
+                }}
+              >
+                Copy Output
+              </button>
+            )}
+          </div>
+          {aiOutput && (
+            <pre className="whitespace-pre-wrap text-sm border rounded-lg bg-white p-3">{aiOutput}</pre>
+          )}
+        </section>
+      )}
+
       {loading ? (
         <div>Loading…</div>
       ) : !reqRow ? (
@@ -371,9 +400,7 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
               <button
                 key={t}
                 onClick={() => setActiveTab(t)}
-                className={`px-3 py-1 rounded-t ${
-                  activeTab === t ? "bg-gray-100 border border-b-0" : "border-transparent"
-                }`}
+                className={`px-3 py-1 rounded-t ${activeTab === t ? "bg-gray-100 border border-b-0" : "border-transparent"}`}
               >
                 {t === "about" ? "About" : t === "files" ? "Files" : "Comments"}
               </button>
@@ -385,14 +412,8 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
             <section className="border rounded-b-xl p-4 space-y-2">
               <div className="font-medium">About</div>
               <div className="text-sm">
-                <div>
-                  <span className="text-gray-600">Status:</span>{" "}
-                  {reqRow.status.replace("_", " ")}
-                </div>
-                <div>
-                  <span className="text-gray-600">Updated:</span>{" "}
-                  {reqRow.updated_at ? new Date(reqRow.updated_at).toLocaleString() : "—"}
-                </div>
+                <div><span className="text-gray-600">Status:</span> {reqRow.status.replace("_", " ")}</div>
+                <div><span className="text-gray-600">Updated:</span> {reqRow.updated_at ? new Date(reqRow.updated_at).toLocaleString() : "—"}</div>
               </div>
               {reqRow.description && (
                 <p className="text-sm text-gray-800 whitespace-pre-wrap">{reqRow.description}</p>
@@ -407,17 +428,12 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
                 <h2 className="font-medium">Files</h2>
                 <form onSubmit={onUpload} className="flex items-center gap-2">
                   <input name="file" type="file" className="text-sm" disabled={uploading} />
-                  <button
-                    type="submit"
-                    disabled={uploading}
-                    className="px-3 py-1 rounded border hover:bg-gray-50 text-sm"
-                  >
+                  <button type="submit" disabled={uploading} className="px-3 py-1 rounded border hover:bg-gray-50 text-sm">
                     {uploading ? "Uploading…" : "Upload"}
                   </button>
                 </form>
               </div>
               {uploadError && <div className="text-sm text-red-600">{uploadError}</div>}
-
               {files.length === 0 ? (
                 <div className="text-gray-600 text-sm">No files yet.</div>
               ) : (
@@ -439,29 +455,15 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
                           <td className="px-4 py-2">{f.name}</td>
                           <td className="px-4 py-2">{f.mime || "—"}</td>
                           <td className="px-4 py-2">{sizeFmt(f.size_bytes)}</td>
-                          <td className="px-4 py-2">
-                            {f.created_at ? new Date(f.created_at).toLocaleString() : "—"}
-                          </td>
+                          <td className="px-4 py-2">{f.created_at ? new Date(f.created_at).toLocaleString() : "—"}</td>
                           <td className="px-4 py-2 text-right space-x-2">
-                            <button
-                              disabled={isBusy}
-                              onClick={() => signAndOpen(f.id)}
-                              className="px-2 py-1 rounded border hover:bg-gray-50"
-                            >
+                            <button disabled={isBusy} onClick={() => signAndOpen(f.id)} className="px-2 py-1 rounded border hover:bg-gray-50">
                               {isBusy ? "…" : "Download"}
                             </button>
-                            <button
-                              disabled={isBusy}
-                              onClick={() => signAndCopy(f.id)}
-                              className="px-2 py-1 rounded border hover:bg-gray-50"
-                            >
+                            <button disabled={isBusy} onClick={() => signAndCopy(f.id)} className="px-2 py-1 rounded border hover:bg-gray-50">
                               {isBusy ? "…" : "Copy link"}
                             </button>
-                            <button
-                              disabled={isBusy}
-                              onClick={() => removeFile(f.id)}
-                              className="px-2 py-1 rounded border hover:bg-gray-50"
-                            >
+                            <button disabled={isBusy} onClick={() => removeFile(f.id)} className="px-2 py-1 rounded border hover:bg-gray-50">
                               {isBusy ? "…" : "Delete"}
                             </button>
                           </td>
@@ -480,10 +482,7 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
               <div className="flex items-center justify-between">
                 <h2 className="font-medium">Comments</h2>
                 {commentsCursor && (
-                  <button
-                    className="px-3 py-1 rounded border hover:bg-gray-50 text-sm"
-                    onClick={() => fetchComments(commentsCursor)}
-                  >
+                  <button className="px-3 py-1 rounded border hover:bg-gray-50 text-sm" onClick={() => fetchComments(commentsCursor)}>
                     Load older
                   </button>
                 )}
@@ -498,19 +497,11 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
                   className="border rounded-lg px-3 py-2 w-full min-h-[80px]"
                 />
                 <div className="flex gap-2">
-                  <button
-                    onClick={addComment}
-                    disabled={addingComment || !newBody.trim()}
-                    className="px-3 py-1 rounded border hover:bg-gray-50 text-sm"
-                  >
+                  <button onClick={addComment} disabled={addingComment || !newBody.trim()} className="px-3 py-1 rounded border hover:bg-gray-50 text-sm">
                     {addingComment ? "Posting…" : "Post"}
                   </button>
                   {!!newBody && (
-                    <button
-                      onClick={() => setNewBody("")}
-                      disabled={addingComment}
-                      className="px-3 py-1 rounded border hover:bg-gray-50 text-sm"
-                    >
+                    <button onClick={() => setNewBody("")} disabled={addingComment} className="px-3 py-1 rounded border hover:bg-gray-50 text-sm">
                       Clear
                     </button>
                   )}
@@ -526,9 +517,7 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
                     const isBusy = !!busyComment[c.id];
                     return (
                       <li key={c.id} className="border rounded-lg p-3">
-                        <div className="text-xs text-gray-500">
-                          {new Date(c.created_at).toLocaleString()}
-                        </div>
+                        <div className="text-xs text-gray-500">{new Date(c.created_at).toLocaleString()}</div>
                         <div className="whitespace-pre-wrap text-sm my-1">{c.body}</div>
                         <div className="flex justify-end">
                           <button
