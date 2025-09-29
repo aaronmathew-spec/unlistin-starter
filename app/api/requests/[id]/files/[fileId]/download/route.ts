@@ -2,8 +2,10 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { logActivity } from "@/lib/activity";
 
 const BUCKET = "request-files";
+const Table = "request_files";
 
 export async function GET(
   _req: NextRequest,
@@ -12,27 +14,35 @@ export async function GET(
   const supabase = createSupabaseServerClient();
   const requestId = Number(params.id);
   const fileId = Number(params.fileId);
+  if (!Number.isFinite(requestId) || !Number.isFinite(fileId)) {
+    return NextResponse.json({ error: "invalid ids" }, { status: 400 });
+  }
 
-  // RLS-scoped lookup
-  const { data, error } = await supabase
-    .from("request_files")
-    .select("id, path, name, mime")
+  const { data: row, error } = await supabase
+    .from(Table)
+    .select("id, request_id, path, name")
     .eq("id", fileId)
     .eq("request_id", requestId)
     .single();
 
-  if (error || !data) {
-    return NextResponse.json({ error: error?.message || "File not found" }, { status: 404 });
-  }
+  if (error) return NextResponse.json({ error: error.message }, { status: 404 });
 
-  const { data: signed, error: signErr } = await supabase.storage
+  // Create short-lived signed URL and redirect (keeps server fast)
+  const { data: signed, error: urlErr } = await supabase.storage
     .from(BUCKET)
-    .createSignedUrl(data.path, 60); // 1-minute link
+    .createSignedUrl(row.path, 60, { download: row.name });
 
-  if (signErr || !signed?.signedUrl) {
-    return NextResponse.json({ error: signErr?.message || "Unable to sign URL" }, { status: 400 });
+  if (urlErr || !signed?.signedUrl) {
+    return NextResponse.json({ error: urlErr?.message || "failed to sign url" }, { status: 400 });
   }
 
-  // Redirect so browser downloads from storage directly
-  return NextResponse.redirect(signed.signedUrl, { status: 302 });
+  // Activity: download
+  await logActivity({
+    entity_type: "file",
+    entity_id: row.id,
+    action: "download",
+    meta: { scope: "request", request_id: requestId, name: row.name },
+  });
+
+  return NextResponse.redirect(signed.signedUrl);
 }
