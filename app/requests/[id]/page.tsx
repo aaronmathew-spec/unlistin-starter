@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useToast } from "@/components/providers/ToastProvider";
+import { fileEmoji, humanSize } from "@/lib/fileIcons";
 
 type RequestRow = {
   id: number;
@@ -26,11 +27,7 @@ type FileRow = {
 
 const STATUSES: RequestRow["status"][] = ["open", "in_progress", "resolved", "closed"];
 
-export default function RequestDetailPage({
-  params,
-}: {
-  params: { id: string };
-}) {
+export default function RequestDetailPage({ params }: { params: { id: string } }) {
   const id = Number(params.id);
   const router = useRouter();
   const { toast } = useToast();
@@ -47,6 +44,8 @@ export default function RequestDetailPage({
   const [files, setFiles] = useState<FileRow[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [uploadBusy, setUploadBusy] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewName, setPreviewName] = useState<string | null>(null);
 
   const createdAt = useMemo(
     () => (reqRow?.created_at ? new Date(reqRow.created_at).toLocaleString() : "—"),
@@ -66,7 +65,7 @@ export default function RequestDetailPage({
       return;
     }
     const j = await res.json();
-    const row = (j.request ?? j) as RequestRow; // support older shape
+    const row = (j.request ?? j) as RequestRow;
     setReqRow(row);
     setTitle(row.title ?? "");
     setDesc(row.description ?? "");
@@ -79,11 +78,8 @@ export default function RequestDetailPage({
     if (cursor) u.searchParams.set("cursor", cursor);
     const j = await fetch(u.toString(), { cache: "no-store" }).then((r) => r.json());
     const list = (j.files ?? []) as FileRow[];
-    if (cursor) {
-      setFiles((prev) => [...prev, ...list]);
-    } else {
-      setFiles(list);
-    }
+    if (cursor) setFiles((prev) => [...prev, ...list]);
+    else setFiles(list);
     setNextCursor(j.nextCursor ?? null);
   }
 
@@ -141,7 +137,6 @@ export default function RequestDetailPage({
     try {
       const fd = new FormData();
       fd.append("file", file);
-      // if your API reads `mime` from FormData, we can pass it explicitly:
       fd.append("mime", file.type || "application/octet-stream");
       const res = await fetch(`/api/requests/${id}/files`, { method: "POST", body: fd });
       if (res.ok) {
@@ -157,18 +152,51 @@ export default function RequestDetailPage({
   }
 
   async function onDeleteFile(fileId: number) {
-    const okay = confirm("Delete this file?");
-    if (!okay) return;
-    const res = await fetch(`/api/requests/${id}/files?fileId=${fileId}`, {
-      method: "DELETE",
-    });
+    const ok = confirm("Delete this file?");
+    if (!ok) return;
+    const res = await fetch(`/api/requests/${id}/files?fileId=${fileId}`, { method: "DELETE" });
     if (res.ok) {
       setFiles((prev) => prev.filter((f) => f.id !== fileId));
       toast("Deleted");
+      // close preview if the same file
+      if (previewUrl && previewName) {
+        setPreviewUrl(null);
+        setPreviewName(null);
+      }
     } else {
       const j = await res.json().catch(() => ({}));
       toast(j?.error || "Delete failed");
     }
+  }
+
+  async function copySignedUrl(fileId: number) {
+    const res = await fetch(`/api/requests/${id}/files/${fileId}/sign`);
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      toast(j?.error || "Could not sign URL");
+      return;
+    }
+    const j = await res.json();
+    await navigator.clipboard.writeText(j.signedUrl);
+    toast("Link copied (5 min)");
+  }
+
+  async function previewFile(fileId: number, name: string, mime: string | null) {
+    // only image/pdf inline; others will just trigger a download
+    const isImage = (mime || "").startsWith("image/");
+    const isPdf = mime === "application/pdf" || (name || "").toLowerCase().endsWith(".pdf");
+    if (!isImage && !isPdf) {
+      window.location.href = `/api/requests/${id}/files/${fileId}/download`;
+      return;
+    }
+    const res = await fetch(`/api/requests/${id}/files/${fileId}/sign`);
+    if (!res.ok) {
+      toast("Could not sign URL");
+      return;
+    }
+    const j = await res.json();
+    setPreviewUrl(j.signedUrl);
+    setPreviewName(name);
   }
 
   // ----- render -----
@@ -195,7 +223,7 @@ export default function RequestDetailPage({
   }
 
   return (
-    <div className="p-6 max-w-5xl mx-auto space-y-8">
+    <div className="p-6 max-w-6xl mx-auto space-y-8">
       {/* Header */}
       <div className="flex items-center justify-between gap-4">
         <div className="space-y-1">
@@ -274,7 +302,7 @@ export default function RequestDetailPage({
       </section>
 
       {/* Files */}
-      <section className="border rounded-xl p-4 space-y-3">
+      <section className="border rounded-xl p-4 space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="font-medium">Files</h2>
           <label className="text-sm">
@@ -285,7 +313,11 @@ export default function RequestDetailPage({
               className="hidden"
               id="fileInput"
             />
-            <span className={`px-3 py-1 rounded border hover:bg-gray-50 cursor-pointer ${uploadBusy ? "opacity-60 pointer-events-none" : ""}`}>
+            <span
+              className={`px-3 py-1 rounded border hover:bg-gray-50 cursor-pointer ${
+                uploadBusy ? "opacity-60 pointer-events-none" : ""
+              }`}
+            >
               {uploadBusy ? "Uploading…" : "Upload"}
             </span>
           </label>
@@ -296,21 +328,39 @@ export default function RequestDetailPage({
         ) : (
           <ul className="space-y-2">
             {files.map((f) => (
-              <li key={f.id} className="flex items-center justify-between border rounded p-2 text-sm">
-                <div className="min-w-0">
-                  <div className="truncate font-medium">{f.name}</div>
-                  <div className="text-gray-500">
-                    {f.mime || "file"} · {(f.size_bytes ?? 0).toLocaleString()} bytes ·{" "}
-                    {new Date(f.created_at).toLocaleString()}
+              <li
+                key={f.id}
+                className="flex items-center justify-between border rounded p-2 text-sm gap-4"
+              >
+                <div className="flex items-start gap-3 min-w-0">
+                  <div className="text-lg">{fileEmoji(f.mime, f.name)}</div>
+                  <div className="min-w-0">
+                    <div className="truncate font-medium">{f.name}</div>
+                    <div className="text-gray-500">
+                      {(f.mime || "file")} · {humanSize(f.size_bytes)} ·{" "}
+                      {new Date(f.created_at).toLocaleString()}
+                    </div>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={() => previewFile(f.id, f.name, f.mime)}
+                    className="px-2 py-1 rounded border hover:bg-gray-50"
+                  >
+                    Preview
+                  </button>
                   <a
                     href={`/api/requests/${id}/files/${f.id}/download`}
                     className="px-2 py-1 rounded border hover:bg-gray-50"
                   >
                     Download
                   </a>
+                  <button
+                    onClick={() => copySignedUrl(f.id)}
+                    className="px-2 py-1 rounded border hover:bg-gray-50"
+                  >
+                    Copy link
+                  </button>
                   <button
                     onClick={() => onDeleteFile(f.id)}
                     className="px-2 py-1 rounded border hover:bg-gray-50"
@@ -331,6 +381,33 @@ export default function RequestDetailPage({
             >
               Load more
             </button>
+          </div>
+        )}
+
+        {/* Inline previewer (image/pdf) */}
+        {previewUrl && (
+          <div className="border rounded-lg p-2">
+            <div className="flex items-center justify-between mb-2">
+              <div className="font-medium truncate pr-4">Preview — {previewName}</div>
+              <button
+                onClick={() => {
+                  setPreviewUrl(null);
+                  setPreviewName(null);
+                }}
+                className="px-2 py-1 rounded border hover:bg-gray-50"
+              >
+                Close
+              </button>
+            </div>
+            {isPdfName(previewName) ? (
+              <iframe
+                src={previewUrl}
+                className="w-full h-[70vh] rounded"
+                title={previewName || "Preview"}
+              />
+            ) : (
+              <img src={previewUrl} alt={previewName || "Preview"} className="max-h-[70vh] object-contain mx-auto" />
+            )}
           </div>
         )}
       </section>
@@ -370,4 +447,8 @@ function statusStyle(s: RequestRow["status"]) {
     return { bg: "bg-amber-100", text: "text-amber-700" };
   }
   return { bg: "bg-gray-100", text: "text-gray-700" };
+}
+
+function isPdfName(name: string | null) {
+  return (name || "").toLowerCase().endsWith(".pdf");
 }
