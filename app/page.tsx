@@ -28,7 +28,6 @@ export default function HomePage() {
     setLoading(true);
     const [dashRes, expRes] = await Promise.all([
       fetch("/api/dashboard", { cache: "no-store" }).then((r) => r.json()),
-      // If /api/exposure exists in your project (used previously in Coverage page), we show it here.
       fetch("/api/exposure").then((r) => (r.ok ? r.json() : { score: null })).catch(() => ({ score: null })),
     ]);
     setData(dashRes);
@@ -89,6 +88,15 @@ export default function HomePage() {
         />
         <Card title="Brokers" primary={brokers.total} secondary="" href="/brokers" />
       </section>
+
+      {requests.total === 0 && (
+        <div className="border rounded-xl p-4 flex items-center justify-between">
+          <div className="text-sm text-gray-700">No requests yet — create your first request to get started.</div>
+          <Link href="/requests" className="px-3 py-1 rounded border hover:bg-gray-50">
+            Create a Request
+          </Link>
+        </div>
+      )}
 
       {/* Activity */}
       <section className="border rounded-xl p-4 space-y-3">
