@@ -8,8 +8,8 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
  *   - Sorted by id DESC with cursor pagination on id
  *
  * POST /api/requests
- *   - JSON body: { title?: string, description?: string }
- *   - Creates a new request for the signed-in user (RLS must allow insert)
+ *   - JSON body: { title: string, description?: string }
+ *   - Creates a new request (status defaults to 'open') and logs request_activity 'request_created'
  */
 
 export async function GET(req: NextRequest) {
@@ -21,7 +21,7 @@ export async function GET(req: NextRequest) {
 
   let q = supabase
     .from("requests")
-    .select("id, title, status, created_at")
+    .select("id, title, status, created_at, updated_at")
     .order("id", { ascending: false })
     .limit(limit);
 
@@ -62,18 +62,28 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Title is required" }, { status: 400 });
   }
 
-  // Insert; RLS on `requests` must attach the row to the current user
-  const { data, error } = await supabase
+  // Insert request (RLS should attach to the current user and default status='open')
+  const { data: inserted, error } = await supabase
     .from("requests")
-    .insert({ title, description }) // status defaults to 'open' via schema
-    .select("id, title, status, created_at")
+    .insert({ title, description })
+    .select("id, title, status, created_at, updated_at")
     .single();
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 400 });
   }
 
-  return NextResponse.json({ request: data }, { status: 201 });
+  // Log activity (best-effort)
+  await supabase.from("request_activity").insert({
+    request_id: inserted.id,
+    type: "request_created",
+    message: `Request created: ${inserted.title ?? `#${inserted.id}`}`,
+    meta: {
+      status: inserted.status,
+    },
+  });
+
+  return NextResponse.json({ request: inserted }, { status: 201 });
 }
 
 /* ----------------------------- helpers ----------------------------- */
