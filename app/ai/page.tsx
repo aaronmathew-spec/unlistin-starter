@@ -24,21 +24,38 @@ type FileHit = {
   created_at: string;
 };
 
+type SemanticHit = {
+  kind: "request" | "file";
+  ref_id: number;
+  content: string;
+  score: number;
+};
+
 export default function AIAssistPage() {
   const featureAI = process.env.NEXT_PUBLIC_FEATURE_AI === "1";
 
-  // Chat state
+  // Chat
   const [input, setInput] = useState("");
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [pendingChat, startChat] = useTransition();
   const chatRef = useRef<HTMLDivElement>(null);
 
-  // Search state
+  // Keyword Search
   const [q, setQ] = useState("");
   const [pendingSearch, startSearch] = useTransition();
   const [reqHits, setReqHits] = useState<RequestHit[]>([]);
   const [fileHits, setFileHits] = useState<FileHit[]>([]);
   const [searchError, setSearchError] = useState<string | null>(null);
+
+  // Semantic Search
+  const [sq, setSQ] = useState("");
+  const [pendingSemantic, startSemantic] = useTransition();
+  const [semanticHits, setSemanticHits] = useState<SemanticHit[]>([]);
+  const [semanticError, setSemanticError] = useState<string | null>(null);
+
+  // Indexer
+  const [pendingIndex, startIndex] = useTransition();
+  const [indexMsg, setIndexMsg] = useState<string | null>(null);
 
   const disabledReason = useMemo(() => {
     if (!featureAI) return "AI UI disabled (set NEXT_PUBLIC_FEATURE_AI=1 to show)";
@@ -66,7 +83,7 @@ export default function AIAssistPage() {
       ) : null}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Chat column */}
+        {/* Chat */}
         <div className="flex flex-col gap-3">
           <div className="border rounded-md p-4 h-[60vh] overflow-y-auto bg-white" ref={chatRef}>
             {turns.length === 0 ? (
@@ -104,10 +121,7 @@ export default function AIAssistPage() {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
-                      messages: [
-                        { role: "user", content: text },
-                        // (Optional) include condensed history here
-                      ],
+                      messages: [{ role: "user", content: text }],
                     }),
                   });
                   const json = (await res.json()) as { answer?: string; error?: string };
@@ -139,10 +153,11 @@ export default function AIAssistPage() {
           </form>
         </div>
 
-        {/* Search column */}
+        {/* Right column: Keyword + Semantic + Index controls */}
         <div className="flex flex-col gap-3">
+          {/* Keyword Search */}
           <div className="border rounded-md p-4 bg-white">
-            <h2 className="text-lg font-semibold mb-3">Knowledge Search</h2>
+            <h2 className="text-lg font-semibold mb-3">Keyword Search</h2>
             <form
               className="flex gap-2"
               onSubmit={(e) => {
@@ -187,9 +202,7 @@ export default function AIAssistPage() {
             </form>
 
             {pendingSearch && <div className="mt-3 text-sm text-gray-400">Searching…</div>}
-            {searchError && (
-              <div className="mt-3 text-sm text-red-600">Error: {searchError}</div>
-            )}
+            {searchError && <div className="mt-3 text-sm text-red-600">Error: {searchError}</div>}
 
             <div className="mt-4 space-y-4">
               <div>
@@ -243,9 +256,12 @@ export default function AIAssistPage() {
                           </a>
                         </div>
                         <div className="text-xs text-gray-500 mt-1">
-                          {f.mime ?? "unknown"} · {typeof f.size_bytes === "number" ? `${f.size_bytes} bytes` : "size n/a"}
+                          {f.mime ?? "unknown"} ·{" "}
+                          {typeof f.size_bytes === "number" ? `${f.size_bytes} bytes` : "size n/a"}
                         </div>
-                        <div className="text-xs text-gray-400">{new Date(f.created_at).toLocaleString()}</div>
+                        <div className="text-xs text-gray-400">
+                          {new Date(f.created_at).toLocaleString()}
+                        </div>
                       </li>
                     ))}
                   </ul>
@@ -254,15 +270,122 @@ export default function AIAssistPage() {
             </div>
           </div>
 
+          {/* Semantic Search */}
+          <div className="border rounded-md p-4 bg-white">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold mb-3">Semantic Search (pgvector)</h2>
+              <button
+                className="text-xs rounded border px-2 py-1 hover:bg-gray-50 disabled:opacity-50"
+                disabled={pendingIndex || !!disabledReason}
+                onClick={() =>
+                  startIndex(async () => {
+                    setIndexMsg(null);
+                    try {
+                      const res = await fetch("/api/ai/index", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ reindexAll: true }),
+                      });
+                      const json = await res.json();
+                      if (!res.ok) throw new Error(json.error || "Failed");
+                      setIndexMsg("Reindex complete.");
+                    } catch (e: any) {
+                      setIndexMsg(`Reindex error: ${e?.message ?? "unknown"}`);
+                    }
+                  })
+                }
+              >
+                {pendingIndex ? "Reindexing…" : "Reindex My Data"}
+              </button>
+            </div>
+            {indexMsg && <div className="text-xs text-gray-600 mb-2">{indexMsg}</div>}
+            <form
+              className="flex gap-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const text = sq.trim();
+                if (!text || pendingSemantic) return;
+
+                startSemantic(async () => {
+                  setSemanticError(null);
+                  try {
+                    const res = await fetch("/api/ai/search", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ query: text, limit: 10, kinds: ["request", "file"] }),
+                    });
+                    const json = (await res.json()) as { matches?: SemanticHit[]; error?: string };
+                    if (json.error) throw new Error(json.error);
+                    setSemanticHits(json.matches ?? []);
+                  } catch (err: any) {
+                    setSemanticError(err?.message ?? "Semantic search failed");
+                    setSemanticHits([]);
+                  }
+                });
+              }}
+            >
+              <input
+                className="flex-1 border rounded-md px-3 py-2 text-sm"
+                placeholder="Ask semantically (e.g., 'design decisions for file uploads')…"
+                value={sq}
+                onChange={(e) => setSQ(e.target.value)}
+                disabled={!!disabledReason}
+              />
+              <button
+                type="submit"
+                className="rounded-md border px-3 py-2 text-sm hover:bg-gray-50 disabled:opacity-50"
+                disabled={!!disabledReason || pendingSemantic || !sq.trim()}
+              >
+                Search
+              </button>
+            </form>
+
+            {pendingSemantic && <div className="mt-3 text-sm text-gray-400">Searching…</div>}
+            {semanticError && <div className="mt-3 text-sm text-red-600">Error: {semanticError}</div>}
+
+            <div className="mt-4">
+              {semanticHits.length === 0 ? (
+                <div className="text-sm text-gray-500">No semantic matches yet.</div>
+              ) : (
+                <ul className="space-y-2">
+                  {semanticHits.map((m, i) => (
+                    <li key={i} className="text-sm border rounded p-2">
+                      <div className="flex items-center justify-between">
+                        <div className="font-medium">
+                          {m.kind === "request" ? "Request" : "File"} #{m.ref_id}
+                        </div>
+                        <a
+                          href={
+                            m.kind === "request"
+                              ? `/requests/${m.ref_id}`
+                              : `/requests/${m.ref_id}`
+                          }
+                          className="text-xs underline hover:no-underline"
+                        >
+                          Open
+                        </a>
+                      </div>
+                      <div className="text-xs text-gray-500">score: {m.score.toFixed(3)}</div>
+                      <div className="text-xs text-gray-700 mt-1 whitespace-pre-wrap">
+                        {m.content}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+
           <div className="text-xs text-gray-500">
-            Tip: This search is RLS-aware and only shows content you own. We’ll wire deeper AI-powered
-            retrieval in a later batch.
+            RLS is enforced end-to-end. Embedding dimension: 1536 (text-embedding-3-small). We’ll add
+            file content extraction & SQL-ordered ANN next.
           </div>
         </div>
       </div>
 
       <p className="text-xs text-gray-500">
-        Flags: <code>FEATURE_AI_SERVER</code> (backend) and <code>NEXT_PUBLIC_FEATURE_AI</code> (UI).
+        Flags: <code>FEATURE_AI_SERVER</code> governs backend availability;{" "}
+        <code>NEXT_PUBLIC_FEATURE_AI</code> shows this UI.
       </p>
     </div>
   );
