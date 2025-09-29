@@ -1,20 +1,15 @@
 // app/api/requests/route.ts
-import { NextRequest, NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
-/**
- * GET  /api/requests?limit=20&cursor=123&q=term&status=open
- *   - RLS should limit to the current user
- *   - Filters:
- *        q:      substring match on title/description (ILIKE)
- *        status: open|in_progress|resolved|closed  (omit for all)
- *   - Pagination:
- *        id DESC cursor (pass ?cursor=<last_id>)
- *
- * POST /api/requests
- *   - JSON: { title: string, description?: string }
- *   - Creates a new request and logs request_created activity (if activity table exists)
- */
+type RequestRow = {
+  id: number;
+  title: string | null;
+  status: "open" | "in_progress" | "resolved" | "closed";
+  created_at: string | null;
+  updated_at: string | null;
+};
 
 export async function GET(req: NextRequest) {
   const supabase = createSupabaseServerClient();
@@ -36,21 +31,14 @@ export async function GET(req: NextRequest) {
     if (!Number.isNaN(cursorId)) query = query.lt("id", cursorId);
   }
 
-  // status filter (validate)
   if (status) {
     const allowed = new Set(["open", "in_progress", "resolved", "closed"]);
-    if (allowed.has(status)) {
-      query = query.eq("status", status);
-    }
+    if (allowed.has(status)) query = query.eq("status", status);
   }
 
-  // text filter (ILIKE on title OR description)
   if (q.length > 0) {
     const needle = `%${escapeIlike(q)}%`;
-    // PostgREST OR filter syntax
-    query = query.or(
-      `title.ilike.${needle},description.ilike.${needle}`
-    );
+    query = query.or(`title.ilike.${needle},description.ilike.${needle}`);
   }
 
   const { data, error } = await query;
@@ -58,45 +46,40 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 400 });
   }
 
-  const nextCursor =
-    data && data.length === limit ? String(data[data.length - 1].id) : null;
+  const list = (data ?? []) as RequestRow[];
+  const nextCursor = list.length === limit ? String(list[list.length - 1]!.id) : null;
 
-  return NextResponse.json({ requests: data ?? [], nextCursor });
+  return NextResponse.json({ requests: list, nextCursor });
 }
 
 export async function POST(req: NextRequest) {
   const supabase = createSupabaseServerClient();
 
-  let body: any;
+  let body: unknown;
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
+  const b = (body ?? {}) as { title?: unknown; description?: unknown };
   const title =
-    typeof body.title === "string" ? body.title.trim().slice(0, 200) : null;
+    typeof b.title === "string" ? b.title.trim().slice(0, 200) : null;
   const description =
-    typeof body.description === "string"
-      ? body.description.trim().slice(0, 5000)
-      : null;
+    typeof b.description === "string" ? b.description.trim().slice(0, 5000) : null;
 
   if (!title || title.length === 0) {
     return NextResponse.json({ error: "Title is required" }, { status: 400 });
   }
 
-  // Insert request (RLS should attach to current user; status defaults to 'open')
   const { data: inserted, error } = await supabase
     .from("requests")
     .insert({ title, description })
     .select("id, title, status, created_at, updated_at")
     .single();
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 400 });
-  }
+  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
-  // Best-effort activity log (if request_activity table exists)
   await supabase.from("request_activity").insert({
     request_id: inserted.id,
     type: "request_created",
@@ -108,7 +91,6 @@ export async function POST(req: NextRequest) {
 }
 
 /* ----------------------------- helpers ----------------------------- */
-
 function clampInt(
   val: string | null,
   fallback: number,
@@ -122,7 +104,6 @@ function clampInt(
   return fallback;
 }
 
-// Escape % and _ for ILIKE
 function escapeIlike(s: string) {
   return s.replace(/[%_]/g, (m) => `\\${m}`);
 }
