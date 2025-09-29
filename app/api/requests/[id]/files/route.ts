@@ -27,7 +27,7 @@ export async function GET(
     const db = supa();
     const { data, error } = await db
       .from("request_files")
-      .select("id, request_id, name, mime, size_bytes, created_at")
+      .select("id, request_id, name, mime, size_bytes, created_at, path")
       .eq("request_id", requestId)
       .order("id", { ascending: true });
 
@@ -94,7 +94,11 @@ export async function POST(
 
     if (upErr) {
       // best-effort: clean DB row if storage failed
-      await db.from("request_files").delete().eq("id", fileId).catch(() => {});
+      try {
+        await db.from("request_files").delete().eq("id", fileId);
+      } catch {
+        // ignore cleanup errors
+      }
       return NextResponse.json({ error: upErr.message }, { status: 400 });
     }
 
