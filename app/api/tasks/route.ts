@@ -1,14 +1,23 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
-import type { Database } from "@/types/supabase"; // if you don't have generated types, you can remove this import safely
 
+// Build a Supabase server client that reads the user's auth cookie
 function getSupabaseSSR() {
   const cookieStore = cookies();
-  return createClient<Database>(
+  return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { cookies: { get: (key) => cookieStore.get(key)?.value } }
+    {
+      cookies: {
+        get(name: string) {
+          return cookieStore.get(name)?.value;
+        },
+        // No-ops for routes (Next.js App Router doesn’t let us set cookies from here)
+        set() {},
+        remove() {},
+      },
+    }
   );
 }
 
@@ -20,13 +29,14 @@ export async function GET(req: Request) {
 
   const supabase = getSupabaseSSR();
 
-  let q = supabase.from("background_tasks")
+  let q = supabase
+    .from("background_tasks")
     .select("*")
     .order("created_at", { ascending: false })
     .limit(limit);
 
   if (cursor) {
-    // simple keyset pagination by id (created_at desc correlates)
+    // keyset by id (works fine since ids are monotonic with created_at)
     q = q.lt("id", Number(cursor));
   }
 
@@ -37,7 +47,7 @@ export async function GET(req: Request) {
   return NextResponse.json({ tasks: data ?? [], nextCursor });
 }
 
-// POST /api/tasks { type: 'http_get' | 'coverage_note', request_id?, payload }
+// POST /api/tasks  { type, request_id?, payload? }
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
   const { type, request_id, payload } = body ?? {};
@@ -47,12 +57,16 @@ export async function POST(req: Request) {
   }
 
   const supabase = getSupabaseSSR();
-  const { data: profile, error: meError } = await supabase.auth.getUser();
-  if (meError || !profile.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const { data: auth } = await supabase.auth.getUser();
+  if (!auth?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { data, error } = await supabase
     .from("background_tasks")
-    .insert({ type, request_id: request_id ?? null, payload: payload ?? {} })
+    .insert({
+      type,
+      request_id: request_id ?? null,
+      payload: payload ?? {},
+    })
     .select("*")
     .single();
 
