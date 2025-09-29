@@ -1,4 +1,12 @@
-export default {
-  reactStrictMode: true,
-  experimental: { serverActions: { allowedOrigins: [process.env.NEXT_PUBLIC_SITE_URL || ''] } }
+// next.config.mjs
+import createMDX from "@next/mdx";
+
+const withMDX = createMDX({
+  extension: /\.mdx?$/,
+});
+
+const nextConfig = {
+  pageExtensions: ["ts", "tsx", "mdx"]
 };
+
+export default withMDX(nextConfig);
