@@ -1,41 +1,54 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
-import { createServerClient } from '@supabase/ssr';
+import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import { randomUUID } from 'crypto';
 
 export const dynamic = 'force-dynamic';
 
-// Create a Supabase server client using the Next.js cookies helper directly.
-// This matches the expected type for the latest @supabase/ssr.
-function sb() {
+// --- Supabase server client (Next.js cookie bridge)
+function supabaseServer() {
+  const cookieStore = cookies();
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { cookies } // <-- IMPORTANT: pass the function from 'next/headers'
+    {
+      cookies: {
+        get(name: string) {
+          return cookieStore.get(name)?.value;
+        },
+        set(name: string, value: string, options: CookieOptions) {
+          cookieStore.set(name, value, options);
+        },
+        remove(name: string, options: CookieOptions) {
+          // Next.js doesn't have "delete"; use set with maxAge 0
+          cookieStore.set(name, '', { ...options, maxAge: 0 });
+        },
+      },
+    }
   );
 }
 
+const BUCKET = 'request-files'; // <- your storage bucket name
+
 /**
  * GET /api/requests/:id/files
- * Returns DB rows + signedUrl generated from Storage path.
+ * Returns metadata from request_files table + short-lived signedUrl
  */
 export async function GET(
   _req: Request,
   { params }: { params: { id: string } }
 ) {
-  const supabase = sb();
+  const supabase = supabaseServer();
 
   const {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const requestId = params.id;
-
   const { data, error } = await supabase
     .from('request_files')
     .select('id,name,path,content_type,size,created_at')
-    .eq('request_id', requestId)
+    .eq('request_id', params.id)
     .order('created_at', { ascending: true });
 
   if (error) {
@@ -46,10 +59,11 @@ export async function GET(
     (data ?? []).map(async (row) => {
       let signedUrl: string | null = null;
       if (row.path) {
-        const { data: sign, error: signErr } = await supabase.storage
-          .from('request-files') // bucket name
-          .createSignedUrl(row.path, 60 * 10);
-        if (!signErr) signedUrl = sign?.signedUrl ?? null;
+        const { data: sign } = await supabase
+          .storage
+          .from(BUCKET)
+          .createSignedUrl(row.path, 60 * 10); // 10 minutes
+        signedUrl = sign?.signedUrl ?? null;
       }
       return {
         id: row.id,
@@ -68,14 +82,14 @@ export async function GET(
 
 /**
  * POST /api/requests/:id/files
- * FormData: file=<File>
- * Stores file to Storage and inserts a row in request_files.
+ * Content-Type: multipart/form-data
+ *  - file: <File>
  */
 export async function POST(
   req: Request,
   { params }: { params: { id: string } }
 ) {
-  const supabase = sb();
+  const supabase = supabaseServer();
 
   const {
     data: { user },
@@ -84,18 +98,19 @@ export async function POST(
 
   const form = await req.formData();
   const file = form.get('file');
+
   if (!(file instanceof File)) {
     return NextResponse.json({ error: 'No file provided' }, { status: 400 });
   }
 
   const requestId = params.id;
   const fileId = randomUUID();
-  const ext = file.name?.split('.').pop() ?? 'bin';
+  const ext = (file.name?.split('.').pop() || 'bin').toLowerCase();
   const objectPath = `${user.id}/${requestId}/${fileId}.${ext}`;
 
-  // 1) upload to storage
+  // 1) Upload to Storage
   const { error: upErr } = await supabase.storage
-    .from('request-files')
+    .from(BUCKET)
     .upload(objectPath, file, {
       cacheControl: '3600',
       upsert: false,
@@ -106,11 +121,11 @@ export async function POST(
     return NextResponse.json({ error: upErr.message }, { status: 400 });
   }
 
-  // 2) insert metadata row
+  // 2) Insert DB metadata row
   const { data: inserted, error: insErr } = await supabase
     .from('request_files')
     .insert({
-      id: fileId, // remove if your table auto-generates UUIDs
+      id: fileId, // remove this if your table auto-generates UUIDs
       request_id: requestId,
       name: file.name || null,
       path: objectPath,
@@ -121,19 +136,18 @@ export async function POST(
     .single();
 
   if (insErr) {
-    // rollback storage object if DB insert fails
-    await supabase.storage.from('request-files').remove([objectPath]);
+    // rollback the object if DB insert fails
+    await supabase.storage.from(BUCKET).remove([objectPath]);
     return NextResponse.json({ error: insErr.message }, { status: 400 });
   }
 
-  // 3) signed URL for response
-  let signedUrl: string | null = null;
-  if (inserted.path) {
-    const { data: sign } = await supabase.storage
-      .from('request-files')
-      .createSignedUrl(inserted.path, 60 * 10);
-    signedUrl = sign?.signedUrl ?? null;
-  }
+  // 3) Sign the object for immediate preview
+  const { data: sign } = await supabase
+    .storage
+    .from(BUCKET)
+    .createSignedUrl(inserted.path, 60 * 10);
+
+  const signedUrl = sign?.signedUrl ?? null;
 
   return NextResponse.json({
     file: {
