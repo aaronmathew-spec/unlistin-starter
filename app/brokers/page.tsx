@@ -10,7 +10,8 @@ type Broker = {
   updated_at?: string;
 };
 
-type EditState = Record<number, { name: string; url: string }>;
+type EditRow = { name: string; url: string };
+type EditState = Record<number, EditRow>;
 
 export default function BrokersPage() {
   const [list, setList] = useState<Broker[]>([]);
@@ -91,12 +92,13 @@ export default function BrokersPage() {
   }
 
   function cancelEdit(id: number) {
-    // Rebuild object to keep index signature strict (url: string)
+    // Rebuild with entries so the value type is concrete and never undefined
     setEdit((m) => {
       const next: EditState = {};
-      for (const k of Object.keys(m)) {
+      for (const [k, val] of Object.entries(m)) {
         const key = Number(k);
-        if (key !== id) next[key] = m[key];
+        if (key === id) continue;
+        next[key] = val as EditRow;
       }
       return next;
     });
