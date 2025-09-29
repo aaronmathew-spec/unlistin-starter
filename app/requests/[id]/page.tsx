@@ -3,6 +3,7 @@ export const runtime = "nodejs";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import FilesTab from "./FilesTab";
+import StatusInline from "./StatusInline";
 
 function supa() {
   const jar = cookies();
@@ -62,9 +63,11 @@ export default async function RequestPage(props: { params: { id: string } }) {
     <div className="p-6 space-y-6">
       <div className="flex flex-col gap-1">
         <h1 className="text-xl font-semibold">{reqRow.title}</h1>
-        <div className="text-sm text-neutral-600">
-          Status: <span className="font-medium">{reqRow.status}</span> • Created{" "}
-          {new Date(reqRow.created_at).toLocaleString()}
+        <div className="text-sm text-neutral-600 flex items-center gap-2">
+          <span>Created {new Date(reqRow.created_at).toLocaleString()}</span>
+          <span>•</span>
+          <span className="font-medium">Status:</span>
+          <StatusInline requestId={reqRow.id} initialStatus={reqRow.status} />
         </div>
         {reqRow.description && (
           <p className="mt-2 whitespace-pre-wrap text-neutral-800">{reqRow.description}</p>
@@ -73,7 +76,6 @@ export default async function RequestPage(props: { params: { id: string } }) {
 
       <section className="space-y-3">
         <h2 className="text-lg font-semibold">Files</h2>
-        {/* Client tab with Download/Delete actions */}
         <FilesTab requestId={reqRow.id} />
       </section>
     </div>
