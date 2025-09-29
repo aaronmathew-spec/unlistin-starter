@@ -5,19 +5,13 @@ import { randomUUID } from 'crypto';
 
 export const dynamic = 'force-dynamic';
 
+// Create a Supabase server client using the Next.js cookies helper directly.
+// This matches the expected type for the latest @supabase/ssr.
 function sb() {
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        get: (name: string) => cookies().get(name)?.value,
-        set: (name: string, value: string, options: any) =>
-          cookies().set({ name, value, ...options }),
-        remove: (name: string, options: any) =>
-          cookies().set({ name, value: '', ...options, maxAge: 0 }),
-      },
-    }
+    { cookies } // <-- IMPORTANT: pass the function from 'next/headers'
   );
 }
 
@@ -31,7 +25,6 @@ export async function GET(
 ) {
   const supabase = sb();
 
-  // Make sure the user is authenticated (RLS will also protect)
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -83,6 +76,7 @@ export async function POST(
   { params }: { params: { id: string } }
 ) {
   const supabase = sb();
+
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -101,7 +95,7 @@ export async function POST(
 
   // 1) upload to storage
   const { error: upErr } = await supabase.storage
-    .from('request-files') // bucket name
+    .from('request-files')
     .upload(objectPath, file, {
       cacheControl: '3600',
       upsert: false,
@@ -116,7 +110,7 @@ export async function POST(
   const { data: inserted, error: insErr } = await supabase
     .from('request_files')
     .insert({
-      id: fileId, // if your table uses generated uuid, remove this line
+      id: fileId, // remove if your table auto-generates UUIDs
       request_id: requestId,
       name: file.name || null,
       path: objectPath,
@@ -127,12 +121,12 @@ export async function POST(
     .single();
 
   if (insErr) {
-    // Best effort rollback of storage object on insert error
+    // rollback storage object if DB insert fails
     await supabase.storage.from('request-files').remove([objectPath]);
     return NextResponse.json({ error: insErr.message }, { status: 400 });
   }
 
-  // 3) create signed URL for response
+  // 3) signed URL for response
   let signedUrl: string | null = null;
   if (inserted.path) {
     const { data: sign } = await supabase.storage
