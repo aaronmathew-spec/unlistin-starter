@@ -57,7 +57,7 @@ export async function PATCH(
     }
 
     const body = await req.json().catch(() => ({}));
-    let { title, description, status } = body as {
+    const { title, description, status } = body as {
       title?: unknown;
       description?: unknown;
       status?: unknown;
@@ -66,17 +66,21 @@ export async function PATCH(
     const patch: Record<string, unknown> = {};
 
     if (typeof title === "string") {
-      title = title.trim();
-      if (!title) return NextResponse.json({ error: "Title cannot be empty" }, { status: 400 });
-      if (title.length > 200)
+      const t = title.trim();
+      if (!t) {
+        return NextResponse.json({ error: "Title cannot be empty" }, { status: 400 });
+      }
+      if (t.length > 200) {
         return NextResponse.json({ error: "Title too long (<=200)" }, { status: 400 });
-      patch.title = title;
+      }
+      patch.title = t;
     }
 
     if (typeof description === "string") {
       const d = description.trim();
-      if (d.length > 5000)
+      if (d.length > 5000) {
         return NextResponse.json({ error: "Description too long (<=5000)" }, { status: 400 });
+      }
       patch.description = d;
     }
 
@@ -104,14 +108,12 @@ export async function PATCH(
     if (error) return NextResponse.json({ error: error.message }, { status: 400 });
     if (!data) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-    // Optional: append an event row if you have a request_events table
-    // We wrap in best-effort and ignore failure so PATCH still succeeds.
+    // Optional best-effort event log
     try {
-      const diff: Record<string, unknown> = patch;
       await db.from("request_events").insert({
         request_id: id,
         type: "updated",
-        message: JSON.stringify(diff).slice(0, 1000), // keep small
+        message: JSON.stringify(patch).slice(0, 1000),
       } as any);
     } catch {
       // ignore
