@@ -14,9 +14,13 @@ function supa() {
 }
 
 /**
- * GET /api/requests?limit=20&cursor=123&dir=desc
- * - Cursor is the last seen id; returns nextCursor when more.
- * - dir: 'desc' (default) or 'asc'
+ * GET /api/requests
+ * Query:
+ *   - limit: number (1..100, default 20)
+ *   - cursor: last seen id (keyset)
+ *   - dir: 'desc' | 'asc' (default 'desc')
+ *   - q: free-text; matches title/description (ilike)
+ *   - status: exact status value (optional)
  */
 export async function GET(req: Request) {
   try {
@@ -24,21 +28,36 @@ export async function GET(req: Request) {
     const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? "20"), 1), 100);
     const dir = (url.searchParams.get("dir") ?? "desc").toLowerCase() === "asc" ? "asc" : "desc";
     const cursor = url.searchParams.get("cursor");
+    const q = (url.searchParams.get("q") ?? "").trim();
+    const status = (url.searchParams.get("status") ?? "").trim();
 
     const db = supa();
-    let q = db.from("requests").select("id, title, description, status, created_at");
+    let query = db.from("requests").select("id, title, description, status, created_at");
 
+    // Filters
+    if (q) {
+      // Match in title or description (case-insensitive)
+      const escaped = q.replace(/%/g, "\\%").replace(/_/g, "\\_");
+      query = query.or(
+        `title.ilike.%${escaped}%,description.ilike.%${escaped}%`,
+        { referencedTable: "requests" }
+      );
+    }
+    if (status) {
+      query = query.eq("status", status);
+    }
+
+    // Cursor
     if (cursor) {
       const c = Number(cursor);
       if (Number.isFinite(c)) {
-        // keyset pagination by id
-        q = dir === "desc" ? q.lt("id", c) : q.gt("id", c);
+        query = dir === "desc" ? query.lt("id", c) : query.gt("id", c);
       }
     }
 
-    q = q.order("id", { ascending: dir === "asc" }).limit(limit);
+    query = query.order("id", { ascending: dir === "asc" }).limit(limit);
 
-    const { data, error } = await q;
+    const { data, error } = await query;
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
@@ -51,9 +70,7 @@ export async function GET(req: Request) {
       created_at: string;
     }[];
 
-    const nextCursor =
-      rows.length === limit ? String(rows[rows.length - 1]!.id) : null;
-
+    const nextCursor = rows.length === limit ? String(rows[rows.length - 1]!.id) : null;
     return NextResponse.json({ requests: rows, nextCursor });
   } catch (err: any) {
     return NextResponse.json(
