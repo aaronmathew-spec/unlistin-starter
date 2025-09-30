@@ -3,7 +3,6 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
-import { queueIndex } from "@/lib/ai/indexQueue";
 
 function supa() {
   const jar = cookies();
@@ -14,80 +13,112 @@ function supa() {
   );
 }
 
+/**
+ * GET /api/requests/[id]
+ */
 export async function GET(
   _req: Request,
-  ctx: { params: { id: string } }
+  { params }: { params: { id: string } }
 ) {
   try {
-    const id = Number(ctx.params.id);
+    const id = Number(params.id);
     if (!Number.isFinite(id)) {
       return NextResponse.json({ error: "Invalid id" }, { status: 400 });
     }
     const db = supa();
     const { data, error } = await db
       .from("requests")
-      .select("*")
+      .select("id, title, description, status, created_at")
       .eq("id", id)
-      .single();
+      .maybeSingle();
 
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 404 });
-    }
+    if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+    if (!data) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
     return NextResponse.json({ request: data });
   } catch (err: any) {
-    return NextResponse.json(
-      { error: err?.message ?? "Unexpected error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: err?.message ?? "Unexpected error" }, { status: 500 });
   }
 }
 
-type PatchIn = {
-  title?: string | null;
-  description?: string | null;
-  status?: string | null;
-};
-
+/**
+ * PATCH /api/requests/[id]
+ * Body: { title?: string, description?: string, status?: "open" | "in_progress" | "closed" }
+ * RLS is expected to enforce ownership.
+ */
 export async function PATCH(
   req: Request,
-  ctx: { params: { id: string } }
+  { params }: { params: { id: string } }
 ) {
   try {
-    const id = Number(ctx.params.id);
+    const id = Number(params.id);
     if (!Number.isFinite(id)) {
       return NextResponse.json({ error: "Invalid id" }, { status: 400 });
     }
 
-    const body = (await req.json().catch(() => ({}))) as PatchIn;
+    const body = await req.json().catch(() => ({}));
+    let { title, description, status } = body as {
+      title?: unknown;
+      description?: unknown;
+      status?: unknown;
+    };
+
     const patch: Record<string, unknown> = {};
-    if (typeof body.title === "string") patch.title = body.title.trim();
-    if (typeof body.description === "string")
-      patch.description = body.description.trim();
-    if (typeof body.status === "string") patch.status = body.status.trim();
+
+    if (typeof title === "string") {
+      title = title.trim();
+      if (!title) return NextResponse.json({ error: "Title cannot be empty" }, { status: 400 });
+      if (title.length > 200)
+        return NextResponse.json({ error: "Title too long (<=200)" }, { status: 400 });
+      patch.title = title;
+    }
+
+    if (typeof description === "string") {
+      const d = description.trim();
+      if (d.length > 5000)
+        return NextResponse.json({ error: "Description too long (<=5000)" }, { status: 400 });
+      patch.description = d;
+    }
+
+    if (typeof status === "string") {
+      const allowed = new Set(["open", "in_progress", "closed"]);
+      if (!allowed.has(status)) {
+        return NextResponse.json({ error: "Invalid status" }, { status: 400 });
+      }
+      patch.status = status;
+    }
 
     if (Object.keys(patch).length === 0) {
       return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
     }
 
     const db = supa();
+
     const { data, error } = await db
       .from("requests")
       .update(patch)
       .eq("id", id)
-      .select("id")
-      .single();
+      .select("id, title, description, status, created_at")
+      .maybeSingle();
 
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
+    if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+    if (!data) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+    // Optional: append an event row if you have a request_events table
+    // We wrap in best-effort and ignore failure so PATCH still succeeds.
+    try {
+      const diff: Record<string, unknown> = patch;
+      await db.from("request_events").insert({
+        request_id: id,
+        type: "updated",
+        message: JSON.stringify(diff).slice(0, 1000), // keep small
+      } as any);
+    } catch {
+      // ignore
     }
 
-    if (data?.id) queueIndex("request", data.id);
-
-    return NextResponse.json({ ok: true, id: data?.id });
+    return NextResponse.json({ request: data });
   } catch (err: any) {
-    return NextResponse.json(
-      { error: err?.message ?? "Unexpected error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: err?.message ?? "Unexpected error" }, { status: 500 });
   }
 }
