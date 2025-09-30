@@ -1,9 +1,10 @@
-export const runtime = "nodejs";
-
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
+import EditRequestForm from "./EditRequestForm";
+import ActivityTab from "./ActivityTab";
 import FilesTab from "./FilesTab";
-import StatusInline from "./StatusInline";
+
+export const runtime = "nodejs";
 
 function supa() {
   const jar = cookies();
@@ -14,46 +15,38 @@ function supa() {
   );
 }
 
-type RequestRow = {
-  id: number;
-  title: string;
-  description: string | null;
-  status: string;
-  created_at: string;
-};
-
 async function getRequest(id: number) {
   const db = supa();
-  const { data, error } = await db.from("requests").select("*").eq("id", id).single();
+  const { data, error } = await db
+    .from("requests")
+    .select("id, title, description, status, created_at")
+    .eq("id", id)
+    .maybeSingle();
   if (error) throw new Error(error.message);
-  return data as RequestRow;
+  return data as {
+    id: number;
+    title: string;
+    description: string | null;
+    status: "open" | "in_progress" | "closed" | string;
+    created_at: string;
+  } | null;
 }
 
-export default async function RequestPage(props: { params: { id: string } }) {
-  const id = Number(props.params.id);
+export default async function RequestPage({
+  params,
+}: {
+  params: { id: string };
+}) {
+  const id = Number(params.id);
   if (!Number.isFinite(id)) {
+    throw new Error("Invalid request id");
+  }
+  const reqRow = await getRequest(id);
+  if (!reqRow) {
     return (
       <div className="p-6">
-        <div className="rounded-md border border-red-300 bg-red-50 p-3 text-red-800">
-          Invalid request id.
-        </div>
-      </div>
-    );
-  }
-
-  let reqRow: RequestRow | null = null;
-  let err: string | null = null;
-  try {
-    reqRow = await getRequest(id);
-  } catch (e: any) {
-    err = e?.message ?? "Failed to load request";
-  }
-
-  if (err || !reqRow) {
-    return (
-      <div className="p-6">
-        <div className="rounded-md border border-red-300 bg-red-50 p-3 text-red-800">
-          {err || "Not found"}
+        <div className="rounded-md border bg-yellow-50 p-4 text-sm text-yellow-800">
+          Request not found.
         </div>
       </div>
     );
@@ -61,23 +54,37 @@ export default async function RequestPage(props: { params: { id: string } }) {
 
   return (
     <div className="p-6 space-y-6">
-      <div className="flex flex-col gap-1">
-        <h1 className="text-xl font-semibold">{reqRow.title}</h1>
-        <div className="text-sm text-neutral-600 flex items-center gap-2">
-          <span>Created {new Date(reqRow.created_at).toLocaleString()}</span>
-          <span>•</span>
-          <span className="font-medium">Status:</span>
-          <StatusInline requestId={reqRow.id} initialStatus={reqRow.status} />
+      <div>
+        <div className="text-xs text-neutral-500">Request</div>
+        <h1 className="text-xl font-semibold">#{reqRow.id} — {reqRow.title}</h1>
+        <div className="text-sm text-neutral-500">
+          Created {new Date(reqRow.created_at).toLocaleString()} • Status: {reqRow.status}
         </div>
-        {reqRow.description && (
-          <p className="mt-2 whitespace-pre-wrap text-neutral-800">{reqRow.description}</p>
-        )}
       </div>
 
-      <section className="space-y-3">
-        <h2 className="text-lg font-semibold">Files</h2>
-        <FilesTab requestId={reqRow.id} />
-      </section>
+      {/* Tabs */}
+      <div className="space-y-4">
+        <nav className="flex flex-wrap gap-2 text-sm">
+          <a href={`#edit`} className="rounded-md border px-3 py-1 hover:bg-neutral-50">Edit</a>
+          <a href={`#files`} className="rounded-md border px-3 py-1 hover:bg-neutral-50">Files</a>
+          <a href={`#activity`} className="rounded-md border px-3 py-1 hover:bg-neutral-50">Activity</a>
+        </nav>
+
+        <section id="edit" className="space-y-2">
+          <h2 className="text-sm font-semibold">Edit</h2>
+          <EditRequestForm initial={reqRow} />
+        </section>
+
+        <section id="files" className="space-y-2">
+          <h2 className="text-sm font-semibold">Files</h2>
+          <FilesTab requestId={reqRow.id} />
+        </section>
+
+        <section id="activity" className="space-y-2">
+          <h2 className="text-sm font-semibold">Activity</h2>
+          <ActivityTab requestId={reqRow.id} />
+        </section>
+      </div>
     </div>
   );
 }
