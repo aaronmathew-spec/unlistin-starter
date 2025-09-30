@@ -1,8 +1,10 @@
 export const runtime = "nodejs";
 
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
+import { ensureRateLimit } from "@/lib/rateLimit";
+import { logger } from "@/lib/logger";
 
 function supa() {
   const jar = cookies();
@@ -13,59 +15,62 @@ function supa() {
   );
 }
 
-/**
- * GET /api/requests/[id]/files/[fileId]/download
- * Returns a redirect to a signed Storage URL (5 min).
- * RLS ensures the caller can only fetch files they own.
- */
 export async function GET(
-  _req: Request,
-  ctx: { params: { id: string; fileId: string } }
+  req: NextRequest,
+  { params }: { params: { id: string; fileId: string } }
 ) {
+  const rid = `dl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const ip = req.headers.get("x-forwarded-for") ?? "unknown";
+  const limit = await ensureRateLimit(`download:${ip}`, 20, 10);
+  if (!limit.ok) {
+    return NextResponse.json(
+      { error: "Too many downloads, slow down.", code: "rate_limited", retryAfter: limit.retryAfter },
+      { status: 429, headers: { "retry-after": String(limit.retryAfter) } }
+    );
+  }
+
   try {
-    const requestId = Number(ctx.params.id);
-    const fileId = Number(ctx.params.fileId);
+    const requestId = Number(params.id);
+    const fileId = Number(params.fileId);
     if (!Number.isFinite(requestId) || !Number.isFinite(fileId)) {
-      return NextResponse.json({ error: "Invalid id" }, { status: 400 });
+      return NextResponse.json({ error: "Invalid ids" }, { status: 400 });
     }
 
     const db = supa();
 
-    // Fetch file row under RLS
-    const { data: file, error } = await db
+    // Verify the file belongs to the request and current user can see it (RLS on tables)
+    const { data: rf, error } = await db
       .from("request_files")
-      .select("id, request_id, path, name, mime")
+      .select("id, request_id, path, name, mime, size_bytes")
       .eq("id", fileId)
       .eq("request_id", requestId)
-      .single();
+      .maybeSingle();
 
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 404 });
-    }
-    if (!file?.path) {
-      return NextResponse.json({ error: "File path missing" }, { status: 400 });
-    }
+    if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+    if (!rf) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-    // Create signed URL (5 minutes)
-    const { data: signed, error: signErr } = await db.storage
+    // Issue a signed URL (policy allows select if owner)
+    const { data: signed, error: suErr } = await db.storage
       .from("request-files")
-      .createSignedUrl(file.path, 60 * 5, {
-        download: file.name || `file-${file.id}`,
-      });
+      .createSignedUrl(rf.path, 60); // 60 seconds
 
-    if (signErr || !signed?.signedUrl) {
-      return NextResponse.json(
-        { error: signErr?.message || "Failed to sign url" },
-        { status: 400 }
-      );
+    if (suErr || !signed?.signedUrl) {
+      logger.error("signed-url-failed", { rid, fileId, err: suErr?.message });
+      return NextResponse.json({ error: "Could not issue signed URL" }, { status: 400 });
     }
 
-    // Redirect to signed URL
-    return NextResponse.redirect(signed.signedUrl);
-  } catch (err: any) {
-    return NextResponse.json(
-      { error: err?.message ?? "Unexpected error" },
-      { status: 500 }
+    // Force a safe download filename
+    const filename = (rf.name ?? "file").replace(/[^a-zA-Z0-9._-]/g, "_");
+
+    // Redirect to the signed URL so browser streams from storage
+    const res = NextResponse.redirect(signed.signedUrl, 302);
+    res.headers.set(
+      "Content-Disposition",
+      `attachment; filename="${filename}"`
     );
+    return res;
+  } catch (e: any) {
+    logger.error("download-exception", { rid, err: e?.message });
+    return NextResponse.json({ error: e?.message ?? "Unexpected error" }, { status: 500 });
   }
 }
