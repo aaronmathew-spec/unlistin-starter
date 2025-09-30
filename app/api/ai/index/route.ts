@@ -1,9 +1,9 @@
 export const runtime = "nodejs";
 
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
-import { embedText } from "@/lib/embeddings";
+import { ensureRateLimit } from "@/lib/rateLimit";
 
 function supa() {
   const jar = cookies();
@@ -14,157 +14,40 @@ function supa() {
   );
 }
 
-async function upsertRequest(docId: number) {
-  const db = supa();
-
-  // Fetch the request row within RLS context to get the owner
-  const { data: row, error } = await db
-    .from("requests")
-    .select("id, title, description, user_id")
-    .eq("id", docId)
-    .single();
-
-  if (error) throw new Error(error.message);
-  if (!row) throw new Error("Request not found or not accessible");
-
-  const content = [row.title ?? "", row.description ?? ""].join("\n").trim();
-  const textForEmbedding = content || `Request #${row.id}`;
-  const vector = await embedText(textForEmbedding);
-
-  const owner = row.user_id ?? null;
-  if (!owner) throw new Error("Request missing user_id");
-
-  // Upsert ai_document
-  const { error: upErr } = await db
-    .from("ai_documents")
-    .upsert({
-      owner,
-      kind: "request",
-      ref_id: row.id,
-      content: textForEmbedding,
-      embedding: vector as unknown as any, // pgvector via PostgREST
-      updated_at: new Date().toISOString(),
-    })
-    .select("id")
-    .single();
-
-  if (upErr) throw new Error(upErr.message);
-
-  return { ok: true, kind: "request", id: row.id };
-}
-
-async function upsertFile(fileId: number) {
-  const db = supa();
-
-  // We only index file name now (no file content extraction yet)
-  const { data: f, error } = await db
-    .from("request_files")
-    .select("id, request_id, name, mime, size_bytes, user_id")
-    .eq("id", fileId)
-    .single();
-
-  if (error) throw new Error(error.message);
-  if (!f) throw new Error("File not found or not accessible");
-
-  const bits = [f.name ?? "", f.mime ?? "", `size:${f.size_bytes ?? "n/a"}`]
-    .filter(Boolean)
-    .join(" • ");
-
-  const vector = await embedText(bits || `File #${f.id}`);
-  const owner = f.user_id ?? null;
-  if (!owner) throw new Error("File missing user_id");
-
-  const { error: upErr } = await db
-    .from("ai_documents")
-    .upsert({
-      owner,
-      kind: "file",
-      ref_id: f.id,
-      content: bits || `File #${f.id}`,
-      embedding: vector as unknown as any,
-      updated_at: new Date().toISOString(),
-    })
-    .select("id")
-    .single();
-
-  if (upErr) throw new Error(upErr.message);
-
-  return { ok: true, kind: "file", id: f.id };
-}
-
-type IndexBody =
-  | { kind?: "request" | "file"; id?: number; reindexAll?: boolean }
-  | undefined;
-
-export async function POST(req: Request) {
-  try {
-    if (process.env.FEATURE_AI_SERVER !== "1") {
-      return NextResponse.json(
-        { error: "AI server feature disabled (FEATURE_AI_SERVER=1)" },
-        { status: 503 }
-      );
-    }
-
-    // SAFE parse & narrow
-    const raw: unknown = await req.json().catch(() => null);
-    const body: IndexBody = (raw && typeof raw === "object" ? (raw as any) : undefined) as IndexBody;
-
-    const kind = body?.kind;
-    const id = body?.id;
-    const reindexAll = body?.reindexAll;
-
-    const db = supa();
-
-    if (reindexAll) {
-      // Owner-scoped bulk reindex (safe via RLS)
-      // Requests
-      const { data: reqs } = await db
-        .from("requests")
-        .select("id")
-        .order("id", { ascending: true })
-        .limit(1000);
-
-      const results: any[] = [];
-      for (const r of reqs ?? []) {
-        try {
-          results.push(await upsertRequest(r.id));
-        } catch (e: any) {
-          results.push({ ok: false, kind: "request", id: r.id, error: e?.message });
-        }
-      }
-
-      // Files
-      const { data: files } = await db
-        .from("request_files")
-        .select("id")
-        .order("id", { ascending: true })
-        .limit(2000);
-
-      for (const f of files ?? []) {
-        try {
-          results.push(await upsertFile(f.id));
-        } catch (e: any) {
-          results.push({ ok: false, kind: "file", id: f.id, error: e?.message });
-        }
-      }
-
-      return NextResponse.json({ ok: true, results });
-    }
-
-    if (kind === "request" && typeof id === "number") {
-      const r = await upsertRequest(id);
-      return NextResponse.json(r);
-    }
-    if (kind === "file" && typeof id === "number") {
-      const r = await upsertFile(id);
-      return NextResponse.json(r);
-    }
-
+export async function POST(req: NextRequest) {
+  const ip = req.headers.get("x-forwarded-for") ?? "unknown";
+  const limited = await ensureRateLimit(`ai-index:${ip}`, 10, 10);
+  if (!limited.ok) {
     return NextResponse.json(
-      { error: "Provide { kind: 'request'|'file', id } or { reindexAll: true }" },
-      { status: 400 }
+      { error: "Too many requests", code: "rate_limited", retryAfter: limited.retryAfter },
+      { status: 429, headers: { "retry-after": String(limited.retryAfter) } }
     );
-  } catch (err: any) {
-    return NextResponse.json({ error: err?.message ?? "Unexpected error" }, { status: 500 });
   }
+
+  const db = supa();
+  const body = await req.json().catch(() => ({}));
+  const kind = (body?.kind ?? "full") as "request" | "file" | "full";
+  const id = body?.id as number | undefined;
+  const reindexAll = Boolean(body?.reindexAll);
+
+  if (kind !== "full" && (!id || !Number.isFinite(id))) {
+    return NextResponse.json({ error: "id required for kind != full" }, { status: 400 });
+  }
+
+  // Enqueue
+  const jobs = kind === "full"
+    ? [{ kind: "full", source_id: null }]
+    : [{ kind, source_id: id! }];
+
+  if (reindexAll) {
+    // mark as 'full' regardless of kind when reindexAll=true
+    jobs[0] = { kind: "full", source_id: null as any };
+  }
+
+  const { error } = await db.from("ai_index_queue").insert(
+    jobs.map((j) => ({ kind: j.kind, source_id: j.source_id }))
+  );
+  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+
+  return NextResponse.json({ enqueued: jobs.length });
 }
