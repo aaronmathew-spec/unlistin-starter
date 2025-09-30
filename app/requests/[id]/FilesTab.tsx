@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type FileRow = {
   id: number;
@@ -19,6 +19,13 @@ export default function FilesTab({ requestId }: { requestId: number }) {
   const [busy, setBusy] = useState<number | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(true);
+
+  // upload state
+  const [uploading, setUploading] = useState(false);
+  const [uploadErr, setUploadErr] = useState<string | null>(null);
+  const dropRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
   const PAGE = 20;
 
   async function fetchPage(opts?: { reset?: boolean }) {
@@ -90,6 +97,65 @@ export default function FilesTab({ requestId }: { requestId: number }) {
     return `${(n / (1024 * 1024)).toFixed(1)} MB`;
   }
 
+  const doUpload = useCallback(
+    async (file: File) => {
+      setUploading(true);
+      setUploadErr(null);
+      try {
+        const fd = new FormData();
+        fd.append("file", file);
+        const res = await fetch(`/api/requests/${requestId}/files`, {
+          method: "POST",
+          body: fd,
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.error || "Upload failed");
+
+        // reload first page to show newest file
+        await fetchPage({ reset: true });
+      } catch (e: any) {
+        setUploadErr(e?.message ?? "Upload failed");
+      } finally {
+        setUploading(false);
+      }
+    },
+    [requestId]
+  );
+
+  // handle input change
+  function onPickFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.currentTarget.files?.[0];
+    if (!f) return;
+    void doUpload(f);
+    // reset input to allow same filename re-upload
+    e.currentTarget.value = "";
+  }
+
+  // drag/drop
+  useEffect(() => {
+    const el = dropRef.current;
+    if (!el) return;
+    function prevent(e: DragEvent) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    function onDrop(e: DragEvent) {
+      prevent(e);
+      const f = e.dataTransfer?.files?.[0];
+      if (f) void doUpload(f);
+    }
+    ["dragenter", "dragover", "dragleave", "drop"].forEach((name) =>
+      el.addEventListener(name, prevent as any)
+    );
+    el.addEventListener("drop", onDrop as any);
+    return () => {
+      ["dragenter", "dragover", "dragleave", "drop"].forEach((name) =>
+        el.removeEventListener(name, prevent as any)
+      );
+      el.removeEventListener("drop", onDrop as any);
+    };
+  }, [doUpload]);
+
   if (loading && files.length === 0) {
     return (
       <div className="rounded-md border p-4 text-sm text-neutral-600">
@@ -100,28 +166,43 @@ export default function FilesTab({ requestId }: { requestId: number }) {
 
   return (
     <div className="space-y-3">
-      {error && (
+      {(error || uploadErr) && (
         <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-800">
-          {error}
+          {error || uploadErr}
         </div>
       )}
 
-      <div className="flex items-center justify-between">
+      {/* Upload bar */}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="text-sm text-neutral-600">
           {files.length} file{files.length === 1 ? "" : "s"}
           {files.length > 0 && <> • total {toKb(totalSize)}</>}
         </div>
         <div className="flex items-center gap-2">
+          <div
+            ref={dropRef}
+            className="rounded-md border px-3 py-2 text-sm text-neutral-700 hover:bg-neutral-50 cursor-pointer"
+            onClick={() => inputRef.current?.click()}
+            aria-busy={uploading}
+          >
+            {uploading ? "Uploading…" : "Upload (click or drop)"}
+          </div>
+          <input
+            ref={inputRef}
+            type="file"
+            className="hidden"
+            onChange={onPickFile}
+          />
           <button
             onClick={() => fetchPage({ reset: true })}
-            className="rounded-md border px-3 py-1 text-sm hover:bg-neutral-50"
+            className="rounded-md border px-3 py-2 text-sm hover:bg-neutral-50"
           >
             Refresh
           </button>
           {hasMore && (
             <button
               onClick={() => fetchPage()}
-              className="rounded-md border px-3 py-1 text-sm hover:bg-neutral-50"
+              className="rounded-md border px-3 py-2 text-sm hover:bg-neutral-50"
             >
               Load more
             </button>
@@ -129,6 +210,7 @@ export default function FilesTab({ requestId }: { requestId: number }) {
         </div>
       </div>
 
+      {/* Table */}
       <div className="overflow-hidden rounded-md border">
         <table className="min-w-full text-sm">
           <thead className="bg-neutral-50 text-left text-neutral-500">
