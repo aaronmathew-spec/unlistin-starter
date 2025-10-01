@@ -1,98 +1,84 @@
-// app/api/search/route.ts
+// app/api/ai/search/route.ts
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
 
-type SearchItem =
-  | {
-      kind: "request";
-      id: number;
-      title: string | null;
-      description: string | null;
-      status: "open" | "in_progress" | "resolved" | "closed";
-      updated_at: string | null;
-    }
-  | {
-      kind: "coverage";
-      id: number;
-      broker_id: number;
-      surface: string;
-      note: string | null;
-      status: "open" | "in_progress" | "resolved";
-      updated_at: string | null;
-    };
+export const runtime = "nodejs";
 
-export async function GET(req: Request) {
-  const supabase = createSupabaseServerClient();
-  const { searchParams } = new URL(req.url);
-  const q = (searchParams.get("q") || "").trim();
-  const limit = Math.max(1, Math.min(50, Number(searchParams.get("limit") || 20)));
-  const cursor = Number(searchParams.get("cursor") || 0) || 0; // simple numeric cursor (offset)
-  const kinds = (searchParams.getAll("kind") || []) as Array<"requests" | "coverage">;
+/** What the client (app/ai/page.tsx) expects back from this API. */
+type SemanticHit = {
+  kind: "request" | "file";
+  ref_id: number;
+  content: string;
+  score: number;
+};
 
-  if (!q) {
-    return NextResponse.json({ items: [], nextCursor: null });
+type RequestBody = {
+  query?: string;
+  limit?: number;
+  kinds?: Array<"request" | "file">;
+};
+
+/**
+ * POST /api/ai/search
+ * Body: { query: string, limit?: number, kinds?: ("request"|"file")[] }
+ * Resp: { matches: SemanticHit[] } | { error: string }
+ */
+export async function POST(req: Request) {
+  let body: RequestBody = {};
+  try {
+    body = (await req.json()) ?? {};
+  } catch {
+    // ignore — keep body as {}
   }
 
-  // Build ilike query fragments
-  const like = `%${q}%`;
+  const query = (body.query ?? "").toString().trim();
+  const limitRaw = body.limit;
+  const limit =
+    typeof limitRaw === "number" && limitRaw > 0 && limitRaw <= 50
+      ? Math.floor(limitRaw)
+      : 10;
 
-  const wantRequests = kinds.length === 0 || kinds.includes("requests");
-  const wantCoverage = kinds.length === 0 || kinds.includes("coverage");
+  const kinds =
+    Array.isArray(body.kinds) && body.kinds.length
+      ? (body.kinds.filter((k): k is "request" | "file" => k === "request" || k === "file"))
+      : (["request", "file"] as const);
 
-  const items: SearchItem[] = [];
-
-  if (wantRequests) {
-    const { data: reqs, error } = await supabase
-      .from("requests")
-      .select("id,title,description,status,updated_at")
-      .or(`title.ilike.${like},description.ilike.${like}`) // simple OR matching
-      .order("updated_at", { ascending: false, nullsFirst: false })
-      .range(cursor, cursor + limit - 1);
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
-    }
-    (reqs || []).forEach((r) =>
-      items.push({
-        kind: "request",
-        id: r.id,
-        title: r.title ?? null,
-        description: r.description ?? null,
-        status: r.status as any,
-        updated_at: r.updated_at ?? null,
-      })
+  if (!query) {
+    return NextResponse.json(
+      { error: "Missing query" },
+      { status: 400 }
     );
   }
 
-  if (wantCoverage) {
-    const { data: covs, error } = await supabase
-      .from("coverage")
-      .select("id,broker_id,surface,note,status,updated_at")
-      .or(`surface.ilike.${like},note.ilike.${like}`)
-      .order("updated_at", { ascending: false, nullsFirst: false })
-      .range(cursor, cursor + limit - 1);
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
-    }
-    (covs || []).forEach((c) =>
-      items.push({
-        kind: "coverage",
-        id: c.id,
-        broker_id: c.broker_id,
-        surface: c.surface,
-        note: c.note ?? null,
-        status: c.status as any,
-        updated_at: c.updated_at ?? null,
-      })
-    );
-  }
+  // -----------------------------
+  // TODO: Replace this stub with your real pgvector search against ai_chunks.
+  // This placeholder ensures CI/builds stay green while UI ships.
+  // -----------------------------
+  const demoMatches: SemanticHit[] = [
+    {
+      kind: "request",
+      ref_id: 123,
+      content: `Demo semantic explanation for "${query}" found in a request.`,
+      score: 0.92,
+    },
+    {
+      kind: "file",
+      ref_id: 456,
+      content: `Demo semantic snippet for "${query}" found in a file.`,
+      score: 0.87,
+    },
+  ]
+    // respect "kinds" filter
+    .filter((m) => kinds.includes(m.kind))
+    // trim to limit
+    .slice(0, limit);
 
-  // Merge + sort by recency
-  items.sort((a, b) => {
-    const da = a.updated_at ? Date.parse(a.updated_at) : 0;
-    const db = b.updated_at ? Date.parse(b.updated_at) : 0;
-    return db - da;
-  });
+  return NextResponse.json({ matches: demoMatches });
+}
 
-  const nextCursor = items.length < limit ? null : String(cursor + limit);
-  return NextResponse.json({ items, nextCursor });
+/** Basic GET passthrough so the route isn’t accidentally hit with the wrong method. */
+export async function GET() {
+  return NextResponse.json(
+    { error: "Use POST with JSON body: { query, limit?, kinds? }" },
+    { status: 405 }
+  );
 }
