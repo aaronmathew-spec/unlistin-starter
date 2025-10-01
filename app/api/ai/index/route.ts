@@ -25,37 +25,40 @@ type Body =
  *   add actual chunking/embedding logic here (or in a cron route).
  */
 export async function POST(req: Request) {
-  let body: Body;
+  let body: Body = {};
   try {
     body = (await req.json()) as Body;
   } catch {
-    body = {};
+    // ignore invalid JSON; treat as empty body
   }
 
-  // If you want this to require the flag, enforce it here.
-  // For now we allow no-op success even if the flag is off—to keep the UI smooth.
+  // Allow no-op success even if the flag is off, to keep UI smooth.
   const serverEnabled = envBool(process.env.FEATURE_AI_SERVER);
-  const reindexAll = body?.reindexAll === true;
+
+  // Safely read reindexAll across the union
+  const reindexAll =
+    !!body && typeof body === "object" && "reindexAll" in body && body.reindexAll === true;
 
   if (!serverEnabled) {
-    // Soft success; communicates that nothing actually happened.
     return json({ ok: true, message: "AI server disabled; index is a no-op." });
   }
-
-  // (Future) Insert your real indexing plan here:
-  // - Select user-visible requests/files
-  // - Chunk text into ~1k tokens
-  // - Call OpenAI embeddings
-  // - Upsert into ai_chunks (request_id, file_id, chunk_index, content, embedding)
-  // - Keep <= N chunks per resource for cost bounds
 
   if (reindexAll) {
     return json({ ok: true, message: "Reindex requested (placeholder no-op)." });
   }
 
-  // Optional targeting of a single resource
-  const kind = (body?.kind === "request" || body?.kind === "file") ? body?.kind : undefined;
-  const id = typeof body?.id === "number" ? body?.id : undefined;
+  // Narrow kind/id using 'in' operator to satisfy TS
+  let kind: "request" | "file" | undefined;
+  let id: number | undefined;
+
+  if (body && typeof body === "object") {
+    if ("kind" in body && (body.kind === "request" || body.kind === "file")) {
+      kind = body.kind;
+    }
+    if ("id" in body && typeof body.id === "number") {
+      id = body.id;
+    }
+  }
 
   if (kind && id) {
     return json({
