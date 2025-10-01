@@ -1,210 +1,188 @@
-// app/api/ai/index/route.ts
-import { NextRequest, NextResponse } from "next/server";
-import OpenAI from "openai";
-import { getAdminClient } from "@/lib/supabaseAdmin";
-import { ensureAiLimit } from "@/lib/ratelimit";
-
+/* eslint-disable @typescript-eslint/no-explicit-any */
 export const runtime = "nodejs";
 
-/**
- * Body options:
- * - { reindexAll: true }           -> reindexes all requests + files for active users
- * - { kind: "request", id: number }  -> reindexes a single request
- * - { kind: "file", id: number }     -> reindexes a single file
- */
-type IndexBody =
+import { NextResponse } from "next/server";
+import { getSupabaseServer } from "@/lib/db";
+import { embedTexts } from "@/lib/openai";
+import { chunkText } from "@/lib/chunk";
+import { ensureAiLimit } from "@/lib/ratelimit";
+
+type Body =
   | { reindexAll?: boolean }
   | { kind?: "request" | "file"; id?: number; reindexAll?: boolean };
 
-const EMB_MODEL = process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small";
+function json(data: any, init?: ResponseInit) {
+  return new Response(JSON.stringify(data), {
+    ...init,
+    headers: { "content-type": "application/json; charset=utf-8", ...(init?.headers || {}) },
+  });
+}
 
-export async function POST(req: NextRequest) {
-  // Rate limit (keep light; indexing is heavier)
-  const { ok } = await ensureAiLimit(req);
-  if (!ok) {
-    return NextResponse.json(
-      { error: "Rate limit exceeded. Please try again shortly." },
-      { status: 429 }
+function envBool(v: string | undefined) {
+  return v === "1" || v?.toLowerCase() === "true";
+}
+
+export async function POST(req: Request) {
+  // Feature flag gate
+  if (!envBool(process.env.FEATURE_AI_SERVER)) {
+    return json(
+      { error: "AI server feature is disabled (set FEATURE_AI_SERVER=1 to enable)" },
+      { status: 503 }
     );
   }
 
+  // Rate limit
+  const rl = await ensureAiLimit(req);
+  if (!rl.ok) {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const retryAfter = Math.max(0, rl.reset - nowSec);
+    return json(
+      { error: "Rate limit exceeded. Try again shortly.", code: "rate_limited", retryAfter },
+      { status: 429, headers: { "Retry-After": String(retryAfter) } }
+    );
+  }
+
+  // Parse body safely
+  let body: Body | undefined;
   try {
-    const body = (await req.json().catch(() => ({}))) as IndexBody;
-    const supa = getAdminClient();
-    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+    body = (await req.json()) as Body;
+  } catch {
+    body = undefined;
+  }
 
-    // Helpers
-    const embedText = async (chunks: { text: string }[]) => {
-      if (chunks.length === 0) return [];
-      const inputs = chunks.map((c) => c.text);
-      const emb = await openai.embeddings.create({
-        model: EMB_MODEL,
-        input: inputs,
-      });
-      return emb.data.map((d) => d.embedding);
-    };
+  const reindexAll = !!(body as any)?.reindexAll;
+  const kind =
+    (body as any)?.kind === "request" || (body as any)?.kind === "file"
+      ? ((body as any).kind as "request" | "file")
+      : undefined;
+  const id = typeof (body as any)?.id === "number" ? (body as any).id : undefined;
 
-    const insertRows = async (
-      rows: {
-        request_id: number;
-        file_id: number | null;
-        chunk_index: number;
-        content: string;
-        embedding: number[];
-      }[]
-    ) => {
-      if (rows.length === 0) return;
-      const { error } = await supa.from("ai_chunks").insert(rows as any);
-      if (error) throw new Error(`insert ai_chunks failed: ${error.message}`);
-    };
+  const db = getSupabaseServer();
 
-    // A) Single target
-    if ((body as any).kind && typeof (body as any).id === "number") {
-      const { kind, id } = body as { kind: "request" | "file"; id: number };
-
-      if (kind === "request") {
-        // Load request
-        const { data: reqs, error } = await supa
-          .from("requests")
-          .select("id,title,description")
-          .eq("id", id)
-          .limit(1);
-        if (error) throw new Error(error.message);
-        const r = reqs?.[0];
-        if (!r) return NextResponse.json({ ok: true, rows: 0 });
-
-        // Remove previous chunks for this request
-        await supa.from("ai_chunks").delete().eq("request_id", id);
-
-        // Create a single chunk from title + description (simple starter)
-        const content =
-          [r.title, r.description].filter(Boolean).join("\n\n") || `Request #${id}`;
-        const [vec] = await embedText([{ text: content }]);
-
-        await insertRows([
-          {
-            request_id: id,
-            file_id: null,
-            chunk_index: 0,
-            content,
-            embedding: vec as unknown as number[],
-          },
-        ]);
-
-        return NextResponse.json({ ok: true, rows: 1 });
-      }
-
-      // kind === "file"
-      const { data: files, error } = await supa
-        .from("request_files")
-        .select("id,request_id,name")
-        .eq("id", id)
-        .limit(1);
-      if (error) throw new Error(error.message);
-      const f = files?.[0];
-      if (!f) return NextResponse.json({ ok: true, rows: 0 });
-
-      await supa.from("ai_chunks").delete().eq("file_id", id);
-
-      // For now, index file name (later: extract real text content)
-      const content = f.name || `File #${id}`;
-      const [vec] = await embedText([{ text: content }]);
-
-      await insertRows([
-        {
-          request_id: f.request_id,
-          file_id: id,
-          chunk_index: 0,
-          content,
-          embedding: vec as unknown as number[],
-        },
+  try {
+    if (reindexAll) {
+      // wipe all my chunks (scoped by RLS) and rebuild from my data
+      // fetch minimal fields; adapt columns to your schema
+      const [{ data: reqs }, { data: files }] = await Promise.all([
+        db.from("requests").select("id,title,description").limit(1000),
+        db.from("request_files").select("id,request_id,name,text").limit(2000),
       ]);
 
-      return NextResponse.json({ ok: true, rows: 1 });
-    }
+      const chunks: {
+        kind: "request" | "file";
+        ref_id: number;
+        index: number;
+        text: string;
+        file_id?: number | null;
+      }[] = [];
 
-    // B) Reindex ALL (simple pass: requests + files)
-    if (body.reindexAll) {
-      // Grab in batches to avoid timeouts if you have many rows
-      const batchSize = 100;
-
-      // 1) Requests
-      {
-        let from = 0;
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
-          const { data: reqs, error } = await supa
-            .from("requests")
-            .select("id,title,description")
-            .range(from, from + batchSize - 1);
-          if (error) throw new Error(error.message);
-          if (!reqs || reqs.length === 0) break;
-
-          // Delete old chunks for this batch of ids
-          const ids = reqs.map((r) => r.id);
-          await supa.from("ai_chunks").delete().in("request_id", ids);
-
-          const chunks = reqs.map((r, i) => ({
-            request_id: r.id,
-            file_id: null as number | null,
-            chunk_index: 0,
-            content:
-              [r.title, r.description].filter(Boolean).join("\n\n") ||
-              `Request #${r.id}`,
-          }));
-
-          const vectors = await embedText(chunks.map((c) => ({ text: c.content })));
-          const rows = chunks.map((c, i) => ({
-            ...c,
-            embedding: vectors[i] as unknown as number[],
-          }));
-
-          await insertRows(rows);
-          from += batchSize;
+      // Requests
+      for (const r of reqs || []) {
+        const text = [r.title, r.description].filter(Boolean).join("\n\n").trim();
+        for (const c of chunkText(text)) {
+          chunks.push({ kind: "request", ref_id: r.id, index: c.index, text: c.text });
         }
       }
 
-      // 2) Files
-      {
-        let from = 0;
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
-          const { data: files, error } = await supa
-            .from("request_files")
-            .select("id,request_id,name")
-            .range(from, from + batchSize - 1);
-          if (error) throw new Error(error.message);
-          if (!files || files.length === 0) break;
-
-          const ids = files.map((f) => f.id);
-          await supa.from("ai_chunks").delete().in("file_id", ids);
-
-          const chunks = files.map((f) => ({
-            request_id: f.request_id,
+      // Files (assumes you have a 'text' column already extracted)
+      for (const f of files || []) {
+        const text = (f as any).text || "";
+        for (const c of chunkText(text)) {
+          chunks.push({
+            kind: "file",
+            ref_id: f.request_id,
+            index: c.index,
+            text: c.text,
             file_id: f.id,
-            chunk_index: 0,
-            content: f.name || `File #${f.id}`,
-          }));
-
-          const vectors = await embedText(chunks.map((c) => ({ text: c.content })));
-          const rows = chunks.map((c, i) => ({
-            ...c,
-            embedding: vectors[i] as unknown as number[],
-          }));
-
-          await insertRows(rows);
-          from += batchSize;
+          });
         }
       }
 
-      return NextResponse.json({ ok: true, reindexed: true });
+      if (chunks.length === 0) return json({ inserted: 0 });
+
+      // Embed in batches to respect token limits
+      const BATCH = 100;
+      let inserted = 0;
+
+      // Clean existing chunks (RLS should scope to user)
+      await db.from("ai_chunks").delete().neq("id", -1);
+
+      for (let i = 0; i < chunks.length; i += BATCH) {
+        const slice = chunks.slice(i, i + BATCH);
+        const vectors = await embedTexts(slice.map((s) => s.text));
+        const rows = slice.map((c, idx) => ({
+          kind: c.kind,
+          ref_id: c.ref_id,
+          file_id: c.file_id ?? null,
+          chunk_index: c.index,
+          content: c.text,
+          embedding: vectors[idx] as any, // supabase-js maps pgvector
+        }));
+
+        const { error, count } = await db.from("ai_chunks").insert(rows).select("id", { count: "exact" });
+        if (error) throw new Error(error.message);
+        inserted += (count || rows.length);
+      }
+
+      return json({ inserted });
     }
 
-    return NextResponse.json({ ok: true, noop: true });
+    // Targeted index of one resource
+    if (kind && id) {
+      let chunks:
+        | { kind: "request" | "file"; ref_id: number; index: number; text: string; file_id?: number | null }[]
+        | null = null;
+
+      if (kind === "request") {
+        const { data, error } = await db.from("requests").select("id,title,description").eq("id", id).single();
+        if (error) throw new Error(error.message);
+        const text = [data?.title, data?.description].filter(Boolean).join("\n\n").trim();
+        chunks = chunkText(text).map((c) => ({
+          kind: "request" as const,
+          ref_id: id,
+          index: c.index,
+          text: c.text,
+        }));
+      } else {
+        // file
+        const { data, error } = await db.from("request_files").select("id,request_id,name,text").eq("id", id).single();
+        if (error) throw new Error(error.message);
+        const text = (data as any).text || "";
+        chunks = chunkText(text).map((c) => ({
+          kind: "file" as const,
+          ref_id: data.request_id,
+          file_id: data.id,
+          index: c.index,
+          text: c.text,
+        }));
+      }
+
+      // delete existing chunks for this entity
+      if (kind === "request") {
+        await db.from("ai_chunks").delete().eq("kind", "request").eq("ref_id", id);
+      } else {
+        await db.from("ai_chunks").delete().eq("kind", "file").eq("file_id", id);
+      }
+
+      if (!chunks?.length) return json({ inserted: 0 });
+
+      const vectors = await embedTexts(chunks.map((c) => c.text));
+      const rows = chunks.map((c, idx) => ({
+        kind: c.kind,
+        ref_id: c.ref_id,
+        file_id: c.file_id ?? null,
+        chunk_index: c.index,
+        content: c.text,
+        embedding: vectors[idx] as any,
+      }));
+      const { error, count } = await db.from("ai_chunks").insert(rows).select("id", { count: "exact" });
+      if (error) throw new Error(error.message);
+
+      return json({ inserted: count || rows.length });
+    }
+
+    return json({ error: "Provide {reindexAll:true} or {kind:'request'|'file', id:number}" }, { status: 400 });
   } catch (e: any) {
-    return NextResponse.json(
-      { error: e?.message ?? "Unexpected error" },
-      { status: 500 }
-    );
+    return json({ error: e?.message ?? "Indexing failed" }, { status: 500 });
   }
 }
