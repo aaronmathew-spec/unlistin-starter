@@ -20,14 +20,22 @@ export async function GET(
   { params }: { params: { id: string; fileId: string } }
 ) {
   const rid = `dl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const ip = req.headers.get("x-forwarded-for") ?? "unknown";
-  const limit = await ensureRateLimit(`download:${ip}`, 20, 10);
-  if (!limit.ok) {
-    return NextResponse.json(
-      { error: "Too many downloads, slow down.", code: "rate_limited", retryAfter: limit.retryAfter },
-      { status: 429, headers: { "retry-after": String(limit.retryAfter) } }
-    );
-  }
+
+// New helper signature: (req, name, limit, windowMs).
+// 20 requests per 10 seconds for downloads:
+const limit = await ensureRateLimit(req, "download", 20, 10_000);
+
+if (!limit.ok) {
+  // our limiter returns a UNIX seconds 'reset';
+  // convert to Retry-After seconds for response payload (optional)
+  const nowSec = Math.floor(Date.now() / 1000);
+  const retryAfter = Math.max(0, limit.reset - nowSec);
+
+  return NextResponse.json(
+    { error: "Too many downloads, slow down.", code: "rate_limited", retryAfter },
+    { status: 429, headers: { "Retry-After": String(retryAfter) } }
+  );
+}
 
   try {
     const requestId = Number(params.id);
