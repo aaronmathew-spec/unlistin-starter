@@ -11,7 +11,7 @@ export type RawHit = {
   domain: string;        // normalized host (allowlisted)
   label: string;         // human source label (e.g., "Justdial")
   url: string;           // evidence URL (absolute)
-  kind?: "people" | "directory" | "business" | "social" | "public_record";
+  kind?: "people" | "directory" | "business" | "social" | "public_record" | "education";
   // Optional raw fields (not returned directly; we will redact)
   fields?: {
     email?: string;
