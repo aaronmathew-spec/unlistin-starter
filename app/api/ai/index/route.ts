@@ -7,8 +7,7 @@ import OpenAI from "openai";
 import { createServerClient } from "@supabase/ssr";
 import { ensureAiLimit } from "@/lib/ratelimit";
 
-// If you have a Database type definition, import it.
-// Otherwise this `any` keeps types happy without blocking builds.
+// If you have a Database type, import it. Using any to keep builds green.
 type Database = any;
 
 type Body =
@@ -151,7 +150,7 @@ export async function POST(req: Request) {
       return json({ inserted: 0, message: "Nothing to index." });
     }
 
-    // Embed + insert in batches (TypeScript-safe loop; no possibly-undefined access)
+    // Embed + insert in batches with strict guards
     const texts = chunks.map((c) => c.content);
     const BATCH = 256;
     let inserted = 0;
@@ -169,14 +168,17 @@ export async function POST(req: Request) {
 
       for (let j = 0; j < slice.length; j++) {
         const c = chunks[i + j];
-        if (!c) continue; // extra guard
+        const v = vectors[j];
+        if (!c || !v) continue; // guard against undefined
         rows.push({
           request_id: c.request_id,
           file_id: c.file_id,
           content: c.content,
-          embedding: vectors[j],
+          embedding: v, // v is guaranteed defined here
         });
       }
+
+      if (rows.length === 0) continue;
 
       const { error, data } = await db.from("ai_chunks").insert(rows).select("id");
       if (error) throw new Error(error.message);
