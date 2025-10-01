@@ -15,6 +15,16 @@ function supa() {
   );
 }
 
+async function countTable(db: ReturnType<typeof supa>, table: string): Promise<number | null> {
+  try {
+    const res = await db.from(table).select("*", { count: "exact", head: true } as any);
+    if (typeof res.count === "number") return res.count;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export async function GET() {
   // RBAC guard
   const admin = await isAdmin();
@@ -23,32 +33,20 @@ export async function GET() {
   }
 
   const db = supa();
-
-  // Requests count (required)
   const counts: Record<string, number> = {};
   const errors: string[] = [];
 
-  // requests
+  // Required
   {
-    const { data, error } = await db.rpc("count_table", { tname: "requests" }).select().maybeSingle()
-      .catch(() => ({ data: null, error: { message: "rpc_missing" } } as any));
-    if (data && typeof data.count === "number") counts.requests = data.count;
-    else {
-      // fallback: SELECT count(*)
-      const r = await db.from("requests").select("*", { count: "exact", head: true });
-      if (r.count != null) counts.requests = r.count;
-      else errors.push("requests_count_failed");
-    }
+    const c = await countTable(db, "requests");
+    if (c !== null) counts.requests = c;
+    else errors.push("requests_count_failed");
   }
 
-  // optional tables
+  // Optional tables — ignore if missing
   for (const t of ["request_events", "evidence", "ai_messages", "feature_flags"]) {
-    try {
-      const r = await db.from(t).select("*", { count: "exact", head: true } as any);
-      if (r.count != null) counts[t] = r.count;
-    } catch {
-      // silently ignore if table missing
-    }
+    const c = await countTable(db, t);
+    if (c !== null) counts[t] = c;
   }
 
   return NextResponse.json({ ok: true, counts, errors });
