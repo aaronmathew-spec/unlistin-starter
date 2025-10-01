@@ -1,105 +1,111 @@
-/**
- * AI Assist endpoint (non-streaming for first cut)
- * Runtime: Node.js (NOT Edge) because supabase-js/tooling may rely on Node APIs.
- */
-export const runtime = "nodejs";
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
+export const runtime = "nodejs"; // supabase-js & some libs don't like Edge
 
-type ChatMessage = {
-  role: "system" | "user" | "assistant" | "tool";
-  content: string;
-  name?: string;
-};
+type ChatTurn = { role: "user" | "assistant" | "system"; content: string };
 
-const SYS_PROMPT = `
-You are Unlistin AI Assistant. Be concise, safe, and helpful.
-- You can call tools only when explicitly asked by the user to "fetch", "GET", or "check a URL".
-- If the user asks about this product, keep answers grounded to features present in the UI.
-- Never reveal keys, headers, or internal URLs.
-`;
+function envBool(v: string | undefined): boolean {
+  return v === "1" || v?.toLowerCase() === "true";
+}
 
-// Optional: very small input validator so requests don't break the function
-function parseBody(raw: unknown) {
-  if (!raw || typeof raw !== "object") return null;
-  const { messages } = raw as any;
-  if (!Array.isArray(messages)) return null;
-  const result: ChatMessage[] = [];
-  for (const m of messages) {
-    if (!m || typeof m !== "object") continue;
-    const role = (m as any).role;
-    const content = (m as any).content;
-    if (!content || typeof content !== "string") continue;
-    if (role !== "system" && role !== "user" && role !== "assistant" && role !== "tool") continue;
-    result.push({ role, content });
-  }
-  return result;
+function json(data: any, init?: ResponseInit) {
+  return new Response(JSON.stringify(data), {
+    ...init,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      ...(init?.headers || {}),
+    },
+  });
 }
 
 export async function POST(req: Request) {
+  // Feature flag: hard-stop if backend AI is not enabled
+  if (!envBool(process.env.FEATURE_AI_SERVER)) {
+    return json(
+      { error: "AI server feature is disabled (set FEATURE_AI_SERVER=1 to enable)" },
+      { status: 503 }
+    );
+  }
+
+  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  if (!apiKey) {
+    return json(
+      { error: "OPENAI_API_KEY not configured. Set it in your environment." },
+      { status: 500 }
+    );
+  }
+
+  // Parse body safely
+  let body: unknown;
   try {
-    // Feature flag guard — backend can be deployed dark
-    if (process.env.FEATURE_AI_SERVER !== "1") {
-      return NextResponse.json(
-        { error: "AI server feature disabled. Set FEATURE_AI_SERVER=1 to enable." },
-        { status: 503 }
-      );
-    }
+    body = await req.json();
+  } catch {
+    body = {};
+  }
 
-    const body = await req.json().catch(() => ({}));
-    const messages = parseBody(body);
-    if (!messages?.length) {
-      return NextResponse.json({ error: "Invalid payload: messages[]" }, { status: 400 });
-    }
+  const messages = (body as any)?.messages as ChatTurn[] | undefined;
 
-    // Use OpenAI if key present. If not, return a friendly stub so UI still works.
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      return NextResponse.json({
-        answer:
-          "AI is almost ready. Add OPENAI_API_KEY in Vercel env and set FEATURE_AI_SERVER=1 to enable real responses.",
-      });
-    }
+  // Basic validation
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return json({ error: "Body must include non-empty `messages` array" }, { status: 400 });
+  }
 
-    // Compose final message array
-    const finalMessages = [
-      { role: "system", content: SYS_PROMPT },
-      ...messages,
-    ] as ChatMessage[];
+  // (Optional) lightweight input hardening
+  const sanitized: ChatTurn[] = messages
+    .filter((m) => m && typeof m.content === "string" && typeof m.role === "string")
+    .map((m) => ({
+      role: (m.role === "user" || m.role === "assistant" || m.role === "system"
+        ? m.role
+        : "user") as ChatTurn["role"],
+      content: m.content.slice(0, 8000), // keep request small
+    }));
 
-    // Call OpenAI Chat Completions (non-streaming for now)
+  // Add a brief system primer to keep the model helpful & safe
+  const systemPrimer: ChatTurn = {
+    role: "system",
+    content:
+      "You are a concise, helpful assistant for the Unlistin app. " +
+      "Prefer short, direct answers. If you don’t know, say so briefly.",
+  };
+
+  const payload = {
+    model: "gpt-4o-mini", // good quality/cost tradeoff; change if you prefer
+    temperature: 0.3,
+    max_tokens: 800,
+    messages: [systemPrimer, ...sanitized],
+  };
+
+  try {
     const res = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
+        "authorization": `Bearer ${apiKey}`,
+        "content-type": "application/json",
       },
-      body: JSON.stringify({
-        model: "gpt-4o-mini", // light/cheap by default; you can upgrade to gpt-4.1 or o4-mini for better quality
-        messages: finalMessages,
-        temperature: 0.2,
-      }),
+      body: JSON.stringify(payload),
     });
 
     if (!res.ok) {
-      const txt = await res.text();
-      return NextResponse.json(
-        { error: `OpenAI error: ${txt}` },
-        { status: 500 }
+      const errText = await res.text().catch(() => "");
+      return json(
+        {
+          error: `OpenAI error (${res.status})`,
+          details: errText?.slice(0, 2000) || "no details",
+        },
+        { status: 502 }
       );
     }
 
-    const json = await res.json();
-    const answer =
-      json?.choices?.[0]?.message?.content ??
-      "I couldn't find a response. Please try again.";
+    const data = (await res.json()) as {
+      choices?: { message?: { content?: string } }[];
+    };
 
-    return NextResponse.json({ answer });
-  } catch (err: any) {
-    return NextResponse.json(
-      { error: err?.message ?? "Unexpected error" },
-      { status: 500 }
-    );
+    const answer =
+      data?.choices?.[0]?.message?.content?.trim() ||
+      "I couldn’t generate a response. Please try again.";
+
+    return json({ answer });
+  } catch (e: any) {
+    return json({ error: e?.message ?? "AI call failed" }, { status: 500 });
   }
 }
