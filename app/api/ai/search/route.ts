@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 
-/** What the client (app/ai/page.tsx) expects back from this API. */
+/** Response shape the AI page expects */
 type SemanticHit = {
   kind: "request" | "file";
   ref_id: number;
@@ -17,17 +17,12 @@ type RequestBody = {
   kinds?: Array<"request" | "file">;
 };
 
-/**
- * POST /api/ai/search
- * Body: { query: string, limit?: number, kinds?: ("request"|"file")[] }
- * Resp: { matches: SemanticHit[] } | { error: string }
- */
 export async function POST(req: Request) {
   let body: RequestBody = {};
   try {
     body = (await req.json()) ?? {};
   } catch {
-    // keep body as {}
+    // ignore bad/empty JSON
   }
 
   const query = (body.query ?? "").toString().trim();
@@ -46,10 +41,10 @@ export async function POST(req: Request) {
   }
 
   // -----------------------------
-  // TODO: Replace this stub with real pgvector search against ai_chunks.
-  // This placeholder keeps builds green while we ship the UI.
+  // TEMP: demo results to keep builds green until pgvector wiring is enabled.
+  // Using `satisfies` + `as const` so literal types don't widen to `string`.
   // -----------------------------
-  const demo: SemanticHit[] = [
+  const demoReadonly = [
     {
       kind: "request",
       ref_id: 123,
@@ -62,14 +57,16 @@ export async function POST(req: Request) {
       content: `Demo semantic snippet for "${query}" found in a file.`,
       score: 0.87,
     },
-  ]
-    .filter((m) => kinds.includes(m.kind))
-    .slice(0, limit);
+  ] as const satisfies ReadonlyArray<SemanticHit>;
 
-  return NextResponse.json({ matches: demo });
+  // materialize to a mutable array typed as SemanticHit[]
+  const demo: SemanticHit[] = demoReadonly.map((x) => ({ ...x }));
+
+  const matches = demo.filter((m) => kinds.includes(m.kind)).slice(0, limit);
+
+  return NextResponse.json({ matches });
 }
 
-/** Hint for accidental GETs */
 export async function GET() {
   return NextResponse.json(
     { error: "Use POST with JSON body: { query, limit?, kinds? }" },
