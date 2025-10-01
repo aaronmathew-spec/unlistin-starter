@@ -1,56 +1,78 @@
 // app/api/ai/search/route.ts
+import { NextResponse } from "next/server";
+
 export const runtime = "nodejs";
 
-type SearchRequest = {
-  q?: string;
-  limit?: number;
-};
-
-type SearchHit = {
-  id: string;
-  source: "request" | "file";
-  title: string;
-  snippet: string;
+/** What the client (app/ai/page.tsx) expects back from this API. */
+type SemanticHit = {
+  kind: "request" | "file";
+  ref_id: number;
+  content: string;
   score: number;
 };
 
-type SearchResponse =
-  | { ok: true; results: SearchHit[] }
-  | { ok: false; error: string };
+type RequestBody = {
+  query?: string;
+  limit?: number;
+  kinds?: Array<"request" | "file">;
+};
 
+/**
+ * POST /api/ai/search
+ * Body: { query: string, limit?: number, kinds?: ("request"|"file")[] }
+ * Resp: { matches: SemanticHit[] } | { error: string }
+ */
 export async function POST(req: Request) {
-  // Feature-gated: keep deploys safe until backend is ready
-  if (process.env.FEATURE_AI_SERVER !== "1") {
-    const safe: SearchResponse = { ok: true, results: [] };
-    return Response.json(safe, { status: 200 });
+  let body: RequestBody = {};
+  try {
+    body = (await req.json()) ?? {};
+  } catch {
+    // keep body as {}
   }
 
-  // Parse body safely
-  const body = (await req.json().catch(() => ({}))) as SearchRequest;
-  const q = (body.q ?? "").toString().trim();
-  const limit = Math.min(Math.max(Number(body.limit ?? 10), 1), 50);
+  const query = (body.query ?? "").toString().trim();
+  const limit =
+    typeof body.limit === "number" && body.limit > 0 && body.limit <= 50
+      ? Math.floor(body.limit)
+      : 10;
 
-  // Minimal input validation
-  if (!q) {
-    const resp: SearchResponse = { ok: true, results: [] };
-    return Response.json(resp, { status: 200 });
+  const kinds =
+    Array.isArray(body.kinds) && body.kinds.length
+      ? (body.kinds.filter((k): k is "request" | "file" => k === "request" || k === "file"))
+      : (["request", "file"] as const);
+
+  if (!query) {
+    return NextResponse.json({ error: "Missing query" }, { status: 400 });
   }
 
-  // TODO: Replace this stub with your real vector search (ai_chunks table)
-  // This placeholder ensures builds never break and lets the UI ship now.
-  const demo: SearchHit[] = [
+  // -----------------------------
+  // TODO: Replace this stub with real pgvector search against ai_chunks.
+  // This placeholder keeps builds green while we ship the UI.
+  // -----------------------------
+  const demo: SemanticHit[] = [
     {
-      id: "demo-1",
-      source: "request",
-      title: `Demo match for "${q}"`,
-      snippet:
-        "This is a placeholder search result. Wire it to your ai_chunks vector index to return real matches.",
-      score: 0.42,
+      kind: "request",
+      ref_id: 123,
+      content: `Demo semantic explanation for "${query}" found in a request.`,
+      score: 0.92,
     },
-  ].slice(0, limit);
+    {
+      kind: "file",
+      ref_id: 456,
+      content: `Demo semantic snippet for "${query}" found in a file.`,
+      score: 0.87,
+    },
+  ]
+    .filter((m) => kinds.includes(m.kind))
+    .slice(0, limit);
 
-  const ok: SearchResponse = { ok: true, results: demo };
-  return Response.json(ok, { status: 200 });
+  return NextResponse.json({ matches: demo });
 }
 
-export const GET = POST;
+/** Hint for accidental GETs */
+export async function GET() {
+  return NextResponse.json(
+    { error: "Use POST with JSON body: { query, limit?, kinds? }" },
+    { status: 405 }
+  );
+}
