@@ -1,10 +1,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-export const runtime = "nodejs"; // embeddings + db are better on Node
+// Node runtime (embeddings + DB libs prefer Node over Edge)
+export const runtime = "nodejs";
+
 import OpenAI from "openai";
-import { NextResponse } from "next/server";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import type { Database } from "@/types/supabase"; // keep if you have it; otherwise remove the type arg
 
 type Chunk = {
   request_id: number | null;
@@ -19,7 +19,7 @@ type UpsertRow = {
   file_id: number | null;
   content: string;
   embedding: number[];
-  collection?: string; // default set in DB: 'product'
+  collection?: string; // defaults in DB to 'product'
 };
 
 function json(data: any, init?: ResponseInit) {
@@ -33,21 +33,19 @@ function envBool(v: string | undefined) {
   return v === "1" || v?.toLowerCase() === "true";
 }
 
-/** Create a Supabase client.
- * If SUPABASE_SERVICE_ROLE exists, we’ll use it (server-only); else fall back to ANON (RLS).
- */
-function getDB(): SupabaseClient<Database> {
+/** Create a Supabase client (service role if present, else anon). */
+function getDB(): SupabaseClient {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const service = process.env.SUPABASE_SERVICE_ROLE?.trim();
-  if (service) {
-    return createClient<Database>(url, service, { auth: { persistSession: false } });
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE?.trim();
+  if (serviceKey) {
+    return createClient(url, serviceKey, { auth: { persistSession: false } });
   }
-  return createClient<Database>(url, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, {
+  return createClient(url, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, {
     auth: { persistSession: false },
   });
 }
 
-/** Chunking — simple line/paragraph chunker (server-safe). */
+/** Simple paragraph-based chunker. */
 function naiveChunk(text: string, target = 800): string[] {
   const parts = text
     .split(/\n{2,}/g)
@@ -57,19 +55,20 @@ function naiveChunk(text: string, target = 800): string[] {
   const out: string[] = [];
   let buf = "";
   for (const p of parts) {
-    if ((buf + "\n\n" + p).length > target && buf) {
+    const next = buf ? `${buf}\n\n${p}` : p;
+    if (next.length > target && buf) {
       out.push(buf);
       buf = p;
     } else {
-      buf = buf ? `${buf}\n\n${p}` : p;
+      buf = next;
     }
   }
   if (buf) out.push(buf);
   return out;
 }
 
-/** Fetch source rows to index for ONE request or file (narrow) */
-async function loadOne(db: SupabaseClient<Database>, kind: "request" | "file", id: number) {
+/** Load a single request/file to index. */
+async function loadOne(db: SupabaseClient, kind: "request" | "file", id: number): Promise<Chunk[]> {
   if (kind === "request") {
     const { data, error } = await db
       .from("requests")
@@ -78,12 +77,12 @@ async function loadOne(db: SupabaseClient<Database>, kind: "request" | "file", i
       .limit(1)
       .maybeSingle();
     if (error) throw new Error(error.message);
-    if (!data) return [] as Chunk[];
+    if (!data) return [];
 
     const content = [data.title, data.description].filter(Boolean).join("\n\n").trim();
-    if (!content) return [] as Chunk[];
+    if (!content) return [];
 
-    return naiveChunk(content).map<Chunk>((c, i) => ({
+    return naiveChunk(content).map((c) => ({
       request_id: data.id,
       file_id: null,
       kind: "request",
@@ -100,12 +99,12 @@ async function loadOne(db: SupabaseClient<Database>, kind: "request" | "file", i
     .limit(1)
     .maybeSingle();
   if (error) throw new Error(error.message);
-  if (!data) return [] as Chunk[];
+  if (!data) return [];
 
   const content = (data.text || "").trim();
-  if (!content) return [] as Chunk[];
+  if (!content) return [];
 
-  return naiveChunk(content).map<Chunk>((c) => ({
+  return naiveChunk(content).map((c) => ({
     request_id: data.request_id ?? null,
     file_id: data.id,
     kind: "file",
@@ -114,11 +113,8 @@ async function loadOne(db: SupabaseClient<Database>, kind: "request" | "file", i
   }));
 }
 
-/** Fetch a modest window of recent things to (re)index for the current user/org.
- * Adjust this to your product’s needs; this keeps the job fast & safe.
- */
-async function loadRecent(db: SupabaseClient<Database>): Promise<Chunk[]> {
-  // Requests
+/** Load a recent window of requests/files. */
+async function loadRecent(db: SupabaseClient): Promise<Chunk[]> {
   const { data: reqs, error: rErr } = await db
     .from("requests")
     .select("id, title, description")
@@ -126,7 +122,6 @@ async function loadRecent(db: SupabaseClient<Database>): Promise<Chunk[]> {
     .limit(50);
   if (rErr) throw new Error(rErr.message);
 
-  // Files
   const { data: files, error: fErr } = await db
     .from("request_files")
     .select("id, request_id, name, text")
@@ -169,7 +164,6 @@ async function loadRecent(db: SupabaseClient<Database>): Promise<Chunk[]> {
 
 export async function POST(req: Request) {
   try {
-    // Feature flag
     if (!envBool(process.env.FEATURE_AI_SERVER)) {
       return json(
         { error: "AI server feature is disabled (set FEATURE_AI_SERVER=1 to enable)" },
@@ -184,7 +178,6 @@ export async function POST(req: Request) {
       | { reindexAll?: boolean }
       | { kind?: "request" | "file"; id?: number; reindexAll?: boolean };
 
-    // Source selection
     let chunks: Chunk[] = [];
     if ((body as any).kind && typeof (body as any).id === "number") {
       const { kind, id } = body as { kind: "request" | "file"; id: number };
@@ -193,11 +186,8 @@ export async function POST(req: Request) {
       chunks = await loadRecent(db);
     }
 
-    if (chunks.length === 0) {
-      return json({ inserted: 0, message: "Nothing to index." });
-    }
+    if (chunks.length === 0) return json({ inserted: 0, message: "Nothing to index." });
 
-    // Embed in small batches
     const openai = new OpenAI({ apiKey });
     const BATCH = 64;
     let inserted = 0;
@@ -213,16 +203,13 @@ export async function POST(req: Request) {
 
       const vectors = emb.data.map((d) => d.embedding).filter(Array.isArray);
 
-      // Build rows
       const rows: UpsertRow[] = slice.map((c, j) => ({
         request_id: c.request_id,
         file_id: c.file_id,
         content: c.content,
         embedding: (vectors[j] as number[]) || [],
-        // collection: 'product' // leave to DB default unless you want to tag here
       }));
 
-      // Insert
       const { error, count } = await db
         .from("ai_chunks")
         .insert(rows)
