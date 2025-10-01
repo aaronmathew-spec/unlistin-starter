@@ -1,64 +1,83 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-import { envBool } from "@/lib/env";
-import type { SemanticHit } from "@/types/ai";
+// app/api/ai/search/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import OpenAI from "openai";
+import { getServerSupabase } from "@/lib/supabaseServer";
+import { ensureAiLimit } from "@/lib/ratelimit";
 
 export const runtime = "nodejs";
 
-function json(data: any, init?: ResponseInit) {
-  return new Response(JSON.stringify(data), {
-    ...init,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      ...(init?.headers || {}),
-    },
-  });
-}
-
-type Body = {
-  query?: string;
-  limit?: number;
-  kinds?: Array<"request" | "file">;
+type SemanticHit = {
+  kind: "request" | "file";
+  ref_id: number;
+  content: string;
+  score: number;
 };
 
-/**
- * Semantic search placeholder.
- * - Always returns a deterministic “demo” match, keeping type-safety intact.
- * - No DB/vector dependency yet; safe to deploy now.
- * - When you wire pgvector, replace the ‘demo’ block with an ANN query on ai_chunks.
- */
-export async function POST(req: Request) {
-  let body: Body = {};
+export async function POST(req: NextRequest) {
+  // Rate limit
+  const { ok } = await ensureAiLimit(req);
+  if (!ok) {
+    return NextResponse.json(
+      { error: "Rate limit exceeded. Please try again shortly." },
+      { status: 429 }
+    );
+  }
+
   try {
-    body = (await req.json()) as Body;
-  } catch {
-    // keep default
+    const { query, limit = 10 } = (await req.json().catch(() => ({}))) as {
+      query?: string;
+      limit?: number;
+    };
+
+    if (!query || !query.trim()) {
+      return NextResponse.json(
+        { error: "Missing 'query'." },
+        { status: 400 }
+      );
+    }
+
+    // 1) Embed the query
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+    const emb = await openai.embeddings.create({
+      model: process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small",
+      input: query.trim(),
+    });
+
+    const vector = emb.data?.[0]?.embedding;
+    if (!Array.isArray(vector)) {
+      return NextResponse.json(
+        { error: "Failed to embed query." },
+        { status: 500 }
+      );
+    }
+
+    // 2) Call RPC to perform ANN search (RLS-respecting)
+    const supabase = getServerSupabase();
+    const { data, error } = await supabase.rpc("match_ai_chunks", {
+      q: vector as unknown as number[], // supabase-js will map to vector
+      match_count: Math.min(Math.max(1, Number(limit) || 10), 50),
+    });
+
+    if (error) {
+      return NextResponse.json(
+        { error: `match_ai_chunks failed: ${error.message}` },
+        { status: 500 }
+      );
+    }
+
+    // 3) Validate & coerce types to our SemanticHit union
+    const matches: SemanticHit[] = (data ?? []).map((row: any) => ({
+      kind: row.kind === "file" ? "file" : "request",
+      ref_id: Number(row.ref_id),
+      content: String(row.content ?? ""),
+      score: Number(row.score ?? 0),
+    }));
+
+    return NextResponse.json({ matches });
+  } catch (e: any) {
+    return NextResponse.json(
+      { error: e?.message ?? "Unexpected error" },
+      { status: 500 }
+    );
   }
-
-  const query = (body.query ?? "").trim();
-  const kinds = (body.kinds && body.kinds.length ? body.kinds : ["request", "file"]) as Array<
-    "request" | "file"
-  >;
-  const limit = Math.min(Math.max(Number(body.limit ?? 10), 1), 50);
-
-  // Optionally gate semantic with FEATURE_AI_SERVER (toggle if you prefer strict gating)
-  if (!envBool(process.env.FEATURE_AI_SERVER)) {
-    // Return empty but valid structure so UI stays green.
-    return json({ matches: [] satisfies SemanticHit[] });
-  }
-
-  // Placeholder “match” so UI remains useful during rollout.
-  const matches: SemanticHit[] =
-    query.length === 0
-      ? []
-      : [
-          {
-            kind: kinds.includes("request") ? "request" : "file",
-            ref_id: kinds.includes("request") ? 123 : 456,
-            content:
-              "Demo semantic snippet: replace with pgvector ANN results from ai_chunks.content.",
-            score: 0.88,
-          },
-        ];
-
-  return json({ matches: matches.slice(0, limit) });
 }
