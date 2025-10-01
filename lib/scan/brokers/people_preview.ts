@@ -53,10 +53,14 @@ function pickCandidateDomains(seed: string): string[] {
   // simple hash to spread selection
   let h = 0;
   for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+
   const out = new Set<string>();
   for (let i = 0; i < domains.length; i++) {
     const idx = (h + i * 97) % domains.length;
-    out.add(domains[idx]);
+    const candidate = domains[idx];
+    if (typeof candidate === "string") {
+      out.add(candidate);
+    }
     if (out.size >= 3) break; // cap v1 to 3 suggestions
   }
   return Array.from(out);
@@ -72,7 +76,7 @@ export async function queryPeoplePreview(input: PeoplePreviewInput): Promise<Peo
 
   const results: PeoplePreviewHit[] = [];
   for (const domain of seeds) {
-    const pathParts = [];
+    const pathParts: string[] = [];
     if (city) pathParts.push(encodeURIComponent(city));
     if (name) pathParts.push(encodeURIComponent(name.replace(/\s+/g, "-")));
     const path = pathParts.length ? `/${pathParts.join("/")}` : "";
