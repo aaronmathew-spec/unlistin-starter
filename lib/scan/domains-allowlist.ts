@@ -1,41 +1,53 @@
+// lib/scan/domains-allowlist.ts
 /**
- * Strict allowlist for generating/using evidence URLs in Quick Scan v1.
- * Only domains listed here may appear in results.
+ * Central allowlist for any URL we are willing to show back to the client
+ * (as evidence previews or TI hints). Keep this conservative.
  *
- * NOTE: Keep the list conservative. Expand gradually as you curate dossiers.
+ * Matching rule:
+ *  - A URL is allowed if its hostname equals the entry OR ends with ".<entry>"
+ *  - Scheme must be http/https
  */
-export const ALLOWLIST = new Set<string>([
-  // People / Directories (India-first)
+
+const RAW = [
+  // India-first directories / people & business listings (from scan v1)
   "justdial.com",
   "sulekha.com",
   "indiamart.com",
   "urbanpro.com",
   "shiksha.com",
 
-  // Company registries (public corporate info)
-  "zaubacorp.com",
-  "quickcompany.in",
+  // Threat-intel preview surfaces (no scraping, public landing pages only)
+  "haveibeenpwned.com",
+  "intelx.io",
+  "leakcheck.io",
+  "dehashed.com",
 
-  // Education / Alumni directories (public pages)
-  "alumni.iitb.ac.in",
-  "alumni.iitm.ac.in",
-  "alumni.iitd.ac.in",
-  "alumni.iisc.ac.in",
-]);
+  // (Optionally keep adding curated, safe surfaces here)
+] as const;
 
-/** Returns true if a fully-qualified URL's hostname (or its eTLD+1) is allowlisted. */
-export function isAllowed(url: string): boolean {
+const DOMAINS = new Set<string>(RAW.map((d) => d.toLowerCase()));
+
+export function isAllowed(urlOrHost: string): boolean {
   try {
-    const u = new URL(url);
-    const host = u.hostname.toLowerCase();
-    if (ALLOWLIST.has(host)) return true;
-    // also allow subdomains of allowlisted roots
-    for (const d of ALLOWLIST) {
-      if (host === d) return true;
-      if (host.endsWith(`.${d}`)) return true;
+    // Accept hostnames directly or full URLs
+    let host = urlOrHost;
+    if (urlOrHost.includes("://")) {
+      const u = new URL(urlOrHost);
+      if (u.protocol !== "https:" && u.protocol !== "http:") return false;
+      host = u.hostname;
+    }
+    host = host.toLowerCase();
+
+    // Exact or subdomain-of match
+    for (const d of DOMAINS) {
+      if (host === d || host.endsWith("." + d)) return true;
     }
     return false;
   } catch {
     return false;
   }
+}
+
+export function listAllowlistedDomains(): string[] {
+  return Array.from(DOMAINS.values()).sort();
 }
