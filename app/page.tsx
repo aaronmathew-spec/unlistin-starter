@@ -1,103 +1,225 @@
-export const dynamic = "force-static";
+"use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 
-export default function HomePage() {
-  return (
-    <main className="max-w-5xl mx-auto px-4 py-10 space-y-10">
-      {/* Hero */}
-      <section className="rounded-2xl border bg-white p-8">
-        <div className="flex flex-col gap-4">
-          <h1 className="text-3xl font-semibold">
-            Unlistin — Remove your personal data from the web
-          </h1>
-          <p className="text-gray-600">
-            India-first, AI-assisted privacy removal. Start with a{" "}
-            <strong>Quick Scan</strong> — no sign-up, no data stored — and
-            preview where your information likely appears.
-          </p>
+type Act = {
+  id: number;
+  entity_type: "request" | "coverage" | "broker" | "file";
+  entity_id: number;
+  action: "create" | "update" | "status" | "delete" | "upload" | "download";
+  meta: Record<string, unknown> | null;
+  created_at: string;
+};
 
-          <div className="flex flex-wrap items-center gap-3 pt-2">
-            <Link
-              href="/scan/quick"
-              className="rounded-md border px-4 py-2 text-sm hover:bg-gray-50"
-            >
+type DashboardResponse = {
+  requests: { total: number; open: number; in_progress: number; resolved: number; closed: number };
+  coverage: { total: number; open: number; in_progress: number; resolved: number };
+  brokers: { total: number };
+  activity: Act[];
+};
+
+export default function HomePage() {
+  const [data, setData] = useState<DashboardResponse | null>(null);
+  const [exposure, setExposure] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  async function load() {
+    setLoading(true);
+    const [dashRes, expRes] = await Promise.all([
+      fetch("/api/dashboard", { cache: "no-store" }).then((r) => r.json()),
+      fetch("/api/exposure").then((r) => (r.ok ? r.json() : { score: null })).catch(() => ({ score: null })),
+    ]);
+    setData(dashRes);
+    setExposure(typeof expRes.score === "number" ? Math.round(expRes.score) : null);
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  if (loading || !data) {
+    return (
+      <div className="p-6 max-w-6xl mx-auto space-y-6">
+        {/* Hero skeleton */}
+        <section className="rounded-2xl border bg-white p-6">
+          <div className="h-6 w-72 bg-gray-200 rounded mb-2 animate-pulse" />
+          <div className="h-4 w-96 bg-gray-200 rounded mb-4 animate-pulse" />
+          <div className="flex gap-2">
+            <div className="h-9 w-36 bg-gray-200 rounded animate-pulse" />
+            <div className="h-9 w-36 bg-gray-200 rounded animate-pulse" />
+          </div>
+        </section>
+
+        {/* KPI skeletons */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {[...Array(3)].map((_, i) => (
+            <div key={i} className="border rounded-xl p-4">
+              <div className="h-5 w-24 bg-gray-200 rounded mb-3 animate-pulse" />
+              <div className="h-8 w-16 bg-gray-200 rounded animate-pulse" />
+            </div>
+          ))}
+        </div>
+
+        <div className="border rounded-xl p-4">
+          <div className="h-5 w-40 bg-gray-200 rounded mb-3 animate-pulse" />
+          <div className="space-y-2">
+            {[...Array(5)].map((_, i) => (
+              <div key={i} className="h-10 bg-gray-100 rounded animate-pulse" />
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const { requests, coverage, brokers, activity } = data;
+
+  return (
+    <div className="p-6 max-w-6xl mx-auto space-y-8">
+      {/* HERO + CTA (added) */}
+      <section className="rounded-2xl border bg-white p-6">
+        <div className="flex flex-col gap-3">
+          <h1 className="text-2xl font-semibold">Unlistin — Remove your personal data from the web</h1>
+          <p className="text-gray-600 text-sm">
+            India-first, AI-assisted privacy removal. Start with a <strong>Quick Scan</strong> — no sign-up, no data
+            stored — and preview where your information likely appears.
+          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <Link href="/scan/quick" className="rounded-md border px-4 py-2 text-sm hover:bg-gray-50">
               Run Quick Scan
             </Link>
-            <Link
-              href="/docs/data-brokers"
-              className="rounded-md border px-4 py-2 text-sm hover:bg-gray-50"
-            >
+            <Link href="/docs/data-brokers" className="rounded-md border px-4 py-2 text-sm hover:bg-gray-50">
               Removal Guides
             </Link>
-            <Link
-              href="/login"
-              className="rounded-md border px-4 py-2 text-sm hover:bg-gray-50"
-            >
-              Sign in
+            <Link href="/ai" className="rounded-md border px-4 py-2 text-sm hover:bg-gray-50">
+              Ask the AI assistant
             </Link>
           </div>
-
           <p className="text-xs text-gray-500">
-            We never store Quick Scan inputs. For full scan & automated removals, sign in and give
-            consent.
+            We never store Quick Scan inputs. For full scan & automated removals, sign in and give consent.
           </p>
         </div>
       </section>
 
-      {/* Value props */}
-      <section className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div className="rounded-xl border bg-white p-5">
-          <h3 className="font-medium">AI-assisted</h3>
-          <p className="text-sm text-gray-600 mt-1">
-            Our assistant prioritizes removals and drafts requests with human-like quality.
-          </p>
-        </div>
-        <div className="rounded-xl border bg-white p-5">
-          <h3 className="font-medium">India coverage</h3>
-          <p className="text-sm text-gray-600 mt-1">
-            Focus on Indian data brokers & search surfaces, plus global platforms.
-          </p>
-        </div>
-        <div className="rounded-xl border bg-white p-5">
-          <h3 className="font-medium">No PII stored by default</h3>
-          <p className="text-sm text-gray-600 mt-1">
-            Quick Scan is zero-retention. Full flow stores only with explicit consent.
-          </p>
-        </div>
+      {/* Header row with exposure */}
+      <header className="flex items-center justify-between gap-4">
+        <h2 className="text-xl font-semibold">Dashboard</h2>
+        {typeof exposure === "number" ? <ExposurePill score={exposure} /> : null}
+      </header>
+
+      {/* KPI cards */}
+      <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <Card
+          title="Requests"
+          primary={requests.total}
+          secondary={`${requests.open} open · ${requests.in_progress} in-progress · ${requests.resolved} resolved · ${requests.closed} closed`}
+          href="/requests"
+        />
+        <Card
+          title="Coverage Items"
+          primary={coverage.total}
+          secondary={`${coverage.open} open · ${coverage.in_progress} in-progress · ${coverage.resolved} resolved`}
+          href="/coverage"
+        />
+        <Card title="Brokers" primary={brokers.total} secondary="" href="/brokers" />
       </section>
 
-      {/* Helpful links */}
-      <section className="rounded-2xl border bg-white p-6">
-        <h2 className="text-lg font-semibold mb-3">Explore</h2>
-        <ul className="list-disc pl-5 space-y-1 text-sm">
-          <li>
-            <Link className="underline hover:no-underline" href="/scan/quick">
-              Quick Scan (no data stored)
-            </Link>
-          </li>
-          <li>
-            <Link className="underline hover:no-underline" href="/ai">
-              Ask the AI assistant
-            </Link>{" "}
-            <span className="text-gray-500">(feature-flagged)</span>
-          </li>
-          <li>
-            <Link className="underline hover:no-underline" href="/docs/data-brokers">
-              Data broker removal guides
-            </Link>
-          </li>
-          <li>
-            <Link className="underline hover:no-underline" href="/requests">
-              Your requests dashboard
-            </Link>
-          </li>
-        </ul>
-      </section>
+      {requests.total === 0 && (
+        <div className="border rounded-xl p-4 flex items-center justify-between">
+          <div className="text-sm text-gray-700">
+            No requests yet — create your first request to get started.
+          </div>
+          <Link href="/requests" className="px-3 py-1 rounded border hover:bg-gray-50">
+            Create a Request
+          </Link>
+        </div>
+      )}
 
-      <p className="text-xs text-gray-500">
-        © {new Date().getFullYear()} Unlistin. Built for privacy, security, and clarity.
-      </p>
-    </main>
+      {/* Activity */}
+      <section className="border rounded-xl p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="font-medium">Recent Activity</h3>
+          <Link className="px-3 py-1 rounded border hover:bg-gray-50" href="/activity">
+            View all
+          </Link>
+        </div>
+        {activity.length === 0 ? (
+          <div className="text-gray-600 text-sm">No activity yet.</div>
+        ) : (
+          <ul className="space-y-2">
+            {activity.map((a) => (
+              <li key={a.id} className="border rounded p-3 text-sm flex items-start justify-between">
+                <div className="pr-4">
+                  <div className="font-medium">
+                    {prettyEntity(a.entity_type)} #{a.entity_id} — {prettyAction(a.action)}
+                  </div>
+                  {a.meta ? (
+                    <pre className="mt-1 text-xs text-gray-600 whitespace-pre-wrap break-words">
+                      {JSON.stringify(a.meta, null, 2)}
+                    </pre>
+                  ) : null}
+                </div>
+                <div className="text-xs text-gray-500 whitespace-nowrap">
+                  {new Date(a.created_at).toLocaleString()}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </div>
   );
+}
+
+function Card({
+  title,
+  primary,
+  secondary,
+  href,
+}: {
+  title: string;
+  primary: number | string;
+  secondary?: string;
+  href?: string;
+}) {
+  return (
+    <Link href={href || "#"} className="border rounded-xl p-4 block hover:bg-gray-50">
+      <div className="text-sm text-gray-600">{title}</div>
+      <div className="text-3xl font-semibold mt-1">{primary}</div>
+      {secondary ? <div className="text-xs text-gray-500 mt-1">{secondary}</div> : null}
+    </Link>
+  );
+}
+
+function ExposurePill({ score }: { score: number }) {
+  const color =
+    score >= 75 ? "bg-red-100 text-red-700" :
+    score >= 40 ? "bg-amber-100 text-amber-700" :
+                  "bg-emerald-100 text-emerald-700";
+  return (
+    <span className={`px-3 py-1 rounded-full text-sm font-medium ${color}`}>
+      Exposure: {score}
+    </span>
+  );
+}
+
+function prettyEntity(t: Act["entity_type"]) {
+  switch (t) {
+    case "request": return "Request";
+    case "coverage": return "Coverage";
+    case "broker": return "Broker";
+    case "file": return "File";
+  }
+}
+function prettyAction(a: Act["action"]) {
+  switch (a) {
+    case "create": return "Created";
+    case "update": return "Updated";
+    case "status": return "Status Changed";
+    case "delete": return "Deleted";
+    case "upload": return "Uploaded";
+    case "download": return "Downloaded";
+  }
 }
