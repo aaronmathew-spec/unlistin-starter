@@ -1,21 +1,30 @@
 // lib/chunk.ts
-export function chunkText(input: string, maxLen = 1200, overlap = 150): string[] {
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+/**
+ * Ultra-simple text chunker: greedy split on paragraphs, then enforce max length.
+ * Tweak as you like (e.g., token-aware with tiktoken).
+ */
+export function chunkText(input: string, maxLen = 1200): { index: number; text: string }[] {
   if (!input) return [];
-  const clean = input.replace(/\s+/g, " ").trim();
-  const chunks: string[] = [];
-  let i = 0;
-  while (i < clean.length) {
-    const end = Math.min(i + maxLen, clean.length);
-    let slice = clean.slice(i, end);
+  const paras = input
+    .replace(/\r\n/g, "\n")
+    .split(/\n{2,}/g)
+    .map((p) => p.trim())
+    .filter(Boolean);
 
-    // try to end at a sentence boundary within the last 120 chars
-    let cut = slice.lastIndexOf(". ");
-    if (cut < slice.length - 120 && end !== clean.length) cut = -1;
-    if (cut > 0) slice = slice.slice(0, cut + 1);
+  const out: { index: number; text: string }[] = [];
+  let idx = 0;
 
-    chunks.push(slice);
-    if (end === clean.length) break;
-    i += (slice.length - overlap > 0 ? slice.length - overlap : slice.length);
+  for (const para of paras) {
+    if (para.length <= maxLen) {
+      out.push({ index: idx++, text: para });
+      continue;
+    }
+    // hard wrap long paras
+    for (let i = 0; i < para.length; i += maxLen) {
+      out.push({ index: idx++, text: para.slice(i, i + maxLen) });
+    }
   }
-  return chunks;
+  return out;
 }
