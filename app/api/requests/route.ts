@@ -1,8 +1,10 @@
+// app/api/requests/route.ts
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
+import crypto from "node:crypto";
 
 function supa() {
   const jar = cookies();
@@ -47,7 +49,7 @@ export async function GET(req: Request) {
       query = query.eq("status", status);
     }
 
-    // Cursor
+    // Cursor (keyset on id)
     if (cursor) {
       const c = Number(cursor);
       if (Number.isFinite(c)) {
@@ -75,6 +77,51 @@ export async function GET(req: Request) {
   } catch (err: any) {
     return NextResponse.json(
       { error: err?.message ?? "Unexpected error" },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * POST /api/requests  (demo-only creator; non-PII)
+ * Body (JSON):
+ *   - broker: string (required)
+ *   - url: string (required, evidence URL)
+ *   - mode: 'auto' | 'manual' (optional, default 'manual')
+ *
+ * Behavior:
+ *   - Validates inputs but DOES NOT persist to DB.
+ *   - Returns an opaque id suitable for demo navigation.
+ *   - Leaves GET behavior completely unchanged.
+ */
+export async function POST(req: Request) {
+  try {
+    const body = await req.json().catch(() => ({}));
+    const broker = (body?.broker ?? "").toString().trim();
+    const evidence = (body?.url ?? "").toString().trim();
+    const mode = ((body?.mode ?? "manual") === "auto" ? "auto" : "manual") as "auto" | "manual";
+
+    if (!broker || !evidence) {
+      return NextResponse.json(
+        { ok: false, error: "Missing broker or evidence URL." },
+        { status: 400 }
+      );
+    }
+    // No PII stored; just synthesize an opaque id for demo flows
+    const id = crypto.randomBytes(8).toString("hex");
+
+    return NextResponse.json({
+      ok: true,
+      id,
+      mode,
+      broker,
+      evidence,
+      next: "/requests/new",
+      note: "Demo only — no data persisted.",
+    });
+  } catch (err: any) {
+    return NextResponse.json(
+      { ok: false, error: err?.message ?? "Unexpected error" },
       { status: 500 }
     );
   }
