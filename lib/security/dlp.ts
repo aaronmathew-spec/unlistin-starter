@@ -23,19 +23,16 @@ const PAN_RE = /\b([A-Z]{5}[0-9]{4}[A-Z])\b/g;
 export function findPII(text: string): DlpFinding[] {
   const out: DlpFinding[] = [];
   for (const m of text.matchAll(EMAIL_RE)) out.push({ type: "email", match: m[0] });
-  for (const m of text.matchAll(PHONE_RE)) {
-    // Filter very short pure sequences like "1234567" embedded in other tokens is okay already via \b
-    out.push({ type: "phone", match: m[0] });
-  }
+  for (const m of text.matchAll(PHONE_RE)) out.push({ type: "phone", match: m[0] });
   for (const m of text.matchAll(AADHAAR_RE)) out.push({ type: "aadhaar", match: m[0] });
   for (const m of text.matchAll(PAN_RE)) out.push({ type: "pan", match: m[0] });
   return out;
 }
 
 function maskEmail(v: string): string {
-  const [local, domain] = v.split("@");
+  const [local = "", domain] = v.split("@");
   if (!domain) return "••••@••••";
-  const first = local[0] ?? "•";
+  const first = local.charAt(0) || "•";
   const maskedLocal = first + "•".repeat(Math.max(1, local.length - 1));
   const parts = domain.split(".");
   const tld = parts.pop() ?? "";
