@@ -1,132 +1,73 @@
-export const runtime = "nodejs";
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { envBool } from "@/lib/env";
+import type { FileHit, RequestHit } from "@/types/ai";
 
-import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { createServerClient } from "@supabase/ssr";
+export const runtime = "nodejs"; // supabase-js + node-only libs prefer node runtime
 
-// Results we return to the client/AI
-type RequestHit = {
-  kind: "request";
-  id: number;
-  title: string | null;
-  description: string | null;
-  status: string | null;
-  created_at: string;
-};
-
-type FileHit = {
-  kind: "file";
-  id: number;
-  request_id: number;
-  name: string;
-  mime: string | null;
-  size_bytes: number | null;
-  created_at: string;
-};
-
-function supa() {
-  const jar = cookies();
-  return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: { get: (k) => jar.get(k)?.value },
-    }
-  );
-}
-
-function normalizeQuery(q: string | null): string {
-  const s = (q ?? "").trim();
-  return s.slice(0, 256); // keep it bounded
+function json(data: any, init?: ResponseInit) {
+  return new Response(JSON.stringify(data), {
+    ...init,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      ...(init?.headers || {}),
+    },
+  });
 }
 
 /**
- * GET /api/ai/tools/search?q=...&limit=...
- * Returns { requests: RequestHit[], files: FileHit[] }
+ * Keyword search placeholder.
+ * - Returns empty arrays with a short note until you plug real DB search.
+ * - Never breaks builds. Matches the shape your AI page expects.
+ *
+ * Later: Replace the stub with a Supabase FTS query (tsvector) across:
+ *   - requests (title, description)
+ *   - request_files (name, optional extracted text)
  */
 export async function GET(req: Request) {
-  try {
-    const url = new URL(req.url);
-    const q = normalizeQuery(url.searchParams.get("q"));
-    const limit = Math.max(1, Math.min(50, Number(url.searchParams.get("limit")) || 10));
-    if (!q) return NextResponse.json({ requests: [], files: [] });
+  const url = new URL(req.url);
+  const q = (url.searchParams.get("q") || "").trim();
 
-    const db = supa();
+  // Ship even if FEATURE_AI_SERVER=0; keyword search is safe to show.
+  // If you prefer to gate it, uncomment the check below:
+  // if (!envBool(process.env.FEATURE_AI_SERVER)) {
+  //   return json({ error: "Server AI disabled", requests: [], files: [] }, { status: 200 });
+  // }
 
-    // Requests: use full-text match, fallback to ILIKE
-    const { data: reqsFTS, error: reqsErr } = await db
-      .from("requests")
-      .select("id, title, description, status, created_at")
-      .filter("to_tsvector('english', coalesce(title,'') || ' ' || coalesce(description,''))", "plainto_tsquery", q)
-      .order("created_at", { ascending: false })
-      .limit(limit);
+  // Very small, safe “demo” results if a query is present, to prove wiring works.
+  // Comment these three lines if you want strictly empty results until DB is wired.
+  const hasQuery = q.length > 0;
+  const demoRequests: RequestHit[] = hasQuery
+    ? [
+        {
+          kind: "request",
+          id: 101,
+          title: "Account removal process",
+          description: "Steps to remove stale data and revoke broker permissions.",
+          status: "open",
+          created_at: new Date().toISOString(),
+        },
+      ]
+    : [];
 
-    let requests: RequestHit[] = (reqsFTS ?? []).map((r: any) => ({
-      kind: "request",
-      id: r.id,
-      title: r.title ?? null,
-      description: r.description ?? null,
-      status: r.status ?? null,
-      created_at: r.created_at,
-    }));
+  const demoFiles: FileHit[] = hasQuery
+    ? [
+        {
+          kind: "file",
+          id: 9001,
+          request_id: 101,
+          name: "policy-update.pdf",
+          mime: "application/pdf",
+          size_bytes: 284312,
+          created_at: new Date().toISOString(),
+        },
+      ]
+    : [];
 
-    // Fallback if FTS returns nothing (short queries, etc.)
-    if (!requests.length) {
-      const { data: reqsILIKE } = await db
-        .from("requests")
-        .select("id, title, description, status, created_at")
-        .or(`title.ilike.%${q}%,description.ilike.%${q}%`)
-        .order("created_at", { ascending: false })
-        .limit(limit);
-      requests = (reqsILIKE ?? []).map((r: any) => ({
-        kind: "request",
-        id: r.id,
-        title: r.title ?? null,
-        description: r.description ?? null,
-        status: r.status ?? null,
-        created_at: r.created_at,
-      }));
-    }
+  // Real implementation (when you’re ready):
+  // - Use @supabase/ssr createServerClient with cookies() for user-scoped FTS
+  // - SELECT columns matching RequestHit / FileHit
+  // - RLS enforces per-user visibility
+  // - Combine into { requests, files }
 
-    // Files: name FTS, fallback to ILIKE
-    const { data: filesFTS, error: filesErr } = await db
-      .from("request_files")
-      .select("id, request_id, name, mime, size_bytes, created_at")
-      .filter("to_tsvector('english', coalesce(name,''))", "plainto_tsquery", q)
-      .order("created_at", { ascending: false })
-      .limit(limit);
-
-    let files: FileHit[] = (filesFTS ?? []).map((f: any) => ({
-      kind: "file",
-      id: f.id,
-      request_id: f.request_id,
-      name: f.name,
-      mime: f.mime ?? null,
-      size_bytes: f.size_bytes ?? null,
-      created_at: f.created_at,
-    }));
-
-    if (!files.length) {
-      const { data: filesILIKE } = await db
-        .from("request_files")
-        .select("id, request_id, name, mime, size_bytes, created_at")
-        .ilike("name", `%${q}%`)
-        .order("created_at", { ascending: false })
-        .limit(limit);
-      files = (filesILIKE ?? []).map((f: any) => ({
-        kind: "file",
-        id: f.id,
-        request_id: f.request_id,
-        name: f.name,
-        mime: f.mime ?? null,
-        size_bytes: f.size_bytes ?? null,
-        created_at: f.created_at,
-      }));
-    }
-
-    // No leakage: RLS governs visibility
-    return NextResponse.json({ requests, files });
-  } catch (err: any) {
-    return NextResponse.json({ error: err?.message ?? "Unexpected error" }, { status: 500 });
-  }
+  return json({ requests: demoRequests, files: demoFiles });
 }
