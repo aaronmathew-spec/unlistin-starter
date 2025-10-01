@@ -1,10 +1,9 @@
-// app/api/scan/quick/route.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 export const runtime = "nodejs"; // ensure node (libs/edge incompatibilities)
 import { NextResponse } from "next/server";
 import { ensureSearchLimit } from "@/lib/ratelimit";
-import { queryPeoplePreview } from "@/lib/scan/brokers/people_preview";
+import { queryAllPreviews } from "@/lib/scan/brokers";
 import { normalizeHits, type RawHit } from "@/lib/scan/normalize";
 
 /**
@@ -13,10 +12,6 @@ import { normalizeHits, type RawHit } from "@/lib/scan/normalize";
  * - DOES NOT store any PII (ephemeral only)
  * - returns allowlisted, redacted previews behind your existing UI contract
  * - is rate-limited via ensureSearchLimit
- *
- * Wire-up plan (later):
- * - connect to real detectors, search APIs, and broker scrapers
- * - return real evidence snippets, canonicalized profiles, etc.
  */
 
 type Body = Partial<{
@@ -44,12 +39,14 @@ function json(data: any, init?: ResponseInit) {
   });
 }
 
-function toCategory(kind?: "people" | "directory" | "business" | "social" | "public_record"): string {
+function toCategory(kind?: "people" | "directory" | "business" | "social" | "public_record" | "education"): string {
   switch (kind) {
     case "people":
       return "People Search";
     case "business":
       return "Business Directory";
+    case "education":
+      return "Education / Alumni";
     case "social":
       return "Social";
     case "public_record":
@@ -97,8 +94,8 @@ export async function POST(req: Request) {
   const t0 = Date.now();
 
   try {
-    // 1) Candidate generation (no outbound fetch in v1; allowlist enforced downstream)
-    const candidates = await queryPeoplePreview({
+    // 1) Aggregate candidates from multiple India-first adapters (no network calls; allowlist enforced downstream)
+    const candidates = await queryAllPreviews({
       email, // may be empty; safe
       name: fullName || undefined,
       city: city || undefined,
@@ -111,8 +108,6 @@ export async function POST(req: Request) {
       url: c.url,
       kind: c.kind,
       fields: {
-        // Pass raw fields; normalizeHits will redact internally.
-        // If email is empty, we still pass empty string; we'll filter evidence later.
         email,
         name: fullName,
         city,
@@ -151,7 +146,7 @@ export async function POST(req: Request) {
       };
     });
 
-    // Keep same sort/slice semantics you had (confidence desc, top 6)
+    // Confidence sort and cap to top 6 (unchanged UI expectations)
     results.sort((a, b) => b.confidence - a.confidence);
     const top = results.slice(0, 6);
 
