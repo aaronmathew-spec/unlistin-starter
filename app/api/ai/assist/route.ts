@@ -1,5 +1,9 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import OpenAI from "openai";
+import { NextResponse } from "next/server";
+import { ensureAiLimit } from "@/lib/ratelimit";
+
 export const runtime = "nodejs"; // supabase-js & some libs don't like Edge
 
 type ChatTurn = { role: "user" | "assistant" | "system"; content: string };
@@ -18,12 +22,23 @@ function json(data: any, init?: ResponseInit) {
   });
 }
 
+const MODEL = process.env.OPENAI_CHAT_MODEL || "gpt-4o-mini";
+
 export async function POST(req: Request) {
   // Feature flag: hard-stop if backend AI is not enabled
   if (!envBool(process.env.FEATURE_AI_SERVER)) {
     return json(
       { error: "AI server feature is disabled (set FEATURE_AI_SERVER=1 to enable)" },
       { status: 503 }
+    );
+  }
+
+  // Rate limit this endpoint (IP/user aware via ensureAiLimit)
+  const { ok } = await ensureAiLimit(req);
+  if (!ok) {
+    return json(
+      { error: "Rate limit exceeded. Please try again shortly." },
+      { status: 429 }
     );
   }
 
@@ -50,13 +65,14 @@ export async function POST(req: Request) {
     return json({ error: "Body must include non-empty `messages` array" }, { status: 400 });
   }
 
-  // (Optional) lightweight input hardening
+  // Lightweight input hardening
   const sanitized: ChatTurn[] = messages
     .filter((m) => m && typeof m.content === "string" && typeof m.role === "string")
     .map((m) => ({
-      role: (m.role === "user" || m.role === "assistant" || m.role === "system"
-        ? m.role
-        : "user") as ChatTurn["role"],
+      role:
+        m.role === "user" || m.role === "assistant" || m.role === "system"
+          ? m.role
+          : ("user" as const),
       content: m.content.slice(0, 8000), // keep request small
     }));
 
@@ -68,44 +84,30 @@ export async function POST(req: Request) {
       "Prefer short, direct answers. If you don’t know, say so briefly.",
   };
 
-  const payload = {
-    model: "gpt-4o-mini", // good quality/cost tradeoff; change if you prefer
-    temperature: 0.3,
-    max_tokens: 800,
-    messages: [systemPrimer, ...sanitized],
-  };
-
   try {
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "authorization": `Bearer ${apiKey}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(payload),
+    const openai = new OpenAI({ apiKey });
+
+    // Use Chat Completions API (keeps compatibility & maturity)
+    const completion = await openai.chat.completions.create({
+      model: MODEL,
+      temperature: 0.3,
+      max_tokens: 800,
+      messages: [systemPrimer, ...sanitized],
     });
 
-    if (!res.ok) {
-      const errText = await res.text().catch(() => "");
-      return json(
-        {
-          error: `OpenAI error (${res.status})`,
-          details: errText?.slice(0, 2000) || "no details",
-        },
-        { status: 502 }
-      );
-    }
-
-    const data = (await res.json()) as {
-      choices?: { message?: { content?: string } }[];
-    };
-
     const answer =
-      data?.choices?.[0]?.message?.content?.trim() ||
+      completion.choices?.[0]?.message?.content?.trim() ||
       "I couldn’t generate a response. Please try again.";
 
     return json({ answer });
   } catch (e: any) {
-    return json({ error: e?.message ?? "AI call failed" }, { status: 500 });
+    // Fallback to safe message + include error text for debugging
+    return json(
+      {
+        error: "AI call failed",
+        details: e?.message?.slice?.(0, 2000) ?? String(e),
+      },
+      { status: 502 }
+    );
   }
 }
