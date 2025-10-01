@@ -4,10 +4,11 @@ export const runtime = "nodejs";
 
 import { cookies } from "next/headers";
 import OpenAI from "openai";
-import { createServerClient } from "@supabase/ssr"; // ✅ use SSR helper
+import { createServerClient } from "@supabase/ssr";
 import { ensureAiLimit } from "@/lib/ratelimit";
 
-// If you have a Database type, import it; otherwise leave as any
+// If you have a Database type definition, import it.
+// Otherwise this `any` keeps types happy without blocking builds.
 type Database = any;
 
 type Body =
@@ -28,7 +29,7 @@ function json(data: unknown, init?: ResponseInit) {
   });
 }
 
-// ✅ Correct Supabase client for Route Handlers with cookie session
+// Supabase server client wired to Next route cookies
 function supa() {
   const jar = cookies();
   return createServerClient<Database>(
@@ -36,9 +37,7 @@ function supa() {
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        // Only `get` is needed for reading the user's session in an API route
         get: (k) => jar.get(k)?.value,
-        // `set`/`remove` are optional here; omit to avoid writing cookies in handlers
       },
     }
   );
@@ -69,7 +68,7 @@ export async function POST(req: Request) {
     );
   }
 
-  // Rate limit this endpoint
+  // Rate limit
   const rl = await ensureAiLimit(req);
   if (!rl.ok) {
     return json(
@@ -152,7 +151,7 @@ export async function POST(req: Request) {
       return json({ inserted: 0, message: "Nothing to index." });
     }
 
-    // Embed + insert in batches
+    // Embed + insert in batches (TypeScript-safe loop; no possibly-undefined access)
     const texts = chunks.map((c) => c.content);
     const BATCH = 256;
     let inserted = 0;
@@ -161,15 +160,23 @@ export async function POST(req: Request) {
       const slice = texts.slice(i, i + BATCH);
       const vectors = await embedMany(slice, openai);
 
-      const rows = slice.map((_, idx) => {
-        const c = chunks[i + idx];
-        return {
+      const rows: {
+        request_id: number;
+        file_id: number | null;
+        content: string;
+        embedding: number[];
+      }[] = [];
+
+      for (let j = 0; j < slice.length; j++) {
+        const c = chunks[i + j];
+        if (!c) continue; // extra guard
+        rows.push({
           request_id: c.request_id,
           file_id: c.file_id,
           content: c.content,
-          embedding: vectors[idx],
-        };
-      });
+          embedding: vectors[j],
+        });
+      }
 
       const { error, data } = await db.from("ai_chunks").insert(rows).select("id");
       if (error) throw new Error(error.message);
