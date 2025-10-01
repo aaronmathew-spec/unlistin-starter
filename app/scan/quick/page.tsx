@@ -1,17 +1,12 @@
 // app/scan/quick/page.tsx
 "use client";
 
+export const dynamic = "force-dynamic"; // ensure fresh render (avoid stale static page on prod)
+
 import { useMemo, useState } from "react";
 import Link from "next/link";
 
-/* ---------- Types (kept 1:1 with your current file) ---------- */
-
-type ScanInput = {
-  fullName?: string;
-  email?: string;
-  city?: string;
-};
-
+type ScanInput = { fullName?: string; email?: string; city?: string };
 type ScanHit = {
   broker: string;
   category: string;
@@ -20,20 +15,15 @@ type ScanHit = {
   matchedFields: string[];
   evidence: string[];
 };
-
 type ScanResponse =
   | { ok: true; results: ScanHit[]; tookMs: number }
   | { ok: false; error: string; retryAfter?: number };
 
-/* ------------------------------- Page ------------------------------- */
-
 export default function QuickScanPage() {
-  // Form state
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [city, setCity] = useState("");
 
-  // UI state
   const [loading, setLoading] = useState(false);
   const [ran, setRan] = useState(false);
   const [took, setTook] = useState<number | null>(null);
@@ -64,7 +54,6 @@ export default function QuickScanPage() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
       });
-
       const json = (await res.json()) as ScanResponse;
 
       if (!res.ok || !("ok" in json) || !json.ok) {
@@ -86,40 +75,26 @@ export default function QuickScanPage() {
 
   return (
     <main className="relative min-h-[100dvh] overflow-hidden">
-      {/* Background (CSP-safe; pure CSS gradients) */}
+      {/* Background: CSS-only (CSP-safe) */}
       <div className="pointer-events-none absolute inset-0 -z-10">
-        {/* deep navy base */}
         <div className="absolute inset-0 bg-[#0B1020]" />
-        {/* subtle vignette */}
-        <div className="absolute inset-0 bg-[radial-gradient(90%_70%_at_50%_-20%,rgba(99,102,241,.25),transparent)]" />
-        {/* aurora sweep */}
-        <div
-          className="absolute left-1/2 top-[-120px] h-[900px] w-[1300px] -translate-x-1/2 rounded-[100%] opacity-30 blur-3xl"
-          style={{
-            background:
-              "conic-gradient(from 180deg at 50% 50%, #A78BFA 0deg, #60A5FA 120deg, #34D399 240deg, #A78BFA 360deg)",
-          }}
-        />
+        <div className="absolute inset-0 bg-[radial-gradient(90%_70%_at_50%_-20%,rgba(99,102,241,0.25),transparent)]" />
+        <div className="absolute left-1/2 top-[-120px] h-[900px] w-[1300px] -translate-x-1/2 rounded-[100%] opacity-30 blur-3xl bg-[conic-gradient(at_50%_50%,#A78BFA_0deg,#60A5FA_120deg,#34D399_240deg,#A78BFA_360deg)]" />
       </div>
 
       <div className="mx-auto max-w-3xl px-5 py-12 text-white">
-        {/* Brand crumb (subtle) */}
-        <div className="mb-2 text-xs/5 text-violet-300/70">unlistin</div>
+        <div className="mb-2 text-xs/5 text-violet-300/70">UnlistIN</div>
 
-        {/* Title */}
-        <h1 className="text-4xl md:text-5xl font-semibold tracking-tight">
-          Quick Scan
-        </h1>
+        <h1 className="text-4xl md:text-5xl font-semibold tracking-tight">Quick Scan</h1>
 
         <p className="mt-5 max-w-2xl text-sm md:text-base text-white/70">
           See where your personal info might appear online —{" "}
-          <span className="font-semibold text-white">without creating an account</span>.
-          We only use the inputs below for this scan and{" "}
-          <span className="font-semibold text-white">do not store</span> them.
-          Results are redacted previews with allowlisted links.
+          <span className="font-semibold text-white">without creating an account</span>. We only use the inputs
+          below for this scan and <span className="font-semibold text-white">do not store</span> them. Results are
+          redacted previews with allowlisted links.
         </p>
 
-        {/* Form Card */}
+        {/* Form */}
         <section className="mt-8 rounded-2xl border border-white/10 bg-white/5 p-5 md:p-6 shadow-[0_10px_40px_rgba(0,0,0,.35)] backdrop-blur">
           <div className="grid grid-cols-1 gap-4">
             <Field
@@ -179,9 +154,7 @@ export default function QuickScanPage() {
 
         {/* Results */}
         <section className="mt-8 space-y-4">
-          {!loading && ran && results && results.length === 0 && (
-            <EmptyState />
-          )}
+          {!loading && ran && results && results.length === 0 && <EmptyState />}
 
           {loading && <ResultsSkeleton />}
 
@@ -207,8 +180,6 @@ export default function QuickScanPage() {
     </main>
   );
 }
-
-/* ------------------------------- UI parts ------------------------------- */
 
 function Field({
   label,
@@ -238,7 +209,6 @@ function Field({
 
 function ResultCard({ hit }: { hit: ScanHit }) {
   const pct = Math.max(1, Math.min(97, Math.round(hit.confidence * 100)));
-
   return (
     <article className="rounded-2xl border border-white/10 bg-white/5 p-4 shadow-[0_8px_30px_rgba(0,0,0,.35)] backdrop-blur">
       <div className="flex items-start justify-between gap-4">
@@ -254,9 +224,7 @@ function ResultCard({ hit }: { hit: ScanHit }) {
             {hit.broker}
           </a>
           {hit.matchedFields?.length ? (
-            <div className="mt-1 text-[11px] text-white/60">
-              Matched: {hit.matchedFields.join(", ")}
-            </div>
+            <div className="mt-1 text-[11px] text-white/60">Matched: {hit.matchedFields.join(", ")}</div>
           ) : null}
         </div>
         <span className="shrink-0 rounded-full border border-white/15 px-2 py-0.5 text-[11px] text-white/80">
@@ -264,25 +232,17 @@ function ResultCard({ hit }: { hit: ScanHit }) {
         </span>
       </div>
 
-      {/* bar */}
       <div className="mt-3 h-1.5 w-full rounded-full bg-white/10">
         <div
-          className="h-1.5 rounded-full"
-          style={{
-            width: `${pct}%`,
-            background:
-              "linear-gradient(90deg, #A78BFA 0%, #60A5FA 50%, #34D399 100%)",
-          }}
+          className="h-1.5 rounded-full bg-[linear-gradient(90deg,#A78BFA_0%,#60A5FA_50%,#34D399_100%)]"
+          style={{ width: `${pct}%` }}
         />
       </div>
 
       {hit.evidence?.length ? (
         <ul className="mt-3 space-y-1.5 text-xs text-white/80">
           {hit.evidence.map((e, i) => (
-            <li
-              key={i}
-              className="rounded-lg border border-white/10 bg-white/5 px-3 py-2"
-            >
+            <li key={i} className="rounded-lg border border-white/10 bg-white/5 px-3 py-2">
               {e}
             </li>
           ))}
@@ -327,10 +287,7 @@ function ResultsSkeleton() {
   return (
     <div className="grid gap-4">
       {[0, 1, 2].map((i) => (
-        <div
-          key={i}
-          className="rounded-2xl border border-white/10 bg-white/5 p-4"
-        >
+        <div key={i} className="rounded-2xl border border-white/10 bg-white/5 p-4">
           <div className="h-4 w-40 animate-pulse rounded bg-white/10" />
           <div className="mt-2 h-3 w-64 animate-pulse rounded bg-white/10" />
           <div className="mt-3 h-1.5 w-full animate-pulse rounded bg-white/10" />
@@ -343,28 +300,9 @@ function ResultsSkeleton() {
 
 function Spinner() {
   return (
-    <svg
-      className="mr-2 h-4 w-4 animate-spin"
-      viewBox="0 0 24 24"
-      role="progressbar"
-      aria-label="Loading"
-    >
-      <circle
-        cx="12"
-        cy="12"
-        r="10"
-        stroke="currentColor"
-        strokeWidth="3"
-        fill="none"
-        className="opacity-20"
-      />
-      <path
-        d="M22 12a10 10 0 0 0-10-10"
-        stroke="currentColor"
-        strokeWidth="3"
-        fill="none"
-        strokeLinecap="round"
-      />
+    <svg className="mr-2 h-4 w-4 animate-spin" viewBox="0 0 24 24" role="progressbar" aria-label="Loading">
+      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" fill="none" className="opacity-20" />
+      <path d="M22 12a10 10 0 0 0-10-10" stroke="currentColor" strokeWidth="3" fill="none" strokeLinecap="round" />
     </svg>
   );
 }
