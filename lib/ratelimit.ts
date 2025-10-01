@@ -1,11 +1,51 @@
-// lib/ratelimit.ts
+/* lib/ratelimit.ts */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import type { Ratelimit as UpstashRateLimitType } from "@upstash/ratelimit";
+export type LimitResult = { ok: boolean; remaining: number; reset: number };
 
-// ---------- Small utilities ----------
+/** Basic in-memory limiter for local/dev or when Redis isn’t configured */
+class MemoryLimiter {
+  private map = new Map<
+    string,
+    { count: number; resetAt: number; windowMs: number; limit: number }
+  >();
 
-export function getClientIp(req: Request): string {
+  constructor(private windowMs: number, private limit: number) {}
+
+  check(key: string): LimitResult {
+    const now = Date.now();
+    const slot = this.map.get(key);
+
+    if (!slot || now >= slot.resetAt) {
+      const resetAt = now + this.windowMs;
+      this.map.set(key, {
+        count: 1,
+        resetAt,
+        windowMs: this.windowMs,
+        limit: this.limit,
+      });
+      return { ok: true, remaining: this.limit - 1, reset: Math.floor(resetAt / 1000) };
+    }
+
+    if (slot.count >= this.limit) {
+      return { ok: false, remaining: 0, reset: Math.floor(slot.resetAt / 1000) };
+    }
+
+    slot.count += 1;
+    return {
+      ok: true,
+      remaining: Math.max(0, slot.limit - slot.count),
+      reset: Math.floor(slot.resetAt / 1000),
+    };
+  }
+}
+
+const AI_WINDOW_MS = 60_000; // 1 min
+const AI_LIMIT = 30;         // 30 req/min (per IP or user)
+const SEARCH_WINDOW_MS = 60_000;
+const SEARCH_LIMIT = 60;     // 60 req/min
+
+function getClientIp(req: Request): string {
   const h = (name: string) => req.headers.get(name) || "";
   return (
     h("x-forwarded-for").split(",")[0]?.trim() ||
@@ -15,34 +55,7 @@ export function getClientIp(req: Request): string {
   );
 }
 
-function envInt(v: string | undefined, fallback: number) {
-  const n = Number(v);
-  return Number.isFinite(n) && n > 0 ? n : fallback;
-}
-
-// ---------- In-memory fallback limiter (for dev / no-Redis) ----------
-
-class MemoryLimiter {
-  private map = new Map<string, { count: number; resetAt: number }>();
-  constructor(private windowMs: number, private limit: number) {}
-
-  check(key: string) {
-    const now = Date.now();
-    const slot = this.map.get(key);
-    if (!slot || now > slot.resetAt) {
-      this.map.set(key, { count: 1, resetAt: now + this.windowMs });
-      return { ok: true, remaining: this.limit - 1, reset: now + this.windowMs };
-    }
-    if (slot.count >= this.limit) {
-      return { ok: false, remaining: 0, reset: slot.resetAt };
-    }
-    slot.count += 1;
-    return { ok: true, remaining: this.limit - slot.count, reset: slot.resetAt };
-  }
-}
-
-// ---------- Lazy Upstash client (when configured) ----------
-
+/** Lazily create an Upstash limiter when env vars exist */
 async function getUpstashLimiter(limit: number, windowSec: number) {
   const url = process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.UPSTASH_REDIS_REST_TOKEN;
@@ -54,86 +67,79 @@ async function getUpstashLimiter(limit: number, windowSec: number) {
   ]);
 
   const redis = new Redis({ url, token });
-  // Sliding window = smoother user experience
-  const limiter: UpstashRateLimitType = new Ratelimit({
+  return new Ratelimit({
     redis,
     limiter: Ratelimit.slidingWindow(limit, `${windowSec} s` as any),
     analytics: false,
     prefix: "rl",
   });
-
-  return limiter;
 }
 
-// ---------- Public API ----------
+/** Internal cache for local fallback limiters */
+function getMem(name: "__aiLimiter" | "__searchLimiter", windowMs: number, limit: number) {
+  const g = globalThis as any;
+  if (!g[name]) g[name] = new MemoryLimiter(windowMs, limit);
+  return g[name] as MemoryLimiter;
+}
 
-/**
- * Generic rate limit. Throws a 429 Error on exceed.
- * keyOrReq:
- *   - string: treated as the full key
- *   - Request: key will be `${prefix}:${clientIp}`
- */
+/** Unified helper: rate-limit AI calls (chat, index, etc.) */
+export async function ensureAiLimit(req: Request): Promise<LimitResult> {
+  const key = `ai:${getClientIp(req)}`;
+  const upstash = await getUpstashLimiter(AI_LIMIT, Math.round(AI_WINDOW_MS / 1000));
+
+  if (upstash) {
+    const r = await upstash.limit(key);
+    return {
+      ok: !!r.success,
+      remaining: typeof r.remaining === "number" ? r.remaining : 0,
+      reset: typeof r.reset === "number" ? r.reset : Math.floor(Date.now() / 1000) + 60,
+    };
+  }
+
+  // Fallback
+  const mem = getMem("__aiLimiter", AI_WINDOW_MS, AI_LIMIT);
+  return mem.check(key);
+}
+
+/** For semantic/keyword search endpoints */
+export async function ensureSearchLimit(req: Request): Promise<LimitResult> {
+  const key = `search:${getClientIp(req)}`;
+  const upstash = await getUpstashLimiter(SEARCH_LIMIT, Math.round(SEARCH_WINDOW_MS / 1000));
+
+  if (upstash) {
+    const r = await upstash.limit(key);
+    return {
+      ok: !!r.success,
+      remaining: typeof r.remaining === "number" ? r.remaining : 0,
+      reset: typeof r.reset === "number" ? r.reset : Math.floor(Date.now() / 1000) + 60,
+    };
+  }
+
+  const mem = getMem("__searchLimiter", SEARCH_WINDOW_MS, SEARCH_LIMIT);
+  return mem.check(key);
+}
+
+/** Generic helper (if you need it elsewhere) */
 export async function ensureRateLimit(
-  keyOrReq: string | Request,
-  max: number,
-  windowSec: number,
-  prefix = "generic"
-) {
-  const key =
-    typeof keyOrReq === "string" ? keyOrReq : `${prefix}:${getClientIp(keyOrReq)}`;
+  req: Request,
+  name: string,
+  limit: number,
+  windowMs: number
+): Promise<LimitResult> {
+  const key = `${name}:${getClientIp(req)}`;
+  const upstash = await getUpstashLimiter(limit, Math.round(windowMs / 1000));
 
-  // Upstash first (if configured)
-  const up = await getUpstashLimiter(max, windowSec);
-  if (up) {
-    const { success, remaining, reset } = await up.limit(key);
-    if (!success) {
-      const seconds = Math.max(1, Math.ceil((reset - Date.now()) / 1000));
-      const err: any = new Error(`Rate limit exceeded. Retry in ~${seconds}s`);
-      err.status = 429;
-      err.remaining = remaining;
-      err.retryAfter = seconds;
-      throw err;
-    }
-    return { remaining, reset };
+  if (upstash) {
+    const r = await upstash.limit(key);
+    return {
+      ok: !!r.success,
+      remaining: typeof r.remaining === "number" ? r.remaining : 0,
+      reset: typeof r.reset === "number" ? r.reset : Math.floor(Date.now() / 1000) + 60,
+    };
   }
 
-  // Memory fallback
-  const windowMs = windowSec * 1000;
-  const storeName = `__memLimiter_${prefix}_${max}_${windowSec}`;
-  const mem: MemoryLimiter =
-    (globalThis as any)[storeName] || new MemoryLimiter(windowMs, max);
-  (globalThis as any)[storeName] = mem;
-
-  const res = mem.check(key);
-  if (!res.ok) {
-    const seconds = Math.max(1, Math.ceil((res.reset - Date.now()) / 1000));
-    const err: any = new Error(`Rate limit exceeded. Retry in ~${seconds}s`);
-    err.status = 429;
-    err.remaining = 0;
-    err.retryAfter = seconds;
-    throw err;
-  }
-  return { remaining: res.remaining, reset: res.reset };
-}
-
-/**
- * Opinionated limiter for AI endpoints.
- * Defaults can be tuned with env:
- *   AI_RATE_MAX (default 30), AI_RATE_WINDOW (seconds, default 60)
- */
-export async function ensureAiLimit(req: Request) {
-  const max = envInt(process.env.AI_RATE_MAX, 30);
-  const windowSec = envInt(process.env.AI_RATE_WINDOW, 60);
-  return ensureRateLimit(req, max, windowSec, "ai");
-}
-
-/**
- * Limiter for search endpoints.
- * Env overrides:
- *   SEARCH_RATE_MAX (default 60), SEARCH_RATE_WINDOW (seconds, default 60)
- */
-export async function ensureSearchLimit(req: Request) {
-  const max = envInt(process.env.SEARCH_RATE_MAX, 60);
-  const windowSec = envInt(process.env.SEARCH_RATE_WINDOW, 60);
-  return ensureRateLimit(req, max, windowSec, "search");
+  const g = globalThis as any;
+  const cacheKey = `__mem_${name}`;
+  if (!g[cacheKey]) g[cacheKey] = new MemoryLimiter(windowMs, limit);
+  return (g[cacheKey] as MemoryLimiter).check(key);
 }
