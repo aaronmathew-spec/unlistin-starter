@@ -4,10 +4,10 @@ export const runtime = "nodejs";
 
 import { cookies } from "next/headers";
 import OpenAI from "openai";
-import { createClient } from "@supabase/supabase-js";
+import { createServerClient } from "@supabase/ssr"; // ✅ use SSR helper
 import { ensureAiLimit } from "@/lib/ratelimit";
 
-// If you have a Database type, you can import it. Otherwise keep `any`.
+// If you have a Database type, import it; otherwise leave as any
 type Database = any;
 
 type Body =
@@ -28,13 +28,18 @@ function json(data: unknown, init?: ResponseInit) {
   });
 }
 
+// ✅ Correct Supabase client for Route Handlers with cookie session
 function supa() {
   const jar = cookies();
-  return createClient<Database>(
+  return createServerClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
-      cookies: { get: (k) => jar.get(k)?.value },
+      cookies: {
+        // Only `get` is needed for reading the user's session in an API route
+        get: (k) => jar.get(k)?.value,
+        // `set`/`remove` are optional here; omit to avoid writing cookies in handlers
+      },
     }
   );
 }
@@ -65,13 +70,10 @@ export async function POST(req: Request) {
   }
 
   // Rate limit this endpoint
-  const limit = await ensureAiLimit(req);
-  if (!limit.ok) {
+  const rl = await ensureAiLimit(req);
+  if (!rl.ok) {
     return json(
-      {
-        error: "Rate limit exceeded. Please try again shortly.",
-        retryAfter: limit.reset,
-      },
+      { error: "Rate limit exceeded. Please try again shortly.", retryAfter: rl.reset },
       { status: 429 }
     );
   }
@@ -88,17 +90,13 @@ export async function POST(req: Request) {
   const openai = new OpenAI({ apiKey });
 
   const reindexAll = (body as any)?.reindexAll === true;
-  const targetKind = (body as any)?.kind as Body extends { kind: infer K } ? K : any;
+  const targetKind = (body as any)?.kind as "request" | "file" | undefined;
   const targetId = typeof (body as any)?.id === "number" ? (body as any).id : undefined;
 
-  // Collect chunks to index
-  // For demo purposes, we index:
-  // - Request descriptions (as request chunks)
-  // - File names (as file chunks)
+  // Collect chunks
   type ChunkInput = { request_id: number; file_id: number | null; content: string };
   const chunks: ChunkInput[] = [];
 
-  // Helpers
   const pushReq = (row: { id: number; description: string | null }) => {
     const text = (row.description ?? "").trim();
     if (text) chunks.push({ request_id: row.id, file_id: null, content: text });
@@ -112,7 +110,6 @@ export async function POST(req: Request) {
   try {
     if (reindexAll || (targetKind === "request" && targetId)) {
       if (reindexAll) {
-        // requests
         const { data: reqs, error } = await db
           .from("requests")
           .select("id, description")
@@ -155,7 +152,7 @@ export async function POST(req: Request) {
       return json({ inserted: 0, message: "Nothing to index." });
     }
 
-    // Prepare embeddings in batches
+    // Embed + insert in batches
     const texts = chunks.map((c) => c.content);
     const BATCH = 256;
     let inserted = 0;
@@ -174,14 +171,9 @@ export async function POST(req: Request) {
         };
       });
 
-      // Insert and count by data length (TS-safe)
-      const { error, data } = await db
-        .from("ai_chunks")
-        .insert(rows)
-        .select("id"); // <- one argument only
-
+      const { error, data } = await db.from("ai_chunks").insert(rows).select("id");
       if (error) throw new Error(error.message);
-      inserted += (data?.length ?? rows.length);
+      inserted += data?.length ?? rows.length;
     }
 
     return json({ inserted });
