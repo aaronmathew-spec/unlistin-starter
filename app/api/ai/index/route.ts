@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-// Node runtime (embeddings + DB libs prefer Node over Edge)
+// Force Node runtime (embeddings + DB libs prefer Node over Edge)
 export const runtime = "nodejs";
 
 import OpenAI from "openai";
@@ -210,13 +210,11 @@ export async function POST(req: Request) {
         embedding: (vectors[j] as number[]) || [],
       }));
 
-      const { error, count } = await db
-        .from("ai_chunks")
-        .insert(rows)
-        .select("id", { count: "exact" });
-
+      // NOTE: select() only takes one argument here. Count rows on the client.
+      const { data, error } = await db.from("ai_chunks").insert(rows).select("id");
       if (error) throw new Error(error.message);
-      inserted += count || rows.length;
+
+      inserted += data?.length ?? rows.length;
     }
 
     return json({ ok: true, inserted });
