@@ -1,72 +1,83 @@
+// app/api/ai/search/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import OpenAI from "openai";
+import { getServerSupabase } from "@/lib/supabaseServer";
+import { ensureAiLimit } from "@/lib/ratelimit";
+
 export const runtime = "nodejs";
 
-import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { createServerClient } from "@supabase/ssr";
-import { embedText } from "@/lib/embeddings";
-
-function supa() {
-  const jar = cookies();
-  return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { cookies: { get: (k) => jar.get(k)?.value } }
-  );
-}
-
-type BodyIn = {
-  query?: string;
-  limit?: number;
-  kinds?: ("request" | "file")[];
+type SemanticHit = {
+  kind: "request" | "file";
+  ref_id: number;
+  content: string;
+  score: number;
 };
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
+  // Rate limit
+  const { ok } = await ensureAiLimit(req);
+  if (!ok) {
+    return NextResponse.json(
+      { error: "Rate limit exceeded. Please try again shortly." },
+      { status: 429 }
+    );
+  }
+
   try {
-    if (process.env.FEATURE_AI_SERVER !== "1") {
+    const { query, limit = 10 } = (await req.json().catch(() => ({}))) as {
+      query?: string;
+      limit?: number;
+    };
+
+    if (!query || !query.trim()) {
       return NextResponse.json(
-        { error: "AI server feature disabled (FEATURE_AI_SERVER=1)" },
-        { status: 503 }
+        { error: "Missing 'query'." },
+        { status: 400 }
       );
     }
 
-    // Parse and narrow
-    const raw: unknown = await req.json().catch(() => null);
-    const body: BodyIn = raw && typeof raw === "object" ? (raw as BodyIn) : {};
-    const query = (body.query ?? "").trim();
-    const limit = Math.max(1, Math.min(50, Number(body.limit) || 10));
-    const kinds =
-      Array.isArray(body.kinds) && body.kinds.length
-        ? (body.kinds.filter((k) => k === "request" || k === "file") as ("request" | "file")[])
-        : (["request", "file"] as const);
-
-    if (!query) return NextResponse.json({ matches: [] });
-
-    // Embed the query
-    const qvec = await embedText(query);
-
-    // Call RPC that ranks in-DB (fast + respects RLS)
-    const db = supa();
-    // Supabase can pass numeric arrays and cast to vector implicitly for RPC.
-    const { data, error } = await db.rpc("match_ai_documents", {
-      qvec: qvec as unknown as any, // Supabase will map number[] -> vector
-      kinds,
-      limit_count: limit,
+    // 1) Embed the query
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+    const emb = await openai.embeddings.create({
+      model: process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small",
+      input: query.trim(),
     });
 
-    if (error) {
+    const vector = emb.data?.[0]?.embedding;
+    if (!Array.isArray(vector)) {
       return NextResponse.json(
-        { error: `match_ai_documents failed: ${error.message}` },
+        { error: "Failed to embed query." },
         { status: 500 }
       );
     }
 
-    // Data rows already sorted by similarity descending (we returned 1 - distance as 'score')
-    const matches =
-      (data as { kind: "request" | "file"; ref_id: number; content: string; score: number }[]) ??
-      [];
+    // 2) Call RPC to perform ANN search (RLS-respecting)
+    const supabase = getServerSupabase();
+    const { data, error } = await supabase.rpc("match_ai_chunks", {
+      q: vector as unknown as number[], // supabase-js will map to vector
+      match_count: Math.min(Math.max(1, Number(limit) || 10), 50),
+    });
+
+    if (error) {
+      return NextResponse.json(
+        { error: `match_ai_chunks failed: ${error.message}` },
+        { status: 500 }
+      );
+    }
+
+    // 3) Validate & coerce types to our SemanticHit union
+    const matches: SemanticHit[] = (data ?? []).map((row: any) => ({
+      kind: row.kind === "file" ? "file" : "request",
+      ref_id: Number(row.ref_id),
+      content: String(row.content ?? ""),
+      score: Number(row.score ?? 0),
+    }));
 
     return NextResponse.json({ matches });
-  } catch (err: any) {
-    return NextResponse.json({ error: err?.message ?? "Unexpected error" }, { status: 500 });
+  } catch (e: any) {
+    return NextResponse.json(
+      { error: e?.message ?? "Unexpected error" },
+      { status: 500 }
+    );
   }
 }

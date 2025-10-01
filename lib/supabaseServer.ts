@@ -1,21 +1,23 @@
+// lib/supabaseServer.ts
 import { cookies } from "next/headers";
-import { createServerClient } from "@supabase/ssr";
+import { createServerClient, type CookieOptions } from "@supabase/ssr";
 
 export function getServerSupabase() {
-  const cookieStore = cookies();
+  const store = cookies();
 
+  // Use anon key so RLS + auth.uid() work inside SQL/RPC
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        get: (name: string) => cookieStore.get(name)?.value,
-        set: (name: string, value: string, options: any) => {
-          cookieStore.set({ name, value, ...options });
+        get(name: string) {
+          return store.get(name)?.value;
         },
-        remove: (name: string, options: any) => {
-          cookieStore.set({ name, value: "", ...options, maxAge: 0 });
-        },
+        // In route handlers, mutating cookies is usually not needed for our reads.
+        // Make these no-ops to avoid "not implemented" errors in edge/node runtimes.
+        set(_name: string, _value: string, _options: CookieOptions) {},
+        remove(_name: string, _options: CookieOptions) {},
       },
     }
   );
