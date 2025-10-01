@@ -3,7 +3,7 @@ export const runtime = "nodejs";
 import { NextResponse, type NextRequest } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
-import { ensureRateLimit } from "@/lib/rateLimit";
+import { ensureRateLimit } from "@/lib/ratelimit";
 import { logger } from "@/lib/logger";
 
 function supa() {
