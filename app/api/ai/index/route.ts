@@ -1,53 +1,68 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { envBool } from "@/lib/env";
+
 export const runtime = "nodejs";
 
-import { NextResponse, type NextRequest } from "next/server";
-import { cookies } from "next/headers";
-import { createServerClient } from "@supabase/ssr";
-import { ensureRateLimit } from "@/lib/rateLimit";
-
-function supa() {
-  const jar = cookies();
-  return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { cookies: { get: (k) => jar.get(k)?.value } }
-  );
+function json(data: any, init?: ResponseInit) {
+  return new Response(JSON.stringify(data), {
+    ...init,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      ...(init?.headers || {}),
+    },
+  });
 }
 
-export async function POST(req: NextRequest) {
-  const ip = req.headers.get("x-forwarded-for") ?? "unknown";
-  const limited = await ensureRateLimit(`ai-index:${ip}`, 10, 10);
-  if (!limited.ok) {
-    return NextResponse.json(
-      { error: "Too many requests", code: "rate_limited", retryAfter: limited.retryAfter },
-      { status: 429, headers: { "retry-after": String(limited.retryAfter) } }
-    );
+type Body =
+  | { reindexAll?: boolean }
+  | { kind?: "request" | "file"; id?: number; reindexAll?: boolean }
+  | undefined;
+
+/**
+ * Reindex placeholder.
+ * - Safe no-op that keeps your UI working while we wire embeddings/pgvector.
+ * - When FEATURE_AI_SERVER=1 + OPENAI_API_KEY present, you can progressively
+ *   add actual chunking/embedding logic here (or in a cron route).
+ */
+export async function POST(req: Request) {
+  let body: Body;
+  try {
+    body = (await req.json()) as Body;
+  } catch {
+    body = {};
   }
 
-  const db = supa();
-  const body = await req.json().catch(() => ({}));
-  const kind = (body?.kind ?? "full") as "request" | "file" | "full";
-  const id = body?.id as number | undefined;
-  const reindexAll = Boolean(body?.reindexAll);
+  // If you want this to require the flag, enforce it here.
+  // For now we allow no-op success even if the flag is off—to keep the UI smooth.
+  const serverEnabled = envBool(process.env.FEATURE_AI_SERVER);
+  const reindexAll = body?.reindexAll === true;
 
-  if (kind !== "full" && (!id || !Number.isFinite(id))) {
-    return NextResponse.json({ error: "id required for kind != full" }, { status: 400 });
+  if (!serverEnabled) {
+    // Soft success; communicates that nothing actually happened.
+    return json({ ok: true, message: "AI server disabled; index is a no-op." });
   }
 
-  // Enqueue
-  const jobs = kind === "full"
-    ? [{ kind: "full", source_id: null }]
-    : [{ kind, source_id: id! }];
+  // (Future) Insert your real indexing plan here:
+  // - Select user-visible requests/files
+  // - Chunk text into ~1k tokens
+  // - Call OpenAI embeddings
+  // - Upsert into ai_chunks (request_id, file_id, chunk_index, content, embedding)
+  // - Keep <= N chunks per resource for cost bounds
 
   if (reindexAll) {
-    // mark as 'full' regardless of kind when reindexAll=true
-    jobs[0] = { kind: "full", source_id: null as any };
+    return json({ ok: true, message: "Reindex requested (placeholder no-op)." });
   }
 
-  const { error } = await db.from("ai_index_queue").insert(
-    jobs.map((j) => ({ kind: j.kind, source_id: j.source_id }))
-  );
-  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+  // Optional targeting of a single resource
+  const kind = (body?.kind === "request" || body?.kind === "file") ? body?.kind : undefined;
+  const id = typeof body?.id === "number" ? body?.id : undefined;
 
-  return NextResponse.json({ enqueued: jobs.length });
+  if (kind && id) {
+    return json({
+      ok: true,
+      message: `Reindex ${kind}#${id} requested (placeholder no-op).`,
+    });
+  }
+
+  return json({ ok: true, message: "No-op index endpoint reached." });
 }
