@@ -1,3 +1,4 @@
+// lib/auto/capability.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export type Capability = {
   id: string;                       // adapter id (matches normalize.ts inference)
@@ -9,6 +10,10 @@ export type Capability = {
   defaultMinConfidence?: number;    // adapter-specific floor for selection
   notes?: string;
   perStateOverrides?: Record<string, { minConfidence?: number }>;
+  // NEW: follow-up metadata & email-only autosubmit flag (phase 1)
+  followupCadenceDays?: number;     // schedule next attempt after N days
+  maxFollowups?: number;            // cap per action thread
+  canAutoSubmitEmail?: boolean;     // safe low-risk email-only autosubmit (future toggle)
 };
 
 // Seed a conservative capability matrix (extend as we learn)
@@ -21,6 +26,9 @@ export const CAPABILITY_MATRIX: Record<string, Capability> = {
     channels: ["email"],
     defaultMinConfidence: 0.82,
     notes: "Conservative defaults; falls back to Concierge if unsure.",
+    followupCadenceDays: 10,
+    maxFollowups: 2,
+    canAutoSubmitEmail: false,
   },
   justdial: {
     id: "justdial",
@@ -29,11 +37,11 @@ export const CAPABILITY_MATRIX: Record<string, Capability> = {
     canAutoSubmit: false,
     channels: ["email", "form"],
     defaultMinConfidence: 0.84,
-    notes: "Stable evidence; submission may encounter CAPTCHA → Concierge at submit-time.",
-    perStateOverrides: {
-      MH: { minConfidence: 0.83 },
-      KA: { minConfidence: 0.83 },
-    },
+    notes: "Submission may hit CAPTCHA; follow-up helpful.",
+    perStateOverrides: { MH: { minConfidence: 0.83 }, KA: { minConfidence: 0.83 } },
+    followupCadenceDays: 7,
+    maxFollowups: 2,
+    canAutoSubmitEmail: false,
   },
   sulekha: {
     id: "sulekha",
@@ -42,6 +50,9 @@ export const CAPABILITY_MATRIX: Record<string, Capability> = {
     canAutoSubmit: false,
     channels: ["email"],
     defaultMinConfidence: 0.83,
+    followupCadenceDays: 10,
+    maxFollowups: 2,
+    canAutoSubmitEmail: false,
   },
   indiamart: {
     id: "indiamart",
@@ -51,6 +62,9 @@ export const CAPABILITY_MATRIX: Record<string, Capability> = {
     channels: ["email"],
     defaultMinConfidence: 0.85,
     requiresOtpOrLogin: true,
+    followupCadenceDays: 14,
+    maxFollowups: 1,
+    canAutoSubmitEmail: false,
   },
 };
 
