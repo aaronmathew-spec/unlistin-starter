@@ -1,4 +1,3 @@
-// lib/auto/capability.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export type Capability = {
   id: string;                       // adapter id (matches normalize.ts inference)
@@ -10,10 +9,10 @@ export type Capability = {
   defaultMinConfidence?: number;    // adapter-specific floor for selection
   notes?: string;
   perStateOverrides?: Record<string, { minConfidence?: number }>;
-  // NEW: follow-up metadata & email-only autosubmit flag (phase 1)
-  followupCadenceDays?: number;     // schedule next attempt after N days
-  maxFollowups?: number;            // cap per action thread
-  canAutoSubmitEmail?: boolean;     // safe low-risk email-only autosubmit (future toggle)
+  // follow-ups & autosubmit flags
+  followupCadenceDays?: number;
+  maxFollowups?: number;
+  canAutoSubmitEmail?: boolean;     // phase 1: safe, email-only auto-submit
 };
 
 // Seed a conservative capability matrix (extend as we learn)
@@ -28,7 +27,7 @@ export const CAPABILITY_MATRIX: Record<string, Capability> = {
     notes: "Conservative defaults; falls back to Concierge if unsure.",
     followupCadenceDays: 10,
     maxFollowups: 2,
-    canAutoSubmitEmail: false,
+    canAutoSubmitEmail: true, // enable email-only autosubmit for low-risk generic templates
   },
   justdial: {
     id: "justdial",
@@ -52,7 +51,7 @@ export const CAPABILITY_MATRIX: Record<string, Capability> = {
     defaultMinConfidence: 0.83,
     followupCadenceDays: 10,
     maxFollowups: 2,
-    canAutoSubmitEmail: false,
+    canAutoSubmitEmail: true, // safe starter for email-based flows
   },
   indiamart: {
     id: "indiamart",
