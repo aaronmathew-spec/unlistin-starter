@@ -213,17 +213,22 @@ function escapeRegExp(s: string) {
 type CityNorm = { city?: string; state?: string };
 
 function normalizeCity(s: string): CityNorm {
-  const parts = s.split(",").map((x) => x.trim());
+  const parts = (s ? s.split(",").map((x) => x.trim()).filter(Boolean) : []) as string[];
+
   if (parts.length === 1) {
     // try to parse trailing state code if present (e.g., "Mumbai MH")
-    const m = /\b([A-Z]{2})\b/i.exec(parts[0]);
-    return { city: parts[0], state: m ? m[1].toUpperCase() : undefined };
+    const token = parts[0] ?? "";
+    const m = /\b([A-Z]{2})\b/i.exec(token);
+    return { city: token, state: m ? (m[1] ?? "").toUpperCase() : undefined };
   }
+
   if (parts.length >= 2) {
-    const state = (parts[1] || "").toUpperCase().replace(/\s+/g, "");
-    const st = /^[A-Z]{2}$/.test(state) ? state : undefined;
-    return { city: parts[0], state: st };
+    const tokenCity = parts[0] ?? "";
+    const stateRaw = (parts[1] ?? "").toUpperCase().replace(/\s+/g, "");
+    const st = /^[A-Z]{2}$/.test(stateRaw) ? stateRaw : undefined;
+    return { city: tokenCity, state: st };
   }
+
   return {};
 }
 
