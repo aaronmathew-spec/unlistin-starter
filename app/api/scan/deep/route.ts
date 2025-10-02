@@ -1,43 +1,94 @@
-// app/api/scan/deep/route.ts
-/* eslint-disable @typescript-eslint/no-explicit-any */
+/* app/api/scan/deep/route.ts */
+export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
+import { createServerClient } from "@supabase/ssr";
 import { ensureSearchLimit } from "@/lib/ratelimit";
-import { createDeepScanJob, type DeepScanInput } from "@/lib/deepscan-jobs";
+import { queryJustdial } from "@/lib/scan/brokers/justdial";
+import { isAllowed } from "@/lib/scan/domains-allowlist";
+import { normalizeHit, toRedactedInput, type RawHit } from "@/lib/scan/normalize";
 
-function json(data: any, init?: ResponseInit) {
-  return new Response(JSON.stringify(data), {
-    ...init,
-    headers: { "content-type": "application/json; charset=utf-8", ...(init?.headers || {}) },
-  });
+function supa() {
+  const jar = cookies();
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    { cookies: { get: (k) => jar.get(k)?.value } }
+  );
 }
 
-export const runtime = "nodejs"; // Redis lib prefers node runtime
+type Body = Partial<{ fullName: string; email: string; city: string }>;
 
 export async function POST(req: Request) {
+  // rate limit
   const rl = await ensureSearchLimit(req);
   if (!rl.ok) {
-    return json({ error: "Rate limit exceeded. Try again shortly." }, { status: 429 });
+    return NextResponse.json({ ok: false, error: "Rate limit exceeded. Try again shortly." }, { status: 429 });
   }
 
-  let body: any = {};
+  let body: Body = {};
   try { body = await req.json(); } catch {}
 
-  const input: DeepScanInput = {
-    query: typeof body?.query === "string" ? body.query.slice(0, 256) : undefined,
-    name: typeof body?.name === "string" ? body.name.slice(0, 128) : undefined,
-    email: typeof body?.email === "string" ? body.email.slice(0, 256) : undefined,
-    city: typeof body?.city === "string" ? body.city.slice(0, 128) : undefined,
-    consent: !!body?.consent,
-    emailVerified: !!body?.emailVerified,
-    mask: body?.mask !== false, // default true (mask email)
-  };
+  const fullName = body.fullName?.trim() || "";
+  const email = body.email?.trim() || "";
+  const city = body.city?.trim() || "";
 
-  if (!input.consent) {
-    return json({ error: "Consent required for Deep Scan." }, { status: 400 });
+  if (!fullName && !email && !city) {
+    return NextResponse.json({ ok: false, error: "Provide at least one field." }, { status: 400 });
   }
 
-  // Don’t require email, but better matches when present. That’s okay for now.
-  const job = await createDeepScanJob(input);
-  return json({ jobId: job.id });
+  const t0 = Date.now();
+  // 1) Execute adapters in parallel (expand later with more brokers)
+  const [jd] = await Promise.all([
+    queryJustdial({ fullName, email, city }).catch(() => [] as RawHit[]),
+  ]);
+
+  // 2) Normalize & filter by allowlist (defense in depth)
+  const raw = [...jd].map(normalizeHit).filter(h => isAllowed(h.url));
+
+  // 3) Persist RUN + HITS (only redacted fields)
+  const db = supa();
+  const redacted = toRedactedInput({ fullName, email, city });
+
+  // Create run
+  const { data: runRow, error: runErr } = await db
+    .from("scan_runs")
+    .insert({
+      // never store raw inputs
+      query_preview: redacted, // jsonb
+      status: "completed",
+      took_ms: Date.now() - t0,
+    } as any)
+    .select("id")
+    .maybeSingle();
+
+  if (runErr || !runRow) {
+    // If DB fails, still return results (non-persistent)
+    return NextResponse.json({
+      ok: true, persisted: false, runId: null,
+      results: raw, tookMs: Date.now() - t0,
+    });
+  }
+
+  // Insert hits
+  const rows = raw.slice(0, 20).map((h, i) => ({
+    run_id: runRow.id,
+    rank: i + 1,
+    broker: h.broker,
+    category: h.category,
+    url: h.url,
+    confidence: h.confidence,
+    matched_fields: h.matchedFields,
+    evidence: h.evidence,
+  }));
+
+  await db.from("scan_hits").insert(rows as any).then(() => {}).catch(() => { /* ignore */ });
+
+  return NextResponse.json({
+    ok: true, persisted: true,
+    runId: runRow.id,
+    results: raw,
+    tookMs: Date.now() - t0,
+  });
 }
