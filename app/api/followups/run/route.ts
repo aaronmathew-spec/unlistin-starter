@@ -1,4 +1,3 @@
-// app/api/followups/run/route.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export const runtime = "nodejs";
 
@@ -8,6 +7,8 @@ import { createServerClient } from "@supabase/ssr";
 import { getCapability } from "@/lib/auto/capability";
 import { sha256Hex, signEnvelope } from "@/lib/ledger";
 import { isAllowed } from "@/lib/scan/domains-allowlist";
+import { beat } from "@/lib/ops/heartbeat";
+import { isKilled, loadControlsMap, underDailyCap } from "@/lib/auto/controls";
 
 function supa() {
   const jar = cookies();
@@ -31,10 +32,12 @@ function json(data: any, init?: ResponseInit) {
  *
  * - Picks due follow-ups.
  * - Prepares a new "prepared" action using prior redacted draft (no new AI call).
- * - Respect allowlist & adapter caps.
+ * - Respect allowlist, adapter caps, and admin kill-switch.
  * - Marks followup as scheduled=true.
  */
 export async function POST(req: Request) {
+  await beat("followups.run");
+
   let limit = 10;
   try {
     const body = await req.json().catch(() => ({}));
@@ -57,10 +60,23 @@ export async function POST(req: Request) {
   if (error) return json({ ok: false, error: error.message }, { status: 400 });
   if (!due || due.length === 0) return NextResponse.json({ ok: true, prepared: 0, actions: [] });
 
+  const controls = await loadControlsMap();
   const prepared: any[] = [];
 
   for (const f of due) {
     const adapterId = (f.adapter || "generic").toLowerCase();
+
+    // Admin kill/cap checks
+    if (isKilled(controls, adapterId)) {
+      await db.from("followups").update({ scheduled: true, note: "adapter-killed" }).eq("id", f.id);
+      continue;
+    }
+    const capOk = await underDailyCap(adapterId, { countSent: false });
+    if (!capOk) {
+      await db.from("followups").update({ scheduled: true, note: "adapter-cap-reached" }).eq("id", f.id);
+      continue;
+    }
+
     const cap = getCapability(adapterId);
 
     // Load parent action (for redacted draft + evidence)
@@ -109,6 +125,7 @@ export async function POST(req: Request) {
       reply_email_preview: parent.reply_email_preview || null,
       proof_hash: proof.hash,
       proof_sig: proof.sig,
+      adapter: adapterId,
       meta: { followup_of: parent.id, n: f.n, adapter: adapterId },
     };
 
