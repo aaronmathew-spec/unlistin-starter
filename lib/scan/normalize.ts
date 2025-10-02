@@ -175,28 +175,33 @@ function redactEmail(raw: string): string {
   if (at <= 0) return "•@•";
   const user = s.slice(0, at);
   const domain = s.slice(at + 1);
-  const uMasked = user.length <= 2 ? user[0] + "••" : user.slice(0, 2) + "•••";
+  const uMasked = user.length <= 2 ? (user[0] ?? "•") + "••" : user.slice(0, 2) + "•••";
   const parts = domain.split(".");
   if (parts.length < 2) return `${uMasked}@•••`;
   const tld = parts.pop()!;
   const root = parts.pop() || "";
-  const rootMasked = root ? root[0] + "•••" : "•••";
+  const rootMasked = root ? (root[0] ?? "•") + "•••" : "•••";
   return `${uMasked}@${rootMasked}.${tld}`;
 }
 
 function redactName(raw: string): string {
   const parts = raw.trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return "N•";
-  const first = parts[0];
-  const maskedFirst = first[0] + "•";
-  return parts.length > 1 ? `${maskedFirst} ${parts.slice(1).map(() => "•").join("")}` : maskedFirst;
+  const first = parts[0] ?? "";
+  const firstInitial = first[0] ?? "N";
+  const maskedFirst = firstInitial + "•";
+  return parts.length > 1
+    ? `${maskedFirst} ${parts.slice(1).map(() => "•").join("")}`
+    : maskedFirst;
 }
 
 function redactCity(raw: string): string {
   const s = raw.trim();
   if (!s) return "C•";
   const [city] = s.split(",").map((x) => x.trim());
-  return city ? city[0] + "•" : "C•";
+  const c = city ?? "";
+  const initial = c[0] ?? "C";
+  return initial + "•";
 }
 
 function escapeRegExp(s: string) {
