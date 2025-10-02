@@ -3,6 +3,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 type ScanInput = {
   fullName?: string;
@@ -24,7 +25,9 @@ type ScanResponse =
   | { ok: false; error: string; retryAfter?: number };
 
 export default function QuickScanPage() {
-  // Form state
+  const router = useRouter();
+
+  // Form state (minimal input)
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [city, setCity] = useState("");
@@ -34,11 +37,12 @@ export default function QuickScanPage() {
   const [took, setTook] = useState<number | null>(null);
   const [results, setResults] = useState<ScanHit[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [deepBusy, setDeepBusy] = useState(false);
 
+  // Simple client-side validation: allow empty, but at least one field
   const canScan = !!(fullName.trim() || email.trim() || city.trim());
 
   async function runScan() {
-    if (!canScan || loading) return;
     setLoading(true);
     setError(null);
     setResults(null);
@@ -55,11 +59,10 @@ export default function QuickScanPage() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
       });
-
       const json = (await res.json()) as ScanResponse;
 
-      if (!res.ok || !("ok" in json) || !json.ok) {
-        const msg = (json as any)?.error || `HTTP ${res.status}`;
+      if (!res.ok || !json.ok) {
+        const msg = "error" in json ? json.error : `HTTP ${res.status}`;
         setError(msg || "Scan failed. Please try again.");
       } else {
         setResults(json.results);
@@ -72,194 +75,168 @@ export default function QuickScanPage() {
     }
   }
 
+  // NEW: Deep scan (saves a run, then redirects to results page)
+  async function runDeepScan() {
+    if (!canScan || deepBusy) return;
+    setDeepBusy(true);
+    setError(null);
+    try {
+      const payload = {
+        // map to deep-scan API expected shape (name/email/city)
+        name: fullName.trim() || undefined,
+        email: email.trim() || undefined,
+        city: city.trim() || undefined,
+      };
+      const res = await fetch("/api/scan/deep", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const j = await res.json();
+      if (res.ok && j?.ok && j?.runId) {
+        router.push(`/scan/results/${j.runId}`);
+      } else {
+        const msg = j?.error || "Deep scan failed.";
+        setError(msg);
+      }
+    } catch (err: any) {
+      setError(err?.message ?? "Network error.");
+    } finally {
+      setDeepBusy(false);
+    }
+  }
+
   return (
-    <div className="relative min-h-screen w-full overflow-hidden bg-zinc-950 text-zinc-50">
-      {/* Decorative background glows */}
-      <div className="pointer-events-none absolute -left-40 -top-40 h-[520px] w-[720px] rounded-full bg-sky-400/20 blur-3xl" />
-      <div className="pointer-events-none absolute right-[-20%] top-[-10%] h-[520px] w-[720px] rounded-full bg-fuchsia-500/20 blur-3xl" />
-      <div className="pointer-events-none absolute bottom-[-20%] left-1/4 h-[420px] w-[620px] rounded-full bg-violet-500/20 blur-3xl" />
+    <div className="max-w-5xl mx-auto p-6 space-y-8">
+      {/* Header / Hero */}
+      <header className="space-y-2">
+        <h1 className="text-2xl font-semibold">Quick Scan</h1>
+        <p className="text-sm text-gray-600">
+          See where your personal info might appear online —{" "}
+          <strong>without creating an account</strong>. We only use the inputs below for this scan
+          and do <strong>not store</strong> them.
+        </p>
+      </header>
 
-      {/* Page container */}
-      <div className="mx-auto w-full max-w-6xl px-6 py-10">
-        {/* Top breadcrumb / brand hint (kept minimal, doesn't touch your layout) */}
-        <div className="mb-3 text-xs text-zinc-400">
-          <Link href="/" className="hover:text-zinc-200">
-            UnlistIN
-          </Link>{" "}
-          / <span className="text-zinc-300">Quick Scan</span>
+      {/* Form */}
+      <section className="rounded-2xl border bg-white p-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <LabeledInput
+            label="Full name (recommended)"
+            placeholder="e.g., Priya Sharma"
+            value={fullName}
+            onChange={setFullName}
+          />
+          <LabeledInput
+            label="Email (optional)"
+            placeholder="e.g., priya***@gmail.com"
+            value={email}
+            onChange={setEmail}
+          />
+          <LabeledInput
+            label="City / State (optional)"
+            placeholder="e.g., Mumbai, MH"
+            value={city}
+            onChange={setCity}
+          />
         </div>
 
-        <div className="grid grid-cols-1 items-start gap-10 lg:grid-cols-2">
-          {/* Hero copy */}
-          <div className="relative">
-            <h1 className="text-4xl font-semibold leading-tight tracking-tight sm:text-5xl">
-              Quick Scan
-            </h1>
-            <p className="mt-4 text-zinc-300">
-              See where your personal info might appear online —{" "}
-              <span className="font-medium text-white">without creating an account</span>. We
-              only use the inputs below for this scan and{" "}
-              <span className="font-medium text-white">do not store</span> them. Results are
-              redacted previews with allowlisted links.
-            </p>
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <button
+            className="rounded-md border px-4 py-2 text-sm hover:bg-gray-50 disabled:opacity-50"
+            onClick={runScan}
+            disabled={!canScan || loading}
+          >
+            {loading ? "Scanning…" : "Run Quick Scan"}
+          </button>
 
-            {/* Trust/assurance pills */}
-            <div className="mt-5 flex flex-wrap gap-2 text-xs">
-              {["No persistent PII", "CSP & RLS enforced", "Strict domain allowlist"].map((t) => (
-                <span
-                  key={t}
-                  className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-zinc-300 backdrop-blur"
-                >
-                  {t}
-                </span>
-              ))}
-            </div>
-          </div>
+          <button
+            className="rounded-md border px-4 py-2 text-sm hover:bg-gray-50 disabled:opacity-50"
+            onClick={runDeepScan}
+            disabled={!canScan || deepBusy}
+            title="Runs a deeper scan, saves a run, and opens the results page"
+          >
+            {deepBusy ? "Starting…" : "Run Deep Scan (save & review)"}
+          </button>
 
-          {/* Input card */}
-          <div className="relative">
-            <div className="pointer-events-none absolute -inset-1 rounded-[28px] bg-gradient-to-tr from-sky-400/30 via-fuchsia-500/20 to-purple-500/30 blur-xl" />
-            <div className="relative rounded-[28px] border border-white/10 bg-white/5 p-6 shadow-2xl backdrop-blur-xl">
-              <div className="grid grid-cols-1 gap-3">
-                <LabeledInput
-                  label="Full name (recommended)"
-                  placeholder="e.g., Priya Sharma"
-                  value={fullName}
-                  onChange={setFullName}
-                />
-                <LabeledInput
-                  label="Email (optional)"
-                  placeholder="e.g., priya@email.com"
-                  value={email}
-                  onChange={setEmail}
-                  type="email"
-                />
-                <LabeledInput
-                  label="City / State (optional)"
-                  placeholder="e.g., Mumbai, MH"
-                  value={city}
-                  onChange={setCity}
-                />
-              </div>
+          <Link href="/ai" className="rounded-md border px-4 py-2 text-sm hover:bg-gray-50">
+            Ask the AI assistant
+          </Link>
 
-              <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center">
-                <button
-                  onClick={runScan}
-                  disabled={!canScan || loading}
-                  className="w-full rounded-2xl bg-gradient-to-r from-fuchsia-500 via-violet-500 to-sky-400 px-4 py-3 text-sm font-medium text-white shadow-[0_0_0_3px_rgba(255,255,255,0.08),0_20px_40px_-12px_rgba(99,102,241,.55)] transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {loading ? "Scanning…" : "Run Quick Scan"}
-                </button>
-
-                <Link
-                  href="/ai"
-                  className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-center text-sm text-zinc-200 transition hover:bg-white/10 sm:w-auto"
-                >
-                  Ask the AI assistant
-                </Link>
-              </div>
-
-              <p className="mt-3 text-center text-xs text-zinc-400">
-                Tip: Provide at least one field. Name usually yields the most results.
-              </p>
-            </div>
-          </div>
+          <span className="text-xs text-gray-500">
+            Tip: Provide at least one field. Name usually yields the most results.
+          </span>
         </div>
+      </section>
 
-        {/* Results / feedback */}
-        <section className="mt-10 space-y-4">
-          {error ? (
-            <div className="rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-              {error}
-            </div>
-          ) : null}
-
-          {loading ? <ScanSkeleton /> : null}
-
-          {!loading && took != null ? (
-            <div className="text-xs text-zinc-400">Completed in {(took / 1000).toFixed(2)}s</div>
-          ) : null}
-
-          {!loading && results && results.length === 0 ? (
-            <div className="rounded-2xl border border-white/10 bg-white/5 p-6 text-sm text-zinc-200">
-              We didn’t detect likely matches from our initial sources. You can{" "}
-              <Link href="/scan/pro" className="underline underline-offset-2">
-                run a deeper scan
-              </Link>{" "}
-              after sign-in (still privacy-respecting), or{" "}
-              <Link href="/requests/new" className="underline underline-offset-2">
-                start a removal request
-              </Link>{" "}
-              if you already know a data broker listing your info.
-            </div>
-          ) : null}
-
-          {!loading && results && results.length > 0 ? (
-            <div className="space-y-3">
-              <h2 className="text-sm font-medium text-zinc-300">Matches</h2>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                {results.map((hit, idx) => (
-                  <ResultCard key={idx} hit={hit} />
-                ))}
-              </div>
-
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-zinc-200">
-                <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
-                  <span>Want automated takedowns, tracking &amp; proof? Create an account.</span>
-                  <Link
-                    href="/login"
-                    className="rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-sm text-zinc-100 transition hover:bg-white/10"
-                  >
-                    Continue &amp; Save Scan
-                  </Link>
-                </div>
-              </div>
-            </div>
-          ) : null}
-        </section>
-
-        {/* Expectation tiles (keep under the form to avoid cluttering hero) */}
-        <section className="mt-12">
-          <h2 className="text-sm font-medium text-zinc-300">What you’ll see</h2>
-          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <PreviewCard name="Justdial" tag="Possible match" />
-            <PreviewCard name="Sulekha" tag="Possible match" />
-            <PreviewCard name="IndiaMART" tag="Possible match" />
+      {/* Results */}
+      <section className="space-y-4">
+        {error ? (
+          <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 p-3 text-sm">
+            Error: {error}
           </div>
-        </section>
+        ) : null}
 
-        <footer className="mt-14 pb-10 text-xs text-zinc-500">
-          © {new Date().getFullYear()} UnlistIN • Privacy-first. Made for India.
-        </footer>
-      </div>
+        {loading ? <ScanSkeleton /> : null}
+
+        {!loading && took != null ? (
+          <div className="text-xs text-gray-500">Completed in {(took / 1000).toFixed(2)}s</div>
+        ) : null}
+
+        {!loading && results && results.length === 0 ? (
+          <div className="rounded-xl border bg-white p-6 text-sm text-gray-600">
+            We didn’t detect likely matches from our initial sources. You can{" "}
+            <Link href="/scan/pro" className="underline">
+              run a deeper scan
+            </Link>{" "}
+            after sign-in (still privacy-respecting), or{" "}
+            <Link href="/requests/new" className="underline">
+              start a removal request
+            </Link>{" "}
+            if you already know a data broker listing your info.
+          </div>
+        ) : null}
+
+        {!loading && results && results.length > 0 ? (
+          <div className="space-y-3">
+            {results.map((hit, idx) => (
+              <ResultCard key={idx} hit={hit} />
+            ))}
+
+            <div className="rounded-xl border bg-white p-4 flex items-center justify-between">
+              <div className="text-sm text-gray-700">
+                Want automated takedowns, tracking & proof? Create an account.
+              </div>
+              <Link href="/login" className="px-3 py-1 rounded border hover:bg-gray-50 text-sm">
+                Continue & Save Scan
+              </Link>
+            </div>
+          </div>
+        ) : null}
+      </section>
     </div>
   );
 }
-
-/* ---------- UI bits ---------- */
 
 function LabeledInput({
   label,
   placeholder,
   value,
   onChange,
-  type = "text",
 }: {
   label: string;
   placeholder?: string;
   value: string;
   onChange: (v: string) => void;
-  type?: string;
 }) {
   return (
     <label className="block">
-      <div className="mb-1 text-[11px] uppercase tracking-wide text-zinc-400">{label}</div>
+      <div className="text-xs text-gray-600 mb-1">{label}</div>
       <input
-        type={type}
+        className="w-full border rounded-md px-3 py-2 text-sm"
         placeholder={placeholder}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-zinc-400 outline-none transition focus:border-fuchsia-400/50 focus:ring-2 focus:ring-fuchsia-400/30"
       />
     </label>
   );
@@ -267,13 +244,14 @@ function LabeledInput({
 
 function ScanSkeleton() {
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-      {[...Array(4)].map((_, i) => (
-        <div
-          key={i}
-          className="h-32 animate-pulse rounded-2xl border border-white/10 bg-white/5"
-          aria-hidden
-        />
+    <div className="space-y-2">
+      {[...Array(3)].map((_, i) => (
+        <div key={i} className="rounded-xl border bg-white p-4">
+          <div className="h-4 w-40 bg-gray-200 rounded mb-2 animate-pulse" />
+          <div className="h-3 w-64 bg-gray-100 rounded mb-2 animate-pulse" />
+          <div className="h-3 w-24 bg-gray-100 rounded mb-3 animate-pulse" />
+          <div className="h-8 w-36 bg-gray-200 rounded animate-pulse" />
+        </div>
       ))}
     </div>
   );
@@ -282,40 +260,45 @@ function ScanSkeleton() {
 function ResultCard({ hit }: { hit: ScanHit }) {
   const pct = Math.round(hit.confidence * 100);
   const band =
-    pct >= 80 ? "from-emerald-400 to-emerald-500" : pct >= 50 ? "from-amber-400 to-amber-500" : "from-zinc-400 to-zinc-500";
+    pct >= 80 ? "bg-emerald-100 text-emerald-800" :
+    pct >= 50 ? "bg-amber-100 text-amber-800" :
+                "bg-gray-100 text-gray-700";
 
   return (
-    <div className="group relative overflow-hidden rounded-2xl border border-white/10 bg-white/[0.06] p-4 shadow-sm backdrop-blur">
+    <div className="rounded-xl border bg-white p-4">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <div className="text-xs text-zinc-400">{hit.category}</div>
+          <div className="text-sm text-gray-500">{hit.category}</div>
           <a
             href={hit.url}
             target="_blank"
             rel="noreferrer"
-            className="mt-0.5 block text-base font-medium text-white underline-offset-2 hover:underline"
+            className="text-base font-medium underline underline-offset-2"
           >
             {hit.broker}
           </a>
-          <div className="mt-1 text-xs text-zinc-400">
-            Matched: {hit.matchedFields.length ? hit.matchedFields.join(", ") : "—"}
+          <div className="mt-1 text-xs text-gray-600">
+            Matched: {hit.matchedFields.join(", ")}
           </div>
         </div>
-        <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-xs text-zinc-200">
-          {pct}% confidence
+
+        <span className={`px-2 py-1 rounded-full text-xs font-medium ${band}`}>
+          Confidence {pct}%
         </span>
       </div>
 
-      <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-white/10">
-        <div
-          className={`h-full rounded-full bg-gradient-to-r ${band}`}
-          style={{ width: `${Math.max(5, pct)}%` }}
-          aria-hidden
-        />
+      <div className="mt-3">
+        <div className="h-2 w-full bg-gray-100 rounded">
+          <div
+            className="h-2 bg-black/80 rounded"
+            style={{ width: `${Math.max(5, pct)}%` }}
+            aria-hidden
+          />
+        </div>
       </div>
 
       {hit.evidence?.length ? (
-        <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-zinc-200">
+        <ul className="mt-3 list-disc ml-5 text-xs text-gray-700 space-y-1">
           {hit.evidence.map((e, i) => (
             <li key={i}>{e}</li>
           ))}
@@ -325,38 +308,15 @@ function ResultCard({ hit }: { hit: ScanHit }) {
       <div className="mt-4 flex flex-wrap gap-2">
         <Link
           href="/login"
-          className="rounded-xl bg-gradient-to-r from-fuchsia-500 to-sky-400 px-3 py-1.5 text-xs font-medium text-white"
+          className="rounded-md border px-3 py-1.5 text-sm hover:bg-gray-50"
         >
           Start automated removal
         </Link>
         <Link
           href="/requests/new"
-          className="rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10"
+          className="rounded-md border px-3 py-1.5 text-sm hover:bg-gray-50"
         >
           Create manual request
-        </Link>
-      </div>
-    </div>
-  );
-}
-
-function PreviewCard({ name, tag }: { name: string; tag: string }) {
-  return (
-    <div className="group relative overflow-hidden rounded-2xl border border-white/10 bg-white/[0.06] p-4 shadow-sm backdrop-blur">
-      <div className="text-xs text-fuchsia-300/90">{tag}</div>
-      <div className="mt-1 text-base font-medium text-white">{name}</div>
-      <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-white/10">
-        <div className="h-full w-1/2 rounded-full bg-gradient-to-r from-fuchsia-500 to-sky-400" />
-      </div>
-      <div className="mt-3 flex gap-2">
-        <button className="rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10">
-          Preview
-        </button>
-        <Link
-          href="/login"
-          className="rounded-xl bg-gradient-to-r from-fuchsia-500 to-sky-400 px-3 py-1.5 text-xs font-medium text-white"
-        >
-          Start removal
         </Link>
       </div>
     </div>
