@@ -100,12 +100,12 @@ export function normalizeHits(input: ScanInput, raw: RawHit[]): NormalizedHit[] 
 /* ----------------------------- helpers ----------------------------- */
 
 function getAdapterMeta(id: string): AdapterMeta {
-  // With noUncheckedIndexedAccess, index access can be undefined; guard explicitly.
-  const table = ADAPTER_META as Record<string, AdapterMeta>;
-  if (Object.prototype.hasOwnProperty.call(table, id)) {
-    return table[id];
-  }
-  return table["generic"];
+  // Explicitly narrow possibly-undefined index access under noUncheckedIndexedAccess
+  const map = ADAPTER_META as Record<string, AdapterMeta | undefined>;
+  const meta = map[id];
+  if (meta !== undefined) return meta as AdapterMeta;
+  const generic = map["generic"] as AdapterMeta;
+  return generic;
 }
 
 function clamp01(n: number) {
