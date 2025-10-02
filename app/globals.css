@@ -1,5 +1,4 @@
-/* app/globals.css */
-/* True dark mode tokens + subtle neon accents (no inverted hack) + existing base styles */
+// app/globals.css
 * { box-sizing: border-box; }
 html, body { height: 100%; }
 
@@ -9,7 +8,7 @@ html, body { height: 100%; }
   --card: #ffffff;
   --muted: #6b7280;
   --accent: #f9fafb;
-  --neon: #6d28d9; /* subtle purple accent */
+  --neon: #6d28d9;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -40,7 +39,6 @@ input, button { font: inherit; }
 .bg-card { background: var(--card); }
 .hover\:bg-accent:hover { background: var(--accent); }
 
-/* form & buttons */
 input[type="text"], input[type="email"], input:not([type]) {
   width: 100%;
   padding: .5rem .75rem;
@@ -58,14 +56,12 @@ button {
 }
 button:disabled { opacity: .6; cursor: not-allowed; }
 
-/* cards */
 .rounded-2xl { border-radius: 1rem; }
 .rounded-xl { border-radius: .75rem; }
 .border { border: 1px solid color-mix(in oklab, var(--fg) 10%, transparent); }
 .bg-white { background: #fff; }
 .shadow-sm { box-shadow: 0 1px 2px rgba(0,0,0,.04); }
 
-/* neon accent “pulse” utility for future Live Coverage Map */
 .neon-pulse {
   box-shadow: 0 0 0 rgba(109, 40, 217, 0.7);
   animation: neonPulse 2s infinite;
