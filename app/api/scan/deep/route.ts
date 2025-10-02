@@ -49,7 +49,7 @@ export async function POST(req: Request) {
 
   // 3) Normalize/redact for response using YOUR normalizer
   const previews = normalizeHits(
-    { email, name, city, /* NOTE: normalizer requires email; ensure callers always pass email or handle empty */ } as ScanInput,
+    { email, name, city } as ScanInput,
     raw
   );
 
@@ -61,7 +61,7 @@ export async function POST(req: Request) {
     .insert({
       status: "completed",
       took_ms: Date.now() - t0,
-      // redacted preview of the query (normalizer already masks email/name/city in snippet phase)
+      // Store only a minimal redacted preview of the query
       query_preview: {
         email: previews[0]?.preview.email ?? (email ? "•@••••" : ""),
         name: previews[0]?.preview.name ?? (name ? "N•" : ""),
@@ -97,7 +97,11 @@ export async function POST(req: Request) {
     evidence: [h.fields?.snippet ?? ""].filter(Boolean),
   }));
 
-  await db.from("scan_hits").insert(rows as any).then(() => {}).catch(() => {});
+  try {
+    await db.from("scan_hits").insert(rows as any);
+  } catch {
+    // ignore; run exists so results page still loads the run shell even if hits insert fails
+  }
 
   return NextResponse.json({
     ok: true,
