@@ -8,6 +8,8 @@ import { isAllowed } from "@/lib/scan/domains-allowlist";
 import { getCapability } from "@/lib/auto/capability";
 import { queueEmailFromAction } from "@/lib/mailer";
 import { recordOutcome } from "@/lib/auto/learn";
+import { beat } from "@/lib/ops/heartbeat";
+import { isKilled, loadControlsMap, minConfidence, underDailyCap } from "@/lib/auto/controls";
 
 function supa() {
   const jar = cookies();
@@ -29,15 +31,13 @@ function json(data: any, init?: ResponseInit) {
  * POST /api/actions/submit
  * Body: { limit?: number }
  *
- * Phase 1 Auto-Submit (email-only):
- *  - Picks eligible "prepared" actions where adapter.canAutoSubmitEmail === true
- *  - Ensures allowlisted evidence URL and reply_channel === 'email'
- *  - Queues an outbox record (no PII/body persisted), then marks action as 'sent'
- *  - Records outcome for learning
- *
- * NOTE: We do not actually send emails in this phase; outbox can be wired to a sender later.
+ * Phase 1 Auto-Submit (email-only) with admin overrides:
+ *  - adapter_controls: killed, daily_cap, min_confidence
+ *  - allowlist + capability gates still apply
  */
 export async function POST(req: Request) {
+  await beat("actions.submit");
+
   let limit = 10;
   try {
     const body = await req.json().catch(() => ({}));
@@ -51,13 +51,14 @@ export async function POST(req: Request) {
   // Fetch eligible actions
   const { data: actions, error } = await db
     .from("actions")
-    .select("id, broker, category, status, evidence, draft_subject, draft_body, fields, reply_channel, reply_email_preview, meta, state, adapter")
+    .select("id, broker, category, status, evidence, draft_subject, draft_body, fields, reply_channel, reply_email_preview, meta, state, adapter, confidence")
     .eq("status", "prepared")
     .limit(limit);
 
   if (error) return json({ ok: false, error: error.message }, { status: 400 });
   if (!actions || actions.length === 0) return NextResponse.json({ ok: true, sent: 0, actions: [] });
 
+  const controls = await loadControlsMap();
   const sentIds: number[] = [];
 
   for (const act of actions) {
@@ -72,6 +73,20 @@ export async function POST(req: Request) {
       // adapter capability
       const adapterId = (act as any).adapter || inferAdapterFrom(act.broker, url);
       const cap = getCapability(adapterId);
+
+      // admin kill switch
+      if (isKilled(controls, adapterId)) continue;
+
+      // min-confidence override (fall back to capability default or 0.82)
+      const rawConf = Number.isFinite((act as any).confidence) ? Number((act as any).confidence) : (act.meta?.confidence ?? null);
+      const hitConf = Number.isFinite(rawConf) ? Number(rawConf) : 1;
+      const threshold = minConfidence(controls, adapterId, cap.defaultMinConfidence ?? 0.82);
+      if (hitConf < threshold) continue;
+
+      // daily cap (count 'sent')
+      const capOk = await underDailyCap(adapterId, { countSent: true });
+      if (!capOk) continue;
+
       if (!cap.canAutoSubmitEmail) continue;
 
       // queue outbox (no body persisted)
