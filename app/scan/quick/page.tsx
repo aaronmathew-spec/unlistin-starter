@@ -1,7 +1,7 @@
 // app/scan/quick/page.tsx
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
@@ -20,26 +20,48 @@ type ScanHit = {
   evidence: string[];
 };
 
-type ScanResponse =
+type QuickScanResponse =
   | { ok: true; results: ScanHit[]; tookMs: number }
-  | { ok: false; error: string; retryAfter?: number };
+  | { ok: false; error: string };
+
+type DarkPreviewHit = {
+  source: string;
+  domain: string;
+  url: string;
+  risk: "high" | "medium" | "low";
+  note: string;
+};
+
+type TiPreviewResponse =
+  | { ok: true; hits: DarkPreviewHit[] }
+  | { ok: false; error: string };
 
 export default function QuickScanPage() {
   const router = useRouter();
 
-  // Form state (minimal input)
+  // form state
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [city, setCity] = useState("");
 
-  // UI state
+  // results & status
   const [loading, setLoading] = useState(false);
-  const [took, setTook] = useState<number | null>(null);
-  const [results, setResults] = useState<ScanHit[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [deepBusy, setDeepBusy] = useState(false);
+  const [results, setResults] = useState<ScanHit[] | null>(null);
+  const [took, setTook] = useState<number | null>(null);
 
-  // Simple client-side validation: allow empty, but at least one field
+  // dark-web preview state
+  const [tiLoading, setTiLoading] = useState(false);
+  const [tiError, setTiError] = useState<string | null>(null);
+  const [tiHits, setTiHits] = useState<DarkPreviewHit[] | null>(null);
+
+  // “Verify locally” modal
+  const [verifyOpen, setVerifyOpen] = useState<null | {
+    broker: string;
+    query: string;
+  }>(null);
+
+  // at least one field
   const canScan = !!(fullName.trim() || email.trim() || city.trim());
 
   async function runScan() {
@@ -59,67 +81,99 @@ export default function QuickScanPage() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
       });
-      const json = (await res.json()) as ScanResponse;
+      const json = (await res.json()) as QuickScanResponse;
 
       if (!res.ok || !json.ok) {
         const msg = "error" in json ? json.error : `HTTP ${res.status}`;
         setError(msg || "Scan failed. Please try again.");
       } else {
-        setResults(json.results);
+        // Region-aware ranking boost (client-side, non-persistent):
+        // If user provided a city/state token, nudge hits that mention it in evidence
+        const cityToken = city.trim().toLowerCase();
+        const ranked = [...json.results].sort((a, b) => {
+          const base = b.confidence - a.confidence;
+          if (!cityToken) return base;
+          const aHas = (a.evidence || []).some((e) =>
+            e.toLowerCase().includes(cityToken)
+          )
+            ? 1
+            : 0;
+          const bHas = (b.evidence || []).some((e) =>
+            e.toLowerCase().includes(cityToken)
+          )
+            ? 1
+            : 0;
+          // apply a small, stable nudge (0.05) without re-ordering ties too aggressively
+          return bHas - aHas || base;
+        });
+
+        setResults(ranked);
         setTook(json.tookMs);
       }
     } catch (e: any) {
-      setError(e?.message ?? "Network error. Please try again.");
+      setError(e?.message || "Scan failed. Please try again.");
     } finally {
       setLoading(false);
     }
   }
 
-  // NEW: Deep scan (saves a run, then redirects to results page)
-  async function runDeepScan() {
-    if (!canScan || deepBusy) return;
-    setDeepBusy(true);
-    setError(null);
+  // fetch consumer dark-web previews (allowlisted “hints” only)
+  async function fetchTiPreview() {
+    if (!email.trim() && !fullName.trim()) {
+      setTiError("Enter an email or username to fetch preview hints.");
+      setTiHits(null);
+      return;
+    }
+    setTiLoading(true);
+    setTiError(null);
+    setTiHits(null);
     try {
-      const payload = {
-        // map to deep-scan API expected shape (name/email/city)
-        name: fullName.trim() || undefined,
-        email: email.trim() || undefined,
-        city: city.trim() || undefined,
-      };
-      const res = await fetch("/api/scan/deep", {
+      const res = await fetch("/api/ti/preview", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          email: email.trim() || undefined,
+          username: fullName.trim() || undefined,
+        }),
       });
-      const j = await res.json();
-      if (res.ok && j?.ok && j?.runId) {
-        router.push(`/scan/results/${j.runId}`);
+      const json = (await res.json()) as TiPreviewResponse;
+      if (!res.ok || !json.ok) {
+        const msg = "error" in json ? json.error : `HTTP ${res.status}`;
+        setTiError(msg || "Couldn’t fetch dark-web hints.");
       } else {
-        const msg = j?.error || "Deep scan failed.";
-        setError(msg);
+        setTiHits(json.hits);
       }
-    } catch (err: any) {
-      setError(err?.message ?? "Network error.");
+    } catch (e: any) {
+      setTiError(e?.message || "Couldn’t fetch dark-web hints.");
     } finally {
-      setDeepBusy(false);
+      setTiLoading(false);
     }
   }
 
+  // helpers
+  function onVerifyLocally(broker: string) {
+    // Compose a private, on-device query string for the user to paste/run locally.
+    const parts = [fullName.trim(), email.trim(), city.trim()]
+      .filter(Boolean)
+      .join(" ");
+    const q = `${parts} site:${broker}`;
+    setVerifyOpen({ broker, query: q });
+  }
+
   return (
-    <div className="max-w-5xl mx-auto p-6 space-y-8">
-      {/* Header / Hero */}
-      <header className="space-y-2">
-        <h1 className="text-2xl font-semibold">Quick Scan</h1>
-        <p className="text-sm text-gray-600">
-          See where your personal info might appear online —{" "}
-          <strong>without creating an account</strong>. We only use the inputs below for this scan
-          and do <strong>not store</strong> them.
+    <div className="space-y-6">
+      <header className="space-y-1">
+        <h1 className="text-2xl font-semibold tracking-tight">
+          Quick Scan (no PII persisted)
+        </h1>
+        <p className="text-sm text-muted-foreground">
+          We only send redacted previews and allowlisted evidence URLs to the
+          browser. Nothing you enter here is stored.
         </p>
       </header>
 
       {/* Form */}
-      <section className="rounded-2xl border bg-white p-6">
+      <section className="rounded-2xl border bg-card p-6 shadow-sm">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <LabeledInput
             label="Full name (recommended)"
@@ -143,80 +197,179 @@ export default function QuickScanPage() {
 
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <button
-            className="rounded-md border px-4 py-2 text-sm hover:bg-gray-50 disabled:opacity-50"
+            className="rounded-md border px-4 py-2 text-sm hover:bg-accent disabled:opacity-50"
             onClick={runScan}
             disabled={!canScan || loading}
           >
             {loading ? "Scanning…" : "Run Quick Scan"}
           </button>
 
-          <button
-            className="rounded-md border px-4 py-2 text-sm hover:bg-gray-50 disabled:opacity-50"
-            onClick={runDeepScan}
-            disabled={!canScan || deepBusy}
-            title="Runs a deeper scan, saves a run, and opens the results page"
+          <Link
+            href="/scan/deep"
+            className="rounded-md border px-4 py-2 text-sm hover:bg-accent"
           >
-            {deepBusy ? "Starting…" : "Run Deep Scan (save & review)"}
-          </button>
-
-          <Link href="/ai" className="rounded-md border px-4 py-2 text-sm hover:bg-gray-50">
-            Ask the AI assistant
+            Try Deep Scan (free first scan)
           </Link>
 
-          <span className="text-xs text-gray-500">
-            Tip: Provide at least one field. Name usually yields the most results.
-          </span>
+          <button
+            className="rounded-md border px-4 py-2 text-sm hover:bg-accent disabled:opacity-50"
+            onClick={fetchTiPreview}
+            disabled={tiLoading}
+            title="Preview-only, allowlisted dark-web indicators"
+          >
+            {tiLoading ? "Fetching hints…" : "Dark-Web Preview (consumer)"}
+          </button>
         </div>
       </section>
 
-      {/* Results */}
-      <section className="space-y-4">
-        {error ? (
-          <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 p-3 text-sm">
-            Error: {error}
+      {/* Errors */}
+      {error ? (
+        <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+          {error}
+        </div>
+      ) : null}
+
+      {/* Dark-Web Hints */}
+      <section className="rounded-2xl border bg-card p-6 shadow-sm">
+        <h2 className="text-lg font-semibold">Dark-Web Hints (Preview-only)</h2>
+        <p className="text-xs text-muted-foreground mt-1">
+          We show allowlisted, non-sensitive indicators. Full enrichment is done
+          only in Deep Scan with consent; data is stored encrypted and UI is
+          redacted by default.
+        </p>
+
+        {!tiHits && !tiError ? (
+          <div className="mt-3 text-sm text-muted-foreground">
+            No hints fetched yet.
           </div>
         ) : null}
 
-        {loading ? <ScanSkeleton /> : null}
-
-        {!loading && took != null ? (
-          <div className="text-xs text-gray-500">Completed in {(took / 1000).toFixed(2)}s</div>
-        ) : null}
-
-        {!loading && results && results.length === 0 ? (
-          <div className="rounded-xl border bg-white p-6 text-sm text-gray-600">
-            We didn’t detect likely matches from our initial sources. You can{" "}
-            <Link href="/scan/pro" className="underline">
-              run a deeper scan
-            </Link>{" "}
-            after sign-in (still privacy-respecting), or{" "}
-            <Link href="/requests/new" className="underline">
-              start a removal request
-            </Link>{" "}
-            if you already know a data broker listing your info.
+        {tiError ? (
+          <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+            {tiError}
           </div>
         ) : null}
 
-        {!loading && results && results.length > 0 ? (
-          <div className="space-y-3">
-            {results.map((hit, idx) => (
-              <ResultCard key={idx} hit={hit} />
+        {tiHits?.length ? (
+          <ul className="mt-4 grid grid-cols-1 gap-3">
+            {tiHits.map((h, i) => (
+              <li key={i} className="rounded-xl border bg-white p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium">
+                      {h.source} <span className="text-xs text-gray-500">({h.domain})</span>
+                    </div>
+                    <div className="text-xs text-gray-600 mt-1">{h.note}</div>
+                    <div className="text-xs mt-2">
+                      <span className="inline-block rounded-full bg-gray-100 px-2 py-0.5">
+                        {h.risk === "high"
+                          ? "Risk: High"
+                          : h.risk === "medium"
+                          ? "Risk: Medium"
+                          : "Risk: Low"}
+                      </span>
+                    </div>
+                  </div>
+                  <a
+                    href={h.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-md border px-3 py-1.5 text-xs hover:bg-gray-50"
+                  >
+                    Open source
+                  </a>
+                </div>
+              </li>
             ))}
+          </ul>
+        ) : null}
+      </section>
 
-            <div className="rounded-xl border bg-white p-4 flex items-center justify-between">
-              <div className="text-sm text-gray-700">
-                Want automated takedowns, tracking & proof? Create an account.
-              </div>
-              <Link href="/login" className="px-3 py-1 rounded border hover:bg-gray-50 text-sm">
-                Continue & Save Scan
-              </Link>
-            </div>
+      {/* Results */}
+      <section className="rounded-2xl border bg-card p-6 shadow-sm">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold">Results</h2>
+          <div className="text-xs text-muted-foreground">
+            {took != null ? <>Took {took}ms</> : null}
+          </div>
+        </div>
+
+        {!results && loading ? <ScanSkeleton /> : null}
+        {!results && !loading ? (
+          <div className="mt-3 text-sm text-muted-foreground">
+            No results yet. Run a scan to see redacted, allowlisted previews.
+          </div>
+        ) : null}
+
+        {results?.length ? (
+          <div className="mt-3 space-y-3">
+            {results.map((hit, i) => (
+              <ResultCard
+                key={`${hit.url}-${i}`}
+                hit={hit}
+                onVerify={() => onVerifyLocally(hit.broker)}
+              />
+            ))}
           </div>
         ) : null}
       </section>
+
+      {/* Footer actions */}
+      <div className="flex flex-wrap items-center gap-3">
+        <Link
+          href="/ai"
+          className="rounded-md border px-3 py-1.5 text-sm hover:bg-accent"
+        >
+          AI Concierge
+        </Link>
+        <Link
+          href="/requests/new"
+          className="rounded-md border px-3 py-1.5 text-sm hover:bg-accent"
+        >
+          Create manual request
+        </Link>
+      </div>
+
+      {/* Verify-locally modal */}
+      {verifyOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/30"
+            onClick={() => setVerifyOpen(null)}
+          />
+          <div className="relative z-10 w-full max-w-lg rounded-2xl border bg-white p-5 shadow-xl">
+            <h3 className="text-base font-semibold">Verify locally</h3>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Copy this query and search in your own browser to verify on the
+              source without sharing PII with us:
+            </p>
+            <pre className="mt-3 whitespace-pre-wrap break-words rounded-lg border bg-gray-50 p-3 text-xs">
+              {verifyOpen.query}
+            </pre>
+            <div className="mt-3 flex items-center gap-2">
+              <button
+                className="rounded-md border px-3 py-1.5 text-sm hover:bg-accent"
+                onClick={() => {
+                  navigator.clipboard.writeText(verifyOpen.query).catch(() => {});
+                }}
+              >
+                Copy
+              </button>
+              <button
+                className="rounded-md border px-3 py-1.5 text-sm hover:bg-accent"
+                onClick={() => setVerifyOpen(null)}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
+
+/** ---------- local components ---------- */
 
 function LabeledInput({
   label,
@@ -231,9 +384,11 @@ function LabeledInput({
 }) {
   return (
     <label className="block">
-      <div className="text-xs text-gray-600 mb-1">{label}</div>
+      <div className="mb-1 text-xs font-medium text-muted-foreground">
+        {label}
+      </div>
       <input
-        className="w-full border rounded-md px-3 py-2 text-sm"
+        className="w-full rounded-md border bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-200"
         placeholder={placeholder}
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -244,80 +399,74 @@ function LabeledInput({
 
 function ScanSkeleton() {
   return (
-    <div className="space-y-2">
+    <div className="mt-3 space-y-2">
       {[...Array(3)].map((_, i) => (
         <div key={i} className="rounded-xl border bg-white p-4">
-          <div className="h-4 w-40 bg-gray-200 rounded mb-2 animate-pulse" />
-          <div className="h-3 w-64 bg-gray-100 rounded mb-2 animate-pulse" />
-          <div className="h-3 w-24 bg-gray-100 rounded mb-3 animate-pulse" />
-          <div className="h-8 w-36 bg-gray-200 rounded animate-pulse" />
+          <div className="mb-2 h-4 w-40 animate-pulse rounded bg-gray-200" />
+          <div className="mb-2 h-3 w-64 animate-pulse rounded bg-gray-100" />
+          <div className="mb-3 h-3 w-24 animate-pulse rounded bg-gray-100" />
+          <div className="h-8 w-36 animate-pulse rounded bg-gray-200" />
         </div>
       ))}
     </div>
   );
 }
 
-function ResultCard({ hit }: { hit: ScanHit }) {
+function ResultCard({
+  hit,
+  onVerify,
+}: {
+  hit: ScanHit;
+  onVerify: () => void;
+}) {
   const pct = Math.round(hit.confidence * 100);
   const band =
-    pct >= 80 ? "bg-emerald-100 text-emerald-800" :
-    pct >= 50 ? "bg-amber-100 text-amber-800" :
-                "bg-gray-100 text-gray-700";
+    pct >= 80
+      ? "bg-emerald-100 text-emerald-800"
+      : pct >= 50
+      ? "bg-amber-100 text-amber-800"
+      : "bg-gray-100 text-gray-700";
 
+  // “Why this matched” bullets come from server-provided redacted evidence & matched fields
   return (
     <div className="rounded-xl border bg-white p-4">
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="text-sm text-gray-500">{hit.category}</div>
-          <a
-            href={hit.url}
-            target="_blank"
-            rel="noreferrer"
-            className="text-base font-medium underline underline-offset-2"
-          >
-            {hit.broker}
-          </a>
+          <div className="text-sm font-medium">{hit.broker}</div>
+          <div className="mt-0.5 text-xs text-gray-600">{hit.category}</div>
           <div className="mt-1 text-xs text-gray-600">
-            Matched: {hit.matchedFields.join(", ")}
+            Matched: {hit.matchedFields?.join(", ") || "—"}
           </div>
         </div>
-
-        <span className={`px-2 py-1 rounded-full text-xs font-medium ${band}`}>
+        <span className={`rounded-full px-2 py-1 text-xs font-medium ${band}`}>
           Confidence {pct}%
         </span>
       </div>
 
-      <div className="mt-3">
-        <div className="h-2 w-full bg-gray-100 rounded">
-          <div
-            className="h-2 bg-black/80 rounded"
-            style={{ width: `${Math.max(5, pct)}%` }}
-            aria-hidden
-          />
-        </div>
-      </div>
-
       {hit.evidence?.length ? (
-        <ul className="mt-3 list-disc ml-5 text-xs text-gray-700 space-y-1">
+        <ul className="mt-3 ml-5 list-disc space-y-1 text-xs text-gray-700">
           {hit.evidence.map((e, i) => (
             <li key={i}>{e}</li>
           ))}
         </ul>
       ) : null}
 
-      <div className="mt-4 flex flex-wrap gap-2">
-        <Link
-          href="/login"
-          className="rounded-md border px-3 py-1.5 text-sm hover:bg-gray-50"
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <a
+          className="rounded-md border px-3 py-1.5 text-xs hover:bg-gray-50"
+          href={hit.url}
+          target="_blank"
+          rel="noreferrer"
         >
-          Start automated removal
-        </Link>
-        <Link
-          href="/requests/new"
-          className="rounded-md border px-3 py-1.5 text-sm hover:bg-gray-50"
+          Open allowlisted source
+        </a>
+        <button
+          className="rounded-md border px-3 py-1.5 text-xs hover:bg-gray-50"
+          onClick={onVerify}
+          title="Verify directly on your device (private search string)"
         >
-          Create manual request
-        </Link>
+          Verify locally
+        </button>
       </div>
     </div>
   );
