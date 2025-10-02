@@ -108,12 +108,12 @@ export async function POST(req: Request) {
   const rows = previews.map((p, i) => ({
     run_id: run.id,
     rank: i + 1,
-    broker: p.label,
+    broker: p.broker, // <-- fixed (was p.label)
     category: p.kind ?? "directory",
     url: p.url,
     confidence: Math.round((p.confidence ?? 0) * 100) / 100,
-    matched_fields: p.matched,
-    evidence: p.why, // redacted strings only
+    matched_fields: p.matched ?? [],
+    evidence: p.why ?? [], // redacted strings only
   }));
 
   try {
