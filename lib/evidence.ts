@@ -8,7 +8,7 @@ export type EvidenceRecord = {
   id: number;
   run_id: number | null;
   key_id: string;
-  blob_b64: string; // encrypted data (base64)
+  blob_b64: string;
   alg: "AES-256-GCM";
   created_at: string;
   expires_at: string | null;
@@ -23,15 +23,13 @@ function supa() {
   );
 }
 
-/** Derive 32-byte key from env */
 function getKey(): { key: Buffer; keyId: string } {
   const raw = process.env.EVIDENCE_KEY;
   if (!raw || raw.length < 32) {
-    // dev fallback (non-persistent; still server-side only)
     const tmp = crypto.createHash("sha256").update("dev-fallback").digest("hex");
     return { key: Buffer.from(tmp.slice(0, 64), "hex"), keyId: "dev-fallback" };
   }
-  const hash = crypto.createHash("sha256").update(raw).digest(); // 32 bytes
+  const hash = crypto.createHash("sha256").update(raw).digest();
   return { key: hash, keyId: crypto.createHash("sha1").update(raw).digest("hex") };
 }
 
@@ -72,7 +70,6 @@ export function decryptJson(input: {
   return JSON.parse(out.toString("utf8"));
 }
 
-/** Store encrypted JSON as an artifact; returns artifact id. */
 export async function storeEncryptedArtifact(params: {
   runId: number | null;
   json: unknown;
@@ -103,7 +100,6 @@ export async function storeEncryptedArtifact(params: {
   return data!.id as number;
 }
 
-/** Audit a reveal event with minimal who/why; caller should pass a reason string. */
 export async function auditReveal(params: {
   artifactId: number;
   reason: string;
