@@ -22,6 +22,8 @@ export type RawHit = {
   adapter?: string;       // e.g., "justdial" | "sulekha" | "indiamart"
   state?: string;         // e.g., "MH", "KA", "DL"  (if adapter can infer)
   weight?: number;        // override baseWeight if adapter wants
+  /** Optional qualitative risk from adapter; ignored by ranker but allowed for metadata */
+  risk?: "low" | "medium" | "high";
 };
 
 /** Normalized hit returned to callers (safe for UI; redacted) */
