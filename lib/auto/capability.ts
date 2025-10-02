@@ -56,9 +56,7 @@ export const CAPABILITY_MATRIX: Record<string, Capability> = {
 
 export function getCapability(adapterId?: string): Capability {
   const a = (adapterId || "generic").toLowerCase();
-  const table = CAPABILITY_MATRIX as Record<string, Capability>;
-  if (Object.prototype.hasOwnProperty.call(table, a)) {
-    return table[a];
-  }
-  return table["generic"];
+  const table = CAPABILITY_MATRIX as Record<string, Capability | undefined>;
+  const cap = table[a];
+  return cap ?? table["generic"]!;
 }
