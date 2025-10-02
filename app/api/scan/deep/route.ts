@@ -89,9 +89,9 @@ export async function POST(req: Request) {
       took_ms: Date.now() - t0,
       // minimal redacted preview of the query
       query_preview: {
-        email: previews[0]?.preview.email ?? (email ? "•@••••" : ""),
-        name: previews[0]?.preview.name ?? (name ? "N•" : ""),
-        city: previews[0]?.preview.city ?? (city ? "C•" : ""),
+        email: previews[0]?.preview?.email ?? (email ? "•@••••" : ""),
+        name: previews[0]?.preview?.name ?? (name ? "N•" : ""),
+        city: previews[0]?.preview?.city ?? (city ? "C•" : ""),
       },
     })
     .select("id")
@@ -104,16 +104,29 @@ export async function POST(req: Request) {
     );
   }
 
-  // 5) Insert hits
-  const rows = previews.map((p, i) => ({
+  // Helper to safely derive a broker label without tightening NormalizedHit
+  function deriveBroker(p: any): string {
+    const direct = p?.broker ?? p?.label;
+    if (typeof direct === "string" && direct.length) return direct;
+    try {
+      const host = new URL(p?.url || "").hostname;
+      if (host) return host.replace(/^www\./, "");
+    } catch {
+      // ignore
+    }
+    return "unknown";
+  }
+
+  // 5) Insert hits (tolerant to field presence, no type narrowing)
+  const rows = (previews as any[]).map((p: any, i: number) => ({
     run_id: run.id,
     rank: i + 1,
-    broker: p.broker, // <-- fixed (was p.label)
-    category: p.kind ?? "directory",
-    url: p.url,
-    confidence: Math.round((p.confidence ?? 0) * 100) / 100,
-    matched_fields: p.matched ?? [],
-    evidence: p.why ?? [], // redacted strings only
+    broker: deriveBroker(p),
+    category: p?.kind ?? "directory",
+    url: p?.url ?? "",
+    confidence: Math.round(((p?.confidence ?? 0) as number) * 100) / 100,
+    matched_fields: Array.isArray(p?.matched) ? p.matched : [],
+    evidence: Array.isArray(p?.why) ? p.why : [], // redacted strings only
   }));
 
   try {
@@ -130,13 +143,13 @@ export async function POST(req: Request) {
         // only include allowlisted URLs + adapter raw fields; PII remains within this encrypted blob
         sources: raw.map((r) => ({
           url: r.url,
-          label: r.label,
-          domain: r.domain,
-          kind: r.kind,
-          fields: r.fields ?? null,
+          label: (r as any).label ?? null,
+          domain: (r as any).domain ?? null,
+          kind: (r as any).kind ?? null,
+          fields: (r as any).fields ?? null,
         })),
       },
-      ttlSeconds: 24 * 3600, // 24h default retention (policy can rotate/shorten later)
+      ttlSeconds: 24 * 3600, // 24h default retention
     });
   } catch {
     // if encryption or storage fails, we still return previews
