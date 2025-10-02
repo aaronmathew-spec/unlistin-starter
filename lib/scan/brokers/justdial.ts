@@ -76,7 +76,10 @@ export async function queryJustdial(input: Partial<ScanInput>): Promise<RawHit[]
 
   while ((m = titleRe.exec(html)) && seen < 5) {
     const href = m[1];
-    const title = decodeHtml(m[2]).trim();
+    // TS: capture groups are typed `string | undefined`; guard it.
+    const titleRaw = m[2] ?? "";
+    const title = decodeHtml(titleRaw).trim();
+    if (!href) continue;
 
     let link: string;
     try {
