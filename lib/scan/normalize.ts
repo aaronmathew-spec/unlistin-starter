@@ -54,9 +54,9 @@ export function normalizeHits(input: ScanInput, raw: RawHit[]): NormalizedHit[] 
   };
 
   const items = raw.map((r) => {
-    // Determine adapter id
+    // Determine adapter id + metadata (never undefined)
     const adapterId = (r.adapter || inferAdapterId(r.domain)).toLowerCase();
-    const adapterMeta = ADAPTER_META[adapterId] || ADAPTER_META.generic;
+    const adapterMeta = getAdapterMeta(adapterId);
 
     // Determine state from the hit or from the input fallback
     const hitState = (r.state || stateFromCity || inferStateFromFields(r.fields)) ?? null;
@@ -98,6 +98,10 @@ export function normalizeHits(input: ScanInput, raw: RawHit[]): NormalizedHit[] 
 }
 
 /* ----------------------------- helpers ----------------------------- */
+
+function getAdapterMeta(id: string): AdapterMeta {
+  return ADAPTER_META[id] ?? ADAPTER_META.generic;
+}
 
 function clamp01(n: number) {
   if (!Number.isFinite(n)) return 0;
