@@ -1,12 +1,34 @@
 /* app/globals.css */
+/* True dark mode tokens + subtle neon accents (no inverted hack) + existing base styles */
 * { box-sizing: border-box; }
 html, body { height: 100%; }
+
+:root {
+  --bg: #ffffff;
+  --fg: #111827;
+  --card: #ffffff;
+  --muted: #6b7280;
+  --accent: #f9fafb;
+  --neon: #6d28d9; /* subtle purple accent */
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b0c0f;
+    --fg: #e5e7eb;
+    --card: #111317;
+    --muted: #9aa0a6;
+    --accent: #161a22;
+    --neon: #8b5cf6;
+  }
+}
+
 body {
   margin: 0;
-  font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, "Helvetica Neue", Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Apple Color Emoji", "Segoe UI Emoji";
   line-height: 1.5;
-  color: #111827;
-  background: #fff;
+  color: var(--fg);
+  background: radial-gradient(1200px 600px at 20% -10%, color-mix(in oklab, var(--neon) 14%, transparent), transparent), var(--bg);
 }
 
 main { max-width: 48rem; margin: 2rem auto; padding: 1rem; }
@@ -14,11 +36,17 @@ a { color: #6b21a8; text-decoration: none; }
 a:hover { text-decoration: underline; }
 
 input, button { font: inherit; }
-input, textarea, select {
+.text-muted-foreground { color: var(--muted); }
+.bg-card { background: var(--card); }
+.hover\:bg-accent:hover { background: var(--accent); }
+
+/* form & buttons */
+input[type="text"], input[type="email"], input:not([type]) {
   width: 100%;
   padding: .5rem .75rem;
   border: 1px solid #d1d5db;
   border-radius: .375rem;
+  background: #fff;
 }
 button {
   cursor: pointer;
@@ -29,3 +57,21 @@ button {
   border: 0;
 }
 button:disabled { opacity: .6; cursor: not-allowed; }
+
+/* cards */
+.rounded-2xl { border-radius: 1rem; }
+.rounded-xl { border-radius: .75rem; }
+.border { border: 1px solid color-mix(in oklab, var(--fg) 10%, transparent); }
+.bg-white { background: #fff; }
+.shadow-sm { box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+
+/* neon accent “pulse” utility for future Live Coverage Map */
+.neon-pulse {
+  box-shadow: 0 0 0 rgba(109, 40, 217, 0.7);
+  animation: neonPulse 2s infinite;
+}
+@keyframes neonPulse {
+  0% { box-shadow: 0 0 0 0 rgba(109, 40, 217, 0.6); }
+  70% { box-shadow: 0 0 0 12px rgba(109, 40, 217, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(109, 40, 217, 0); }
+}
