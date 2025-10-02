@@ -9,6 +9,8 @@ import { ensureSearchLimit } from "@/lib/ratelimit";
 import { isAllowed } from "@/lib/scan/domains-allowlist";
 import { normalizeHits, type ScanInput, type RawHit } from "@/lib/scan/normalize";
 import { queryJustdial } from "@/lib/scan/brokers/justdial";
+import { querySulekha } from "@/lib/scan/brokers/sulekha";
+import { queryIndiaMart } from "@/lib/scan/brokers/indiamart";
 
 function supa() {
   const jar = cookies();
@@ -39,13 +41,15 @@ export async function POST(req: Request) {
 
   const t0 = Date.now();
 
-  // 1) Run adapters (expand with more sources later)
-  const [jd] = await Promise.all([
+  // 1) Run adapters concurrently (each gracefully degrades on block)
+  const [jd, sl, im] = await Promise.all([
     queryJustdial({ email, name, city }).catch(() => [] as RawHit[]),
+    querySulekha({ email, name, city }).catch(() => [] as RawHit[]),
+    queryIndiaMart({ email, name, city }).catch(() => [] as RawHit[]),
   ]);
 
   // 2) Filter by allowlist (defense in depth)
-  const raw = [...jd].filter(h => isAllowed(h.url));
+  const raw = [...jd, ...sl, ...im].filter(h => isAllowed(h.url));
 
   // 3) Normalize/redact for response using YOUR normalizer
   const previews = normalizeHits(
@@ -82,7 +86,7 @@ export async function POST(req: Request) {
     });
   }
 
-  const rows = raw.slice(0, 20).map((h, i) => ({
+  const rows = raw.slice(0, 30).map((h, i) => ({
     run_id: run.id,
     rank: i + 1,
     broker: h.label,              // store human label for back-compat
@@ -100,7 +104,7 @@ export async function POST(req: Request) {
   try {
     await db.from("scan_hits").insert(rows as any);
   } catch {
-    // ignore; run exists so results page still loads the run shell even if hits insert fails
+    // ignore; run exists so results page still loads
   }
 
   return NextResponse.json({
