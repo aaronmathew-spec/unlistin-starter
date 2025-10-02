@@ -1,6 +1,6 @@
 // lib/ledger.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { createHash, createHmac, randomBytes } from "crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual as tse } from "crypto";
 
 /**
  * Proof-of-Action Ledger helpers.
@@ -12,10 +12,7 @@ import { createHash, createHmac, randomBytes } from "crypto";
  */
 
 const LEDGER_KEY = process.env.LEDGER_HMAC_KEY || process.env.EVIDENCE_KEY || "";
-if (!LEDGER_KEY) {
-  // It's okay during local dev; on prod you should set LEDGER_HMAC_KEY.
-  // We avoid throwing to keep builds green.
-}
+// OK if empty during local dev; on prod set LEDGER_HMAC_KEY.
 
 export type LedgerEnvelope = {
   id: string;
@@ -48,15 +45,17 @@ export function signEnvelope(env: LedgerEnvelope): { hash: string; sig: string }
 
 export function verifySignature(hash: string, sig: string): boolean {
   const expected = createHmac("sha256", LEDGER_KEY || "dev-key").update(hash, "utf8").digest("hex");
-  return timingSafeEq(sig, expected);
+  return timingSafeEq(expected, sig);
 }
 
-function timingSafeEq(a: string, b: string): boolean {
-  // constant-time compare
-  const ba = Buffer.from(a, "hex");
-  const bb = Buffer.from(b, "hex");
-  if (ba.length !== bb.length) return false;
-  let r = 0;
-  for (let i = 0; i < ba.length; i++) r |= ba[i] ^ bb[i];
-  return r === 0;
+/** Constant-time hex equality using Node's crypto.timingSafeEqual */
+function timingSafeEq(aHex: string, bHex: string): boolean {
+  const a = Buffer.from(aHex, "hex");
+  const b = Buffer.from(bHex, "hex");
+  if (a.length !== b.length) return false;
+  try {
+    return tse(a, b);
+  } catch {
+    return false;
+  }
 }
