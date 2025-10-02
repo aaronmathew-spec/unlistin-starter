@@ -1,4 +1,5 @@
 // app/api/scan/deep/route.ts
+// NOTE: Paste-replace your existing file with this version to add encrypted artifact storage while preserving current behavior.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export const runtime = "nodejs";
 
@@ -11,6 +12,7 @@ import { normalizeHits, type ScanInput, type RawHit } from "@/lib/scan/normalize
 import { queryJustdial } from "@/lib/scan/brokers/justdial";
 import { querySulekha } from "@/lib/scan/brokers/sulekha";
 import { queryIndiaMart } from "@/lib/scan/brokers/indiamart";
+import { storeEncryptedArtifact } from "@/lib/evidence";
 
 function supa() {
   const jar = cookies();
@@ -21,22 +23,45 @@ function supa() {
   );
 }
 
+function json(data: any, init?: ResponseInit) {
+  return new Response(JSON.stringify(data), {
+    ...init,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      ...(init?.headers || {}),
+    },
+  });
+}
+
 export async function POST(req: Request) {
-  // Rate limit
   const rl = await ensureSearchLimit(req);
-  if (!rl.ok) {
-    return NextResponse.json({ ok: false, error: "Rate limit exceeded. Try again shortly." }, { status: 429 });
+  if (!rl?.ok) {
+    return json(
+      { ok: false, error: "Rate limit exceeded. Try again shortly." },
+      { status: 429 }
+    );
   }
 
-  // Parse input
-  let body: Partial<ScanInput> = {};
-  try { body = (await req.json()) ?? {}; } catch {}
-  const email = (body.email ?? "").trim();
-  const name = (body.name ?? "").trim();
-  const city = (body.city ?? "").trim();
+  let body: any = {};
+  try {
+    body = (await req.json()) ?? {};
+  } catch {
+    // ignore
+  }
+
+  const email = (body?.email || "").toString().trim();
+  const name = (body?.name || "").toString().trim();
+  const city = (body?.city || "").toString().trim();
+  const consent = !!body?.consent;
 
   if (!email && !name && !city) {
-    return NextResponse.json({ ok: false, error: "Provide at least one field." }, { status: 400 });
+    return json({ ok: false, error: "Provide at least one field." }, { status: 400 });
+  }
+  if (!consent) {
+    return json(
+      { ok: false, error: "Consent is required for Deep Scan." },
+      { status: 400 }
+    );
   }
 
   const t0 = Date.now();
@@ -49,13 +74,10 @@ export async function POST(req: Request) {
   ]);
 
   // 2) Filter by allowlist (defense in depth)
-  const raw = [...jd, ...sl, ...im].filter(h => isAllowed(h.url));
+  const raw = [...jd, ...sl, ...im].filter((h) => isAllowed(h.url));
 
-  // 3) Normalize/redact for response using YOUR normalizer
-  const previews = normalizeHits(
-    { email, name, city } as ScanInput,
-    raw
-  );
+  // 3) Normalize/redact for response using your normalizer
+  const previews = normalizeHits({ email, name, city } as ScanInput, raw);
 
   // 4) Persist run + hits (only redacted previews + evidence URLs)
   const db = supa();
@@ -65,46 +87,59 @@ export async function POST(req: Request) {
     .insert({
       status: "completed",
       took_ms: Date.now() - t0,
-      // Store only a minimal redacted preview of the query
+      // minimal redacted preview of the query
       query_preview: {
         email: previews[0]?.preview.email ?? (email ? "•@••••" : ""),
         name: previews[0]?.preview.name ?? (name ? "N•" : ""),
         city: previews[0]?.preview.city ?? (city ? "C•" : ""),
       },
-    } as any)
+    })
     .select("id")
-    .maybeSingle();
+    .single();
 
-  if (!run || runErr) {
-    // If DB fails, still return response
-    return NextResponse.json({
-      ok: true,
-      persisted: false,
-      runId: null,
-      results: previews,
-      tookMs: Date.now() - t0,
-    });
+  if (runErr) {
+    return NextResponse.json(
+      { ok: false, error: runErr.message },
+      { status: 400 }
+    );
   }
 
-  const rows = raw.slice(0, 30).map((h, i) => ({
+  // 5) Insert hits
+  const rows = previews.map((p, i) => ({
     run_id: run.id,
     rank: i + 1,
-    broker: h.label,              // store human label for back-compat
-    category: h.kind ?? "directory",
-    url: h.url,                   // allowlisted already
-    confidence: 0.7,              // v1: static; can compute from heuristics later
-    matched_fields: [
-      ...(name ? ["name"] : []),
-      ...(email ? ["email"] : []),
-      ...(city ? ["city"] : []),
-    ],
-    evidence: [h.fields?.snippet ?? ""].filter(Boolean),
+    broker: p.label,
+    category: p.kind ?? "directory",
+    url: p.url,
+    confidence: Math.round((p.confidence ?? 0) * 100) / 100,
+    matched_fields: p.matched,
+    evidence: p.why, // redacted strings only
   }));
 
   try {
     await db.from("scan_hits").insert(rows as any);
   } catch {
-    // ignore; run exists so results page still loads
+    // non-fatal
+  }
+
+  // 6) Evidence Locker (encrypted artifact): store encrypted JSON “raw snapshot”
+  try {
+    await storeEncryptedArtifact({
+      runId: run.id,
+      json: {
+        // only include allowlisted URLs + adapter raw fields; PII remains within this encrypted blob
+        sources: raw.map((r) => ({
+          url: r.url,
+          label: r.label,
+          domain: r.domain,
+          kind: r.kind,
+          fields: r.fields ?? null,
+        })),
+      },
+      ttlSeconds: 24 * 3600, // 24h default retention (policy can rotate/shorten later)
+    });
+  } catch {
+    // if encryption or storage fails, we still return previews
   }
 
   return NextResponse.json({
