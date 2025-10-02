@@ -100,7 +100,8 @@ export function normalizeHits(input: ScanInput, raw: RawHit[]): NormalizedHit[] 
 /* ----------------------------- helpers ----------------------------- */
 
 function getAdapterMeta(id: string): AdapterMeta {
-  return ADAPTER_META[id] ?? ADAPTER_META.generic;
+  const meta = (ADAPTER_META as Record<string, AdapterMeta | undefined>)[id];
+  return meta ? meta : ADAPTER_META.generic;
 }
 
 function clamp01(n: number) {
