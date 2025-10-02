@@ -6,7 +6,6 @@ import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { ensureSearchLimit } from "@/lib/ratelimit";
 import { isAllowed } from "@/lib/scan/domains-allowlist";
-import { maskEmail, maskUsernameLike } from "@/lib/privacy";
 
 function supa() {
   const jar = cookies();
@@ -27,6 +26,34 @@ function json(data: any, init?: ResponseInit) {
   });
 }
 
+/** ---------- local, conservative masking (no PII persistence; preview-only) ---------- */
+function maskEmail(raw: string): string {
+  const s = raw.trim();
+  const at = s.indexOf("@");
+  if (at <= 0) return "•••@•••";
+  const user = s.slice(0, at);
+  const domain = s.slice(at + 1);
+  const uMasked =
+    user.length <= 2 ? user[0] + "••" : user.slice(0, 2) + "•••";
+  // keep registrable domain hint only (e.g., gmail.com → g•••.com)
+  const parts = domain.split(".");
+  if (parts.length < 2) return `${uMasked}@${"•••"}`;
+  const tld = parts.pop()!;
+  const root = parts.pop() || "";
+  const rootMasked = root
+    ? root[0] + "•••"
+    : "•••";
+  return `${uMasked}@${rootMasked}.${tld}`;
+}
+
+function maskUsernameLike(raw: string): string {
+  const s = raw.trim();
+  if (!s) return "•••";
+  if (s.length <= 2) return s[0] + "•";
+  return s[0] + "•••" + s[s.length - 1];
+}
+/** ------------------------------------------------------------------------------- */
+
 type Hit = {
   source: string;
   domain: string;
@@ -38,9 +65,9 @@ type Hit = {
 // allowlisted, consumer-safe hint surfaces (examples only)
 // must pass through global allowlist again before returning
 const HINT_SOURCES: Array<{ source: string; url: string }> = [
-  { source: "HaveIBeenPwned (overview doc)", url: "https://haveibeenpwned.com/FAQs" },
-  { source: "TroyHunt blog (general)", url: "https://www.troyhunt.com/" },
-  { source: "Mozilla Web Security Tips", url: "https://support.mozilla.org/" },
+  { source: "HaveIBeenPwned (FAQs)", url: "https://haveibeenpwned.com/FAQs" },
+  { source: "Troy Hunt (blog)", url: "https://www.troyhunt.com/" },
+  { source: "Mozilla Support", url: "https://support.mozilla.org/" },
 ];
 
 function deriveRiskFromContext(text: string): "high" | "medium" | "low" {
@@ -76,13 +103,10 @@ export async function POST(req: Request) {
     );
   }
 
-  // We do NOT query any non-allowlisted sources here.
-  // This endpoint returns strictly non-sensitive hints + allowlisted URLs only.
   const maskedEmail = email ? maskEmail(email) : "";
   const maskedUser = username ? maskUsernameLike(username) : "";
 
-  // Synthetic, consumer-safe hints based on allowlisted static sources
-  // (Your Deep Scan performs real enrichment after consent)
+  // Consumer-safe static hints (Deep Scan does real enrichment after consent)
   const base: Hit[] = HINT_SOURCES.map((s) => {
     const domain = safeDomain(s.url);
     const noteParts: string[] = [];
