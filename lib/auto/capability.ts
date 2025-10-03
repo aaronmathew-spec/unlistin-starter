@@ -1,34 +1,26 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
-/**
- * Adapter capability model
- *
- * Exports:
- *  - Capability (type)
- *  - CAPABILITY_MATRIX (record with at least "generic")
- *  - getCapability(adapterId?) => Capability (never undefined)
- */
+// lib/auto/capability.ts
 
 export type Capability = {
+  /** Identifier of the adapter, lowercase (e.g., 'generic', 'truecaller'). */
   id: string;
 
-  /** Auto-create prepared actions (no user click)? */
+  /** Whether drafts can be auto-prepared by the server (no user click). */
   canAutoPrepare: boolean;
 
-  /** Auto-submit emails without showing a draft? */
+  /** Whether emails can be auto-queued/sent for this adapter. */
   canAutoSubmitEmail: boolean;
 
-  /** Preferred evidence type if any. */
-  attachmentsKind?: "screenshot" | "pdf" | "image" | "txt" | string;
+  /** Default minimum confidence for this adapter when auto-preparing. */
+  defaultMinConfidence: number;
 
-  /** Default min confidence for auto flows (when no admin override). */
-  defaultMinConfidence?: number;
+  /** Confidence band thresholds used by bandFor() / policy. */
+  thresholdHigh: number;
+  thresholdMedium: number;
 
-  /** Confidence band thresholds used elsewhere. */
-  thresholdHigh?: number;
-  thresholdMedium?: number;
+  /** Default attachment kind to request in drafts for this adapter. */
+  attachmentsKind: string;
 
-  /** Automatic follow-ups permitted? */
+  /** Are automatic follow-ups permitted? */
   autoFollowups?: boolean;
 
   /** Days between follow-ups. */
@@ -46,26 +38,29 @@ const GENERIC_CAP: Capability = {
   attachmentsKind: "screenshot",
   defaultMinConfidence: 0.82,
   thresholdHigh: 0.88,
-  thresholdMedium: 0.8,
+  thresholdMedium: 0.80,
   autoFollowups: true,
-  followupCadenceDays: 7,
-  maxFollowups: 2,
+  followupCadenceDays: 7, // sensible default cadence
+  maxFollowups: 2,        // original send + 2 nudges
 };
 
-/** Global capability map. MUST include "generic". */
+/**
+ * Central registry of adapter capabilities.
+ * Add specific adapters here to override the generic defaults.
+ */
 export const CAPABILITY_MATRIX: Record<string, Capability> = {
   generic: GENERIC_CAP,
 
-  // Example adapters — customize as needed:
-  spokeo: {
-    ...GENERIC_CAP,
-    id: "spokeo",
-    defaultMinConfidence: 0.84,
-  },
+  // Examples — tweak for your project needs:
+  // Phone directory style sites (email ok, follow-ups allowed)
   whitepages: {
     ...GENERIC_CAP,
     id: "whitepages",
-    attachmentsKind: "pdf",
+  },
+  truecaller: {
+    ...GENERIC_CAP,
+    id: "truecaller",
+    canAutoSubmitEmail: false, // may require portal flow instead of email
   },
   beenverified: {
     ...GENERIC_CAP,
@@ -74,32 +69,32 @@ export const CAPABILITY_MATRIX: Record<string, Capability> = {
     followupCadenceDays: 5,
     maxFollowups: 3,
   },
-  truecaller: {
-    ...GENERIC_CAP,
-    id: "truecaller",
-    canAutoSubmitEmail: false, // e.g., portal flow
-  },
+  // Add more adapters as needed:
+  // "pipl": { ...GENERIC_CAP, id: "pipl", canAutoSubmitEmail: false },
+  // "spokeo": { ...GENERIC_CAP, id: "spokeo" },
 };
 
-/** Type guard on own properties (no proto). */
+/** Tiny own-property check (avoids proto chain). */
 function hasOwn(obj: object, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(obj, key);
 }
 
 /**
  * Narrowing-safe lookup that ALWAYS returns a concrete Capability.
- * Uses a permissive index read and a guaranteed `generic` fallback.
+ * Reads via a permissive index (could be undefined) and coalesces to the
+ * guaranteed `generic` capability.
  */
 export function getCapability(adapterId?: string): Capability {
   const a = (adapterId ?? "generic").toLowerCase();
 
-  // Ensure generic exists and capture as a concrete Capability
+  // Ensure CAPABILITY_MATRIX has a concrete generic we can always return.
   if (!hasOwn(CAPABILITY_MATRIX, "generic")) {
     throw new Error('CAPABILITY_MATRIX must contain a "generic" entry');
   }
-  const generic: Capability = (CAPABILITY_MATRIX as Record<string, Capability>)["generic"];
+  // Use direct property access so TS knows this is a Capability, not possibly undefined.
+  const generic: Capability = CAPABILITY_MATRIX.generic;
 
-  // Read with a permissive index (could be undefined) then coalesce.
+  // Read with permissive index (may be undefined), then coalesce to generic.
   const entry = (CAPABILITY_MATRIX as Record<string, Capability | undefined>)[a];
   return entry ?? generic;
 }
