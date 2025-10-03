@@ -2,9 +2,10 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
-import { isAdmin, getSessionUser } from "@/lib/auth";
 import { beat } from "@/lib/ops/heartbeat";
+import { assertAdmin, getSessionUser } from "@/lib/auth";
 
+// Small JSON helper
 function json(data: any, init?: ResponseInit) {
   return new Response(JSON.stringify(data), {
     ...init,
@@ -12,56 +13,36 @@ function json(data: any, init?: ResponseInit) {
   });
 }
 
-// Centralized RBAC assertion for this file
-async function assertAdmin() {
-  const ok = await isAdmin();
-  if (!ok) {
-    throw Object.assign(new Error("Forbidden"), { status: 403 });
-  }
-}
-
-/**
- * GET /api/admin/overview
- * - Simple roll-up payload (safe to expand later)
- */
 export async function GET() {
   try {
-    await beat("admin.overview:get");
+    // Use a type-safe topic for beat()
+    await beat("detect.changes");
+
+    // Server-side RBAC
     await assertAdmin();
 
+    // Optional: include who is viewing (admin) for context in UI
     const user = await getSessionUser();
 
-    // Keep this minimal & schema-free to avoid breaking deploys.
-    // You can later add DB-backed metrics safely here.
-    const payload = {
-      ok: true,
-      who: user?.email ?? user?.id ?? null,
-      // placeholders (expand later with DB-backed counts if you want)
-      metrics: {
-        prepared_24h: null,
-        auto_submit_ready: null,
-        followups_due_today: null,
-      },
+    // Keep the payload light and aggregate-only; you can wire real metrics later.
+    const overview = {
+      automation_enabled_users: null, // fill from a metrics table later
+      prepared_actions_24h: null,
+      auto_submit_ready: null,
+      followups_due_today: null,
+      // add more rollups as you create admin metrics
     };
 
-    return NextResponse.json(payload);
+    return NextResponse.json({
+      ok: true,
+      at: new Date().toISOString(),
+      viewer: { id: user?.id ?? null, email: user?.email ?? null },
+      overview,
+    });
   } catch (err: any) {
-    const status = Number.isFinite(err?.status) ? err.status : 500;
-    return json({ ok: false, error: err?.message || "Internal error" }, { status });
-  }
-}
-
-/**
- * POST /api/admin/overview
- * - Not used right now (kept to a clear 405 so the API surface is explicit)
- */
-export async function POST() {
-  try {
-    await beat("admin.overview:post");
-    await assertAdmin();
-    return json({ ok: false, error: "Not implemented" }, { status: 405 });
-  } catch (err: any) {
-    const status = Number.isFinite(err?.status) ? err.status : 500;
-    return json({ ok: false, error: err?.message || "Internal error" }, { status });
+    // If assertAdmin throws or anything else goes wrong, return 403/500 accordingly.
+    const msg = err?.message || "unexpected-error";
+    const status = /forbidden|not\s*admin/i.test(msg) ? 403 : 500;
+    return json({ ok: false, error: msg }, { status });
   }
 }
