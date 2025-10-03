@@ -10,7 +10,7 @@ import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { sha256Hex, signEnvelope } from "@/lib/ledger";
 
-// NEW: admin gating (kill-switch, caps, min-confidence)
+// Admin gating (kill-switch, caps, min-confidence)
 import { gateCandidates } from "@/lib/auto/selector";
 import { getCapability } from "@/lib/auto/capability";
 
@@ -145,8 +145,8 @@ export async function POST(req: Request) {
       preferences: { attachmentsAllowed: true, replyChannel: "email", replyEmailPreview: safeContext.emailPreview },
     };
 
-    // Capability lookup (used for sensible fallbacks, not exposed)
-    const cap = getCapability((h as any).__adapter || h.adapter || "generic");
+    // Capability lookup (kept for potential future use)
+    void getCapability((h as any).__adapter || h.adapter || "generic");
 
     // Server-only AI draft generation (JSON mode)
     const completion = await client.chat.completions.create({
@@ -191,7 +191,8 @@ export async function POST(req: Request) {
         attachments: Array.isArray(obj?.attachments)
           ? obj.attachments.slice(0, 2).map((a: any) => ({
               name: `${a?.name || "attachment"}`.slice(0, 60),
-              kind: `${a?.kind || cap.attachmentsKind || "screenshot"}`.slice(0, 20),
+              // FIX: remove non-existent cap.attachmentsKind, default to "screenshot"
+              kind: `${a?.kind || "screenshot"}`.slice(0, 20),
               rationale: `${a?.rationale || ""}`.slice(0, 200),
             }))
           : [],
@@ -234,7 +235,7 @@ export async function POST(req: Request) {
       reply_email_preview: safeContext.emailPreview,
       proof_hash: proof.hash,
       proof_sig: proof.sig,
-      // NEW: store adapter & confidence so later jobs can honor admin caps without inference
+      // Store adapter & confidence for later jobs
       adapter: (h as any).__adapter || h.adapter || "generic",
       confidence: Number.isFinite(h.confidence) ? Number(h.confidence) : null,
       meta: { threshold: (h as any).__threshold || null, state: h.state || null, source: "auto-run" },
