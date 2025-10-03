@@ -1,21 +1,38 @@
 // lib/ops/heartbeat.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { cookies } from "next/headers";
-import { createServerClient } from "@supabase/ssr";
 
-function supa() {
-  const jar = cookies();
-  return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { cookies: { get: (k) => jar.get(k)?.value } }
-  );
-}
+/**
+ * Minimal heartbeat utility.
+ * - Accepts ANY string topic (no restrictive union).
+ * - Returns a resolved Promise so callers can `await beat(...)` safely.
+ * - No external dependencies. No DB writes (avoids runtime coupling).
+ * - Optional debug logging when DEBUG_BEAT=1.
+ *
+ * Usage:
+ *   await beat("admin.flags:get");
+ *   await beat("detect.changes", { route: "/api/..." });
+ */
 
-/** Record a simple "last run" heartbeat for a job_id (no PII). */
-export async function beat(job_id: "followups.run" | "actions.submit" | "detect.changes") {
-  const db = supa();
-  await db
-    .from("job_heartbeats")
-    .upsert({ job_id, last_run_at: new Date().toISOString() }, { onConflict: "job_id" });
+export type BeatTopic = string;
+
+export async function beat(topic: BeatTopic, meta?: Record<string, any>): Promise<void> {
+  // Guard: ignore falsy topics
+  if (!topic) return;
+
+  // Optional lightweight debug log (disabled by default)
+  if (process.env.DEBUG_BEAT === "1") {
+    try {
+      // Keep logging ultra-safe; don't throw
+      // eslint-disable-next-line no-console
+      console.debug(
+        `[beat] ${new Date().toISOString()} topic=${topic}`,
+        meta ?? {}
+      );
+    } catch {
+      // swallow any logging errors
+    }
+  }
+
+  // Intentionally no DB/network side effects.
+  // Add a DB write here later if you want persistent heartbeats.
 }
