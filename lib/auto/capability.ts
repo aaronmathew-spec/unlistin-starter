@@ -10,39 +10,35 @@
  */
 
 export type Capability = {
-  /** Stable id of the adapter (e.g., "generic", "spokeo"). */
   id: string;
 
-  /** Can we auto-create prepared actions (no user click)? */
+  /** Auto-create prepared actions (no user click)? */
   canAutoPrepare: boolean;
 
-  /** Can we auto-submit emails without showing a draft to the user? */
+  /** Auto-submit emails without showing a draft? */
   canAutoSubmitEmail: boolean;
 
-  /** If the adapter prefers a specific evidence attachment kind (e.g., "screenshot"). */
+  /** Preferred evidence type if any. */
   attachmentsKind?: "screenshot" | "pdf" | "image" | "txt" | string;
 
-  /**
-   * Default minimum confidence threshold for auto workflows when no per-adapter
-   * admin override is present. Used by actions/submit and policy selection.
-   */
-  defaultMinConfidence?: number; // e.g., 0.82
+  /** Default min confidence for auto flows (when no admin override). */
+  defaultMinConfidence?: number;
 
-  /** Confidence band thresholds used by lib/auto/confidence.ts */
-  thresholdHigh?: number;   // e.g., 0.88
-  thresholdMedium?: number; // e.g., 0.80
+  /** Confidence band thresholds used elsewhere. */
+  thresholdHigh?: number;
+  thresholdMedium?: number;
 
-  /** Whether we allow automatic follow-ups for this adapter. */
+  /** Automatic follow-ups permitted? */
   autoFollowups?: boolean;
 
-  /** Days between automatic follow-ups when enabled. */
+  /** Days between follow-ups. */
   followupCadenceDays?: number;
 
-  /** Max count of follow-ups to enqueue (not counting the original send). */
+  /** Max # of follow-ups (not counting original send). */
   maxFollowups?: number;
 };
 
-/** Concrete, reusable base so we don’t reference CAPABILITY_MATRIX during init. */
+/** Concrete base capability — no self-references. */
 const GENERIC_CAP: Capability = {
   id: "generic",
   canAutoPrepare: true,
@@ -50,20 +46,17 @@ const GENERIC_CAP: Capability = {
   attachmentsKind: "screenshot",
   defaultMinConfidence: 0.82,
   thresholdHigh: 0.88,
-  thresholdMedium: 0.80,
+  thresholdMedium: 0.8,
   autoFollowups: true,
   followupCadenceDays: 7,
   maxFollowups: 2,
 };
 
-/**
- * Global capability map. "generic" MUST exist and be a full, concrete Capability.
- * Add/override per adapter below (only differences from generic are needed).
- */
+/** Global capability map. MUST include "generic". */
 export const CAPABILITY_MATRIX: Record<string, Capability> = {
   generic: GENERIC_CAP,
 
-  // Examples — tune to your needs:
+  // Example adapters — customize as needed:
   spokeo: {
     ...GENERIC_CAP,
     id: "spokeo",
@@ -84,25 +77,29 @@ export const CAPABILITY_MATRIX: Record<string, Capability> = {
   truecaller: {
     ...GENERIC_CAP,
     id: "truecaller",
-    canAutoSubmitEmail: false, // example: requires portal form instead of email
+    canAutoSubmitEmail: false, // e.g., portal flow
   },
 };
 
-/** Type guard so TS narrows keys safely when reading CAPABILITY_MATRIX. */
-function hasCapKey(k: string): k is keyof typeof CAPABILITY_MATRIX {
-  return Object.prototype.hasOwnProperty.call(CAPABILITY_MATRIX, k);
+/** Type guard on own properties (no proto). */
+function hasOwn(obj: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, key);
 }
 
 /**
- * Narrowing-safe lookup that always returns a concrete Capability.
+ * Narrowing-safe lookup that ALWAYS returns a concrete Capability.
+ * Uses a permissive index read and a guaranteed `generic` fallback.
  */
 export function getCapability(adapterId?: string): Capability {
   const a = (adapterId ?? "generic").toLowerCase();
 
-  // Defensive: ensure generic exists
-  if (!hasCapKey("generic")) {
+  // Ensure generic exists and capture as a concrete Capability
+  if (!hasOwn(CAPABILITY_MATRIX, "generic")) {
     throw new Error('CAPABILITY_MATRIX must contain a "generic" entry');
   }
+  const generic: Capability = (CAPABILITY_MATRIX as Record<string, Capability>)["generic"];
 
-  return hasCapKey(a) ? CAPABILITY_MATRIX[a] : CAPABILITY_MATRIX["generic"];
+  // Read with a permissive index (could be undefined) then coalesce.
+  const entry = (CAPABILITY_MATRIX as Record<string, Capability | undefined>)[a];
+  return entry ?? generic;
 }
