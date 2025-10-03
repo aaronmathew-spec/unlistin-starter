@@ -1,4 +1,3 @@
-// lib/scan/domains-allowlist.ts
 /**
  * Central allowlist for any URL we are willing to show back to the client
  * (as evidence previews or TI hints). Keep this conservative.
@@ -21,8 +20,6 @@ const RAW = [
   "intelx.io",
   "leakcheck.io",
   "dehashed.com",
-
-  // (Optionally keep adding curated, safe surfaces here)
 ] as const;
 
 const DOMAINS = new Set<string>(RAW.map((d) => d.toLowerCase()));
@@ -50,4 +47,11 @@ export function isAllowed(urlOrHost: string): boolean {
 
 export function listAllowlistedDomains(): string[] {
   return Array.from(DOMAINS.values()).sort();
+}
+
+// (Optional) programmatic extension without redeploy
+export function addAllowlistedDomain(domain: string) {
+  const d = domain.trim().toLowerCase();
+  if (!d) return;
+  DOMAINS.add(d);
 }
