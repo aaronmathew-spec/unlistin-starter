@@ -1,45 +1,67 @@
-// app/api/admin/flags/route.ts
+/* eslint-disable @typescript-eslint/no-explicit-any */
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { createServerClient } from "@supabase/ssr";
-import { isAdmin } from "@/lib/auth/rbac";
+import { isAdmin } from "@/lib/auth";
+import { beat } from "@/lib/ops/heartbeat";
+import {
+  FEATURE_AI_UI,
+  FEATURE_AI_SERVER,
+  FEATURE_AGENTS_UI,
+  FEATURE_AGENTS_SERVER,
+} from "@/lib/flags";
 
-function supa() {
-  const jar = cookies();
-  return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { cookies: { get: (k) => jar.get(k)?.value } }
-  );
+function json(data: any, init?: ResponseInit) {
+  return new Response(JSON.stringify(data), {
+    ...init,
+    headers: { "content-type": "application/json; charset=utf-8", ...(init?.headers || {}) },
+  });
 }
 
+async function assertAdmin() {
+  const ok = await isAdmin();
+  if (!ok) throw Object.assign(new Error("Forbidden"), { status: 403 });
+}
+
+/**
+ * GET /api/admin/flags
+ * - Returns the *effective* feature flags (from env).
+ * - These are read-only at runtime on Vercel; POST returns 405.
+ */
 export async function GET() {
-  const admin = await isAdmin();
-  if (!admin.ok) return NextResponse.json({ ok: false, error: "Forbidden" }, { status: 403 });
+  try {
+    await beat("admin.flags:get");
+    await assertAdmin();
 
-  const db = supa();
-  const { data, error } = await db.from("feature_flags").select("key,value,updated_at").order("key", { ascending: true });
-  if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 400 });
-  return NextResponse.json({ ok: true, flags: data || [] });
+    const flags = {
+      FEATURE_AI_UI,
+      FEATURE_AI_SERVER,
+      FEATURE_AGENTS_UI,
+      FEATURE_AGENTS_SERVER,
+    };
+
+    return NextResponse.json({ ok: true, flags });
+  } catch (err: any) {
+    const status = Number.isFinite(err?.status) ? err.status : 500;
+    return json({ ok: false, error: err?.message || "Internal error" }, { status });
+  }
 }
 
-export async function PATCH(req: Request) {
-  const admin = await isAdmin();
-  if (!admin.ok) return NextResponse.json({ ok: false, error: "Forbidden" }, { status: 403 });
-
-  const body = await req.json().catch(() => ({} as any));
-  const key = (body?.key ?? "").toString().trim();
-  const value = body?.value ?? {};
-
-  if (!key) return NextResponse.json({ ok: false, error: "Missing key" }, { status: 400 });
-
-  const db = supa();
-  const { error } = await db
-    .from("feature_flags")
-    .upsert({ key, value, updated_at: new Date().toISOString() }, { onConflict: "key" });
-
-  if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 400 });
-  return NextResponse.json({ ok: true });
+/**
+ * POST /api/admin/flags
+ * - Intentionally returns 405 (flags are env-backed).
+ * - If you later persist flags in Supabase, swap this out for an upsert.
+ */
+export async function POST() {
+  try {
+    await beat("admin.flags:post");
+    await assertAdmin();
+    return json(
+      { ok: false, error: "Runtime flag changes are not supported (env-backed)" },
+      { status: 405 }
+    );
+  } catch (err: any) {
+    const status = Number.isFinite(err?.status) ? err.status : 500;
+    return json({ ok: false, error: err?.message || "Internal error" }, { status });
+  }
 }
