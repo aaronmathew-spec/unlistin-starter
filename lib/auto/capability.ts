@@ -3,10 +3,10 @@
 /**
  * Adapter capability model
  *
- * Keep this file self-contained:
- *  - Export the Capability type
- *  - Export a CAPABILITY_MATRIX with at least a "generic" row
- *  - Export a narrowing-safe getCapability()
+ * Exports:
+ *  - Capability (type)
+ *  - CAPABILITY_MATRIX (record with at least "generic")
+ *  - getCapability(adapterId?) => Capability (never undefined)
  */
 
 export type Capability = {
@@ -42,81 +42,67 @@ export type Capability = {
   maxFollowups?: number;
 };
 
+/** Concrete, reusable base so we don’t reference CAPABILITY_MATRIX during init. */
+const GENERIC_CAP: Capability = {
+  id: "generic",
+  canAutoPrepare: true,
+  canAutoSubmitEmail: true,
+  attachmentsKind: "screenshot",
+  defaultMinConfidence: 0.82,
+  thresholdHigh: 0.88,
+  thresholdMedium: 0.80,
+  autoFollowups: true,
+  followupCadenceDays: 7,
+  maxFollowups: 2,
+};
+
 /**
- * Global capability defaults. Other adapters can override a subset.
- * IMPORTANT: "generic" MUST exist and be a full, concrete Capability.
+ * Global capability map. "generic" MUST exist and be a full, concrete Capability.
+ * Add/override per adapter below (only differences from generic are needed).
  */
 export const CAPABILITY_MATRIX: Record<string, Capability> = {
-  generic: {
-    id: "generic",
-    canAutoPrepare: true,
-    canAutoSubmitEmail: true,
-    attachmentsKind: "screenshot",
-    defaultMinConfidence: 0.82,
-    thresholdHigh: 0.88,
-    thresholdMedium: 0.80,
-    autoFollowups: true,
-    followupCadenceDays: 7,
-    maxFollowups: 2,
-  },
+  generic: GENERIC_CAP,
 
-  // --- Examples (safe overrides, all optional beyond id) ---
-  // Feel free to tune or add more adapters as you onboard them.
+  // Examples — tune to your needs:
   spokeo: {
-    ...thisAs("generic"),
+    ...GENERIC_CAP,
     id: "spokeo",
     defaultMinConfidence: 0.84,
   },
   whitepages: {
-    ...thisAs("generic"),
+    ...GENERIC_CAP,
     id: "whitepages",
     attachmentsKind: "pdf",
   },
   beenverified: {
-    ...thisAs("generic"),
+    ...GENERIC_CAP,
     id: "beenverified",
     autoFollowups: true,
     followupCadenceDays: 5,
     maxFollowups: 3,
   },
   truecaller: {
-    ...thisAs("generic"),
+    ...GENERIC_CAP,
     id: "truecaller",
     canAutoSubmitEmail: false, // example: requires portal form instead of email
   },
 };
 
-/**
- * Small helper to spread the "generic" baseline in a type-safe way
- * while keeping CAPABILITY_MATRIX initializer readable above.
- */
-function thisAs(key: keyof typeof CAPABILITY_MATRIX): Capability {
-  // At module init time this is always present; we keep a runtime guard anyway.
-  const base = CAPABILITY_MATRIX[key];
-  if (!base) {
-    throw new Error(`Capability base "${String(key)}" missing from CAPABILITY_MATRIX`);
-  }
-  return base;
+/** Type guard so TS narrows keys safely when reading CAPABILITY_MATRIX. */
+function hasCapKey(k: string): k is keyof typeof CAPABILITY_MATRIX {
+  return Object.prototype.hasOwnProperty.call(CAPABILITY_MATRIX, k);
 }
 
 /**
  * Narrowing-safe lookup that always returns a concrete Capability.
- * TS can’t narrow union from hasOwnProperty on an indexed access unless
- * you return from distinct branches, so we do exactly that.
  */
 export function getCapability(adapterId?: string): Capability {
   const a = (adapterId ?? "generic").toLowerCase();
 
-  // Ensure generic exists (defensive)
-  if (!Object.prototype.hasOwnProperty.call(CAPABILITY_MATRIX, "generic")) {
+  // Defensive: ensure generic exists
+  if (!hasCapKey("generic")) {
     throw new Error('CAPABILITY_MATRIX must contain a "generic" entry');
   }
 
-  // Fast path with proper narrowing
-  if (Object.prototype.hasOwnProperty.call(CAPABILITY_MATRIX, a)) {
-    return (CAPABILITY_MATRIX as Record<string, Capability>)[a];
-  }
-
-  // Fallback to generic
-  return (CAPABILITY_MATRIX as Record<string, Capability>)["generic"];
+  return hasCapKey(a) ? CAPABILITY_MATRIX[a] : CAPABILITY_MATRIX["generic"];
 }
