@@ -1,4 +1,4 @@
-// lib/utils/batch.ts
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
 /**
  * Split an array into equally-sized chunks.
@@ -18,6 +18,8 @@ export type MapWithConcurrencyResult<R> = {
 /**
  * Run an async mapper over items with a max concurrency.
  * Guarantees resolution of all tasks (collects errors instead of throwing).
+ * NOTE: Results are appended as they complete (not necessarily input order).
+ * If you need to preserve order, we can add an ordered variant — just say the word.
  */
 export async function mapWithConcurrency<T, R>(
   items: readonly T[],
@@ -49,11 +51,8 @@ export async function mapWithConcurrency<T, R>(
     }
   }
 
-  const workers = Array.from(
-    { length: Math.min(pool, len) },
-    () => worker()
-  );
-
+  const workers = Array.from({ length: Math.min(pool, len) }, () => worker());
   await Promise.all(workers);
+
   return { results, errors };
 }
