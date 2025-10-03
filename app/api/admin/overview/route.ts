@@ -41,8 +41,8 @@ export async function GET() {
     const now = Date.now();
     const since24h = new Date(now - 24 * 60 * 60 * 1000).toISOString();
 
-    // Helper to safely read an exact count result; caller passes a *promise* from the query
-    async function safeCount(q: Promise<{ count: number | null; error: any }>): Promise<number> {
+    // Accept the Supabase builder (not typed as a Promise) and await it inside.
+    async function safeCount(q: any): Promise<number> {
       const { count, error } = await q;
       if (error) return 0;
       return count ?? 0;
