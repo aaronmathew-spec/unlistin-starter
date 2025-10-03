@@ -3,7 +3,7 @@ import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { notFound } from "next/navigation";
 import { getSessionUser } from "@/lib/auth";
-import TrendClient from "./trend-client"; // <-- default import
+import TrendClient from "./trend-client"; // default import
 
 export const metadata = {
   title: "Dashboard",
@@ -39,17 +39,21 @@ export default async function DashboardPage() {
       .gte("created_at", since),
   ]);
 
+  // Graceful fallback if either query errors
+  const preparedRows = preparedRes.error ? [] : (preparedRes.data ?? []);
+  const completedRows = completedRes.error ? [] : (completedRes.data ?? []);
+
   function toSeries(rows: any[] | null | undefined) {
     const byDay = new Map<string, number>();
     (rows || []).forEach((r: any) => {
       const d = (r.created_at || "").slice(0, 10); // YYYY-MM-DD
-      byDay.set(d, (byDay.get(d) || 0) + 1);
+      if (d) byDay.set(d, (byDay.get(d) || 0) + 1);
     });
     return byDay;
   }
 
-  const preparedByDay = toSeries(preparedRes.data);
-  const completedByDay = toSeries(completedRes.data);
+  const preparedByDay = toSeries(preparedRows);
+  const completedByDay = toSeries(completedRows);
 
   const days: string[] = [];
   for (let i = 13; i >= 0; i--) {
