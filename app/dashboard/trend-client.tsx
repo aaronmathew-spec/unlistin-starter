@@ -3,22 +3,26 @@
 
 import React, { useMemo } from "react";
 
-export type TrendPoint = { date: string; prepared: number; completed: number };
-
 /**
  * Lightweight responsive SVG chart (no external deps).
  * Expects data: [{ date: 'YYYY-MM-DD', prepared: number, completed: number }]
  */
-export default function TrendClient({ data }: { data: TrendPoint[] }) {
-  const safe = Array.isArray(data) ? data : [];
-
+export default function TrendClient({
+  data,
+}: {
+  data: Array<{ date: string; prepared: number; completed: number }>;
+}) {
   const width = 720;
   const height = 220;
   const padding = { top: 16, right: 16, bottom: 24, left: 32 };
 
   const { pointsPrepared, pointsCompleted, xTicks, yTicks } = useMemo(() => {
-    const xs = safe.map((_, i) => i);
-    const ys = [0, ...safe.map((d) => d.prepared || 0), ...safe.map((d) => d.completed || 0)];
+    const xs = data.map((_, i) => i);
+    const ys = [
+      0,
+      ...data.map((d) => d.prepared || 0),
+      ...data.map((d) => d.completed || 0),
+    ];
     const xMin = 0;
     const xMax = Math.max(0, xs.length - 1);
     const yMin = 0;
@@ -35,22 +39,28 @@ export default function TrendClient({ data }: { data: TrendPoint[] }) {
     const toPath = (arr: Array<{ x: number; y: number }>) =>
       arr.map((p, i) => `${i === 0 ? "M" : "L"} ${sx(p.x)} ${sy(p.y)}`).join(" ");
 
-    const pointsPrepared = toPath(safe.map((d, i) => ({ x: i, y: d.prepared || 0 })));
-    const pointsCompleted = toPath(safe.map((d, i) => ({ x: i, y: d.completed || 0 })));
+    const pointsPrepared = toPath(
+      data.map((d, i) => ({ x: i, y: d.prepared || 0 }))
+    );
+    const pointsCompleted = toPath(
+      data.map((d, i) => ({ x: i, y: d.completed || 0 }))
+    );
 
     // simple ticks: 5 y-ticks
-    const yTicks = Array.from({ length: 5 }, (_, i) => Math.round((i * yMax) / 4));
+    const yTicks = Array.from({ length: 5 }, (_, i) =>
+      Math.round((i * yMax) / 4)
+    );
     // x ticks: first, middle, last label
     const xTicksIdx = [0, Math.floor(xs.length / 2), xs.length - 1].filter(
       (v, i, a) => a.indexOf(v) === i && v >= 0
     );
     const xTicks = xTicksIdx.map((i) => ({
       i,
-      label: safe[i]?.date?.slice(5) || "",
+      label: data[i]?.date?.slice(5) || "",
     }));
 
     return { pointsPrepared, pointsCompleted, xTicks, yTicks };
-  }, [safe]);
+  }, [data]);
 
   return (
     <div className="w-full h-56">
@@ -62,8 +72,16 @@ export default function TrendClient({ data }: { data: TrendPoint[] }) {
               key={idx}
               x1={padding.left}
               x2={width - padding.right}
-              y1={height - padding.bottom - ((height - padding.top - padding.bottom) * idx) / 4}
-              y2={height - padding.bottom - ((height - padding.top - padding.bottom) * idx) / 4}
+              y1={
+                height -
+                padding.bottom -
+                ((height - padding.top - padding.bottom) * idx) / 4
+              }
+              y2={
+                height -
+                padding.bottom -
+                ((height - padding.top - padding.bottom) * idx) / 4
+              }
             />
           ))}
         </g>
@@ -74,7 +92,12 @@ export default function TrendClient({ data }: { data: TrendPoint[] }) {
             <text
               key={idx}
               x={4}
-              y={height - padding.bottom - ((height - padding.top - padding.bottom) * idx) / 4 + 3}
+              y={
+                height -
+                padding.bottom -
+                ((height - padding.top - padding.bottom) * idx) / 4 +
+                3
+              }
             >
               {t}
             </text>
@@ -84,7 +107,7 @@ export default function TrendClient({ data }: { data: TrendPoint[] }) {
               key={t.i}
               x={
                 padding.left +
-                (t.i / Math.max(1, safe.length - 1)) *
+                (t.i / Math.max(1, data.length - 1)) *
                   (width - padding.left - padding.right)
               }
               y={height - 6}
