@@ -2,6 +2,24 @@
 import { getCapability, type Capability } from "./capability";
 import { bandFor, canAutoFollowup, type ConfidenceBand } from "./confidence";
 
+/** Shape used when creating rows in the actions table (permissive to avoid TS friction). */
+export type ActionRow = {
+  broker: string;
+  category?: string;
+  status: "prepared" | "sent" | "completed" | string;
+  redacted_identity?: any;
+  evidence?: Array<{ url: string; note?: string }> | any[];
+  draft_subject?: string | null;
+  draft_body?: string | null;
+  fields?: any;
+  reply_channel?: string | null;
+  reply_email_preview?: string | null;
+  proof_hash?: string;
+  proof_sig?: string;
+  adapter?: string;
+  meta?: any;
+};
+
 /**
  * Return the maximum number of followups an adapter allows.
  * Falls back to 0 if unspecified.
@@ -118,6 +136,32 @@ export function describeFollowupPlan(adapterId?: string) {
       defaultMinConfidence: cap.defaultMinConfidence ?? 0.82,
     },
   };
+}
+
+/**
+ * Selector used by the route to decide which followups to process.
+ * Liberal signature so existing call sites keep working:
+ * - If any arg is an array, it is treated as the candidate list.
+ * - If an arg has a `.due` array, that is used.
+ * - Optionally accepts a `limit` to cap results.
+ */
+export function selectFollowupCandidates<T = any>(
+  ...args: any[]
+): T[] {
+  // find an array in the passed args
+  for (const a of args) {
+    if (Array.isArray(a)) {
+      const limit =
+        typeof args[args.length - 1] === "number" ? args[args.length - 1] : undefined;
+      return typeof limit === "number" ? (a as T[]).slice(0, limit) : (a as T[]);
+    }
+    if (a && Array.isArray(a.due)) {
+      const limit =
+        typeof args[args.length - 1] === "number" ? args[args.length - 1] : undefined;
+      return typeof limit === "number" ? (a.due as T[]).slice(0, limit) : (a.due as T[]);
+    }
+  }
+  return [];
 }
 
 // Re-export types for convenience in callers that import from this module
