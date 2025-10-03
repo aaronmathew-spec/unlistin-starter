@@ -1,168 +1,127 @@
-// lib/auto/followups.ts
-import { getCapability, type Capability } from "./capability";
-import { bandFor, canAutoFollowup, type ConfidenceBand } from "./confidence";
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
-/** Shape used when creating rows in the actions table (permissive to avoid TS friction). */
+/**
+ * Shape of an Action row we use for follow-up selection.
+ * Keep this liberal because Supabase rows may include extra columns,
+ * and some columns are optional depending on migrations.
+ */
 export type ActionRow = {
+  id: string | number;
   broker: string;
   category?: string;
+
   status: "prepared" | "sent" | "completed" | string;
+
+  // Redacted identity + evidence (usually arrays/objects)
   redacted_identity?: any;
   evidence?: Array<{ url: string; note?: string }> | any[];
+
+  // Draft content (redacted in DB or safe by policy)
   draft_subject?: string | null;
   draft_body?: string | null;
   fields?: any;
+
+  // Reply channel hints
   reply_channel?: string | null;
   reply_email_preview?: string | null;
+
+  // Proof-of-action
   proof_hash?: string;
   proof_sig?: string;
+
+  // Adapter metadata
   adapter?: string;
   meta?: any;
+
+  // --- Optional columns some flows use ---
+  attempts?: number;
+  scheduled?: boolean;
+  due_at?: string | null;     // ISO string when a follow-up is due
+  created_at?: string | null; // ISO timestamps from Supabase
+  updated_at?: string | null; // ISO timestamps from Supabase
 };
 
 /**
- * Return the maximum number of followups an adapter allows.
- * Falls back to 0 if unspecified.
+ * Deterministic tie-breaker for sorting when no due_at is provided.
+ * Falls back through updated_at -> created_at -> id.
  */
-export function maxFollowups(adapterId?: string): number {
-  const cap = getCapability(adapterId);
-  return Number.isFinite(cap.maxFollowups) ? (cap.maxFollowups as number) : 0;
-}
+function numericSortKey(r: ActionRow): number {
+  // Prefer due_at/updated_at/created_at in that order, else id-as-number
+  const k =
+    (r.updated_at && Date.parse(r.updated_at)) ||
+    (r.created_at && Date.parse(r.created_at)) ||
+    0;
 
-/**
- * Return the cadence (in days) for followups for a given adapter.
- * Falls back to 7 days if unspecified.
- */
-export function followupCadenceDays(adapterId?: string): number {
-  const cap = getCapability(adapterId);
-  return Number.isFinite(cap.followupCadenceDays)
-    ? (cap.followupCadenceDays as number)
-    : 7;
-}
-
-/**
- * Compute the next followup due-at timestamp (ISO string) for a given adapter
- * and the followup index `n` you’re about to send (1-based).
- *
- * If the adapter does not allow followups or `n` exceeds `maxFollowups`,
- * returns `null`.
- */
-export function computeFollowupDueAt(
-  adapterId?: string,
-  n?: number
-): string | null {
-  const cap = getCapability(adapterId);
-  const allowed = !!cap.autoFollowups;
-  const max = maxFollowups(adapterId);
-  const nextIndex = typeof n === "number" && Number.isFinite(n) ? n : 1;
-
-  if (!allowed) return null;
-  if (nextIndex < 1 || nextIndex > max) return null;
-
-  const days = followupCadenceDays(adapterId);
-  const when = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
-  return when.toISOString();
-}
-
-/**
- * Decide whether a followup may be auto-sent for a hit, based on:
- *  - adapter capability
- *  - confidence band (derived from numeric confidence)
- *
- * Returns an allow flag with an explanation reason and the resolved band.
- */
-export function allowFollowup(
-  confidence: number,
-  adapterId?: string
-): { allow: boolean; band: ConfidenceBand; reason: string } {
-  const cap = getCapability(adapterId);
-  const band = bandFor(confidence, adapterId);
-
-  if (!cap.autoFollowups) {
-    return { allow: false, band, reason: "adapter-disabled" };
-  }
-
-  const ok = canAutoFollowup(adapterId, band);
-  return {
-    allow: ok,
-    band,
-    reason: ok ? "policy-allowed" : "band-blocked",
-  };
-}
-
-/**
- * Lightweight redacted-draft sanitizer used by followup scheduling.
- * Keeps body/subject length boundaries and strips obviously unsafe content.
- * NOTE: This does NOT de-redact anything—only trims and normalizes.
- */
-export function sanitizeRedactedDraft(draft: {
-  subject?: string | null;
-  body?: string | null;
-}) {
-  const subj = (draft.subject ?? "").toString().slice(0, 140);
-  const body = (draft.body ?? "").toString().slice(0, 1800);
-
-  // extremely conservative scrub for accidental secrets (defense-in-depth)
-  const scrub = (s: string) =>
-    s
-      // keep redactions as-is but neutralize long digit runs
-      .replace(/\d{6,}/g, "•".repeat(6))
-      // neutralize typical tokens
-      .replace(/(api|bearer|token|secret|key)=?[a-z0-9-_]{10,}/gi, "[redacted]")
-      // collapse control characters
-      .replace(/[\u0000-\u001f]+/g, " ")
-      .trim();
-
-  return {
-    subject: scrub(subj),
-    body: scrub(body),
-  };
-}
-
-/**
- * A compact summary describing *how* we will plan followups for a given adapter.
- * Useful for debugging/admin surfaces; avoid surfacing directly to end users.
- */
-export function describeFollowupPlan(adapterId?: string) {
-  const cap: Capability = getCapability(adapterId);
-  return {
-    adapter: adapterId ?? "generic",
-    enabled: !!cap.autoFollowups,
-    maxFollowups: maxFollowups(adapterId),
-    cadenceDays: followupCadenceDays(adapterId),
-    thresholds: {
-      high: cap.thresholdHigh ?? 0.88,
-      medium: cap.thresholdMedium ?? 0.8,
-      defaultMinConfidence: cap.defaultMinConfidence ?? 0.82,
-    },
-  };
-}
-
-/**
- * Selector used by the route to decide which followups to process.
- * Liberal signature so existing call sites keep working:
- * - If any arg is an array, it is treated as the candidate list.
- * - If an arg has a `.due` array, that is used.
- * - Optionally accepts a `limit` to cap results.
- */
-export function selectFollowupCandidates<T = any>(
-  ...args: any[]
-): T[] {
-  // find an array in the passed args
-  for (const a of args) {
-    if (Array.isArray(a)) {
-      const limit =
-        typeof args[args.length - 1] === "number" ? args[args.length - 1] : undefined;
-      return typeof limit === "number" ? (a as T[]).slice(0, limit) : (a as T[]);
-    }
-    if (a && Array.isArray(a.due)) {
-      const limit =
-        typeof args[args.length - 1] === "number" ? args[args.length - 1] : undefined;
-      return typeof limit === "number" ? (a.due as T[]).slice(0, limit) : (a.due as T[]);
+  // Id can be string (uuid) or number; we just take a stable hash-ish number for tie-break
+  let idNum = 0;
+  if (typeof r.id === "number") {
+    idNum = r.id;
+  } else if (typeof r.id === "string") {
+    // simple 32-bit fold
+    for (let i = 0; i < r.id.length; i++) {
+      idNum = (idNum * 33 + r.id.charCodeAt(i)) | 0;
     }
   }
-  return [];
+  return k ^ idNum;
 }
 
-// Re-export types for convenience in callers that import from this module
-export type { ConfidenceBand } from "./confidence";
+/**
+ * Returns a trimmed, sorted list of rows that are eligible for a follow-up “nudge”.
+ * - Honors `scheduled === true` (skip already scheduled).
+ * - If `due_at` is present, requires it to be <= now.
+ * - By default, only actions with status "sent" are eligible (follow-ups come after an initial send).
+ * - Limits the result length and keeps ordering stable.
+ *
+ * Keep this function pure; DB writes happen in the API route.
+ */
+export function selectFollowupCandidates(
+  rows: ActionRow[],
+  nowMs: number,
+  limit = 10
+): ActionRow[] {
+  const max = Math.max(1, Math.min(50, Number.isFinite(limit) ? limit : 10));
+
+  const eligible = rows.filter((r) => {
+    // Only follow-up items that have been sent already
+    if (r.status !== "sent") return false;
+
+    // Respect any “already scheduled” marker if your workflow sets it
+    if (r.scheduled === true) return false;
+
+    // Optional app-level fail-safes via meta
+    if (r.meta && (r.meta.noFollowup === true || r.meta.blockFollowup === true)) return false;
+
+    // If due_at exists, require it to be due
+    if (r.due_at) {
+      const due = Date.parse(r.due_at);
+      if (!Number.isFinite(due) || due > nowMs) return false;
+    }
+
+    return true;
+  });
+
+  // Sort: earliest due first; items without due_at next by recency; then stable tie-breaker.
+  eligible.sort((a, b) => {
+    const aDue = a.due_at ? Date.parse(a.due_at) : Number.POSITIVE_INFINITY;
+    const bDue = b.due_at ? Date.parse(b.due_at) : Number.POSITIVE_INFINITY;
+
+    if (aDue !== bDue) return aDue - bDue;
+
+    // If neither has due_at, sort by updated/created timestamp (desc — nudge newer first)
+    const aRec =
+      (a.updated_at && Date.parse(a.updated_at)) ||
+      (a.created_at && Date.parse(a.created_at)) ||
+      0;
+    const bRec =
+      (b.updated_at && Date.parse(b.updated_at)) ||
+      (b.created_at && Date.parse(b.created_at)) ||
+      0;
+
+    if (aRec !== bRec) return bRec - aRec;
+
+    // Stable tie-breaker
+    return numericSortKey(a) - numericSortKey(b);
+  });
+
+  return eligible.slice(0, max);
+}
