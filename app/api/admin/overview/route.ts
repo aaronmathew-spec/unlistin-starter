@@ -2,83 +2,66 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { createServerClient } from "@supabase/ssr";
+import { isAdmin, getSessionUser } from "@/lib/auth";
+import { beat } from "@/lib/ops/heartbeat";
 
-/**
- * Admin overview: adapter-level stats, caps/kills, and recent actions.
- * RLS should restrict to admin; ensure your RLS/policies enforce this.
- */
-function supa() {
-  const jar = cookies();
-  return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { cookies: { get: (k) => jar.get(k)?.value } }
-  );
+function json(data: any, init?: ResponseInit) {
+  return new Response(JSON.stringify(data), {
+    ...init,
+    headers: { "content-type": "application/json; charset=utf-8", ...(init?.headers || {}) },
+  });
 }
 
+// Centralized RBAC assertion for this file
+async function assertAdmin() {
+  const ok = await isAdmin();
+  if (!ok) {
+    throw Object.assign(new Error("Forbidden"), { status: 403 });
+  }
+}
+
+/**
+ * GET /api/admin/overview
+ * - Simple roll-up payload (safe to expand later)
+ */
 export async function GET() {
-  const db = supa();
+  try {
+    await beat("admin.overview:get");
+    await assertAdmin();
 
-  // Totals by status (across tenants; make sure admin-only)
-  const statuses = ["prepared", "sent", "completed", "needs_user", "failed"] as const;
-  async function countByStatus(status: string) {
-    const { count } = await db.from("actions").select("*", { count: "exact", head: true }).eq("status", status);
-    return count ?? 0;
+    const user = await getSessionUser();
+
+    // Keep this minimal & schema-free to avoid breaking deploys.
+    // You can later add DB-backed metrics safely here.
+    const payload = {
+      ok: true,
+      who: user?.email ?? user?.id ?? null,
+      // placeholders (expand later with DB-backed counts if you want)
+      metrics: {
+        prepared_24h: null,
+        auto_submit_ready: null,
+        followups_due_today: null,
+      },
+    };
+
+    return NextResponse.json(payload);
+  } catch (err: any) {
+    const status = Number.isFinite(err?.status) ? err.status : 500;
+    return json({ ok: false, error: err?.message || "Internal error" }, { status });
   }
-  const totals: Record<string, number> = {};
-  for (const s of statuses) totals[s] = await countByStatus(s);
+}
 
-  // Adapter table (last 14 days)
-  const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
-  const { data: rows } = await db
-    .from("actions")
-    .select("adapter, status")
-    .gte("inserted_at", since);
-
-  const perAdapter = new Map<string, { adapter: string; prepared: number; sent: number; completed: number; failed: number }>();
-  if (Array.isArray(rows)) {
-    for (const r of rows) {
-      const k = (r.adapter || "generic") as string;
-      if (!perAdapter.has(k)) perAdapter.set(k, { adapter: k, prepared: 0, sent: 0, completed: 0, failed: 0 });
-      const row = perAdapter.get(k)!;
-      if (r.status === "prepared") row.prepared++;
-      else if (r.status === "sent") row.sent++;
-      else if (r.status === "completed") row.completed++;
-      else if (r.status === "failed") row.failed++;
-    }
+/**
+ * POST /api/admin/overview
+ * - Not used right now (kept to a clear 405 so the API surface is explicit)
+ */
+export async function POST() {
+  try {
+    await beat("admin.overview:post");
+    await assertAdmin();
+    return json({ ok: false, error: "Not implemented" }, { status: 405 });
+  } catch (err: any) {
+    const status = Number.isFinite(err?.status) ? err.status : 500;
+    return json({ ok: false, error: err?.message || "Internal error" }, { status });
   }
-
-  // Adapter controls snapshot (caps/kills)
-  const { data: controls } = await db.from("adapter_controls").select("adapter, killed, daily_cap_prepare, daily_cap_sent, min_confidence");
-
-  // Recent actions (20)
-  const { data: recent } = await db
-    .from("actions")
-    .select("id, adapter, broker, category, status, confidence, inserted_at")
-    .order("inserted_at", { ascending: false })
-    .limit(20);
-
-  return NextResponse.json({
-    ok: true,
-    totals,
-    adapters: Array.from(perAdapter.values()),
-    controls: (controls || []).map((c: any) => ({
-      adapter: c.adapter,
-      killed: !!c.killed,
-      cap_prepare: c.daily_cap_prepare ?? null,
-      cap_sent: c.daily_cap_sent ?? null,
-      min_conf: c.min_confidence ?? null,
-    })),
-    recent: (recent || []).map((a: any) => ({
-      id: a.id,
-      adapter: a.adapter || "generic",
-      broker: a.broker || "Unknown",
-      category: a.category || "directory",
-      status: a.status,
-      confidence: typeof a.confidence === "number" ? a.confidence : null,
-      at: a.inserted_at,
-    })),
-  });
 }
