@@ -23,7 +23,7 @@ export function bandFor(adapterId?: string, score?: number): ConfidenceBand {
 /**
  * Returns whether we should auto-send a followup given adapter capabilities & band.
  */
-export function canAutoFollowup(adapterId?: string, band: ConfidenceBand): boolean {
+export function canAutoFollowup(adapterId: string | undefined, band: ConfidenceBand): boolean {
   const cap = getCapability(adapterId);
   if (!cap.autoFollowups) return false;
   if (band === "high") return true;
