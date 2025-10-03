@@ -19,6 +19,20 @@ export type Capability = {
   autoFollowups?: boolean;
   followupCadenceDays?: number;
   maxFollowups?: number;
+
+  /**
+   * Optional per-state overrides (e.g., different confidence floors,
+   * temporary allow/deny, etc.). Keys should be UPPERCASE state codes,
+   * since policy.ts uppercases before lookup.
+   */
+  perStateOverrides?: Record<
+    string,
+    {
+      minConfidence?: number;
+      allow?: boolean;
+      deny?: boolean;
+    }
+  >;
 };
 
 // Known-good generic baseline (never undefined)
@@ -33,6 +47,7 @@ const GENERIC_CAP: Capability = {
   autoFollowups: true,
   followupCadenceDays: 7,
   maxFollowups: 2,
+  perStateOverrides: {}, // present so access is always safe
 };
 
 /**
@@ -50,7 +65,7 @@ export const CAPABILITY_MATRIX: Record<string, Capability> = {
   truecaller: {
     ...GENERIC_CAP,
     id: "truecaller",
-    canAutoSubmitEmail: false, // example: may require portal flow
+    canAutoSubmitEmail: false, // example: might require portal flow
   },
 
   beenverified: {
@@ -59,7 +74,12 @@ export const CAPABILITY_MATRIX: Record<string, Capability> = {
     autoFollowups: true,
     followupCadenceDays: 5,
     maxFollowups: 3,
+    // Example of a stricter state-specific override:
+    perStateOverrides: {
+      IN_MH: { minConfidence: 0.86 },
+    },
   },
+
   // Add more:
   // spokeo: { ...GENERIC_CAP, id: "spokeo" },
   // pipl:   { ...GENERIC_CAP, id: "pipl", canAutoSubmitEmail: false },
@@ -76,15 +96,14 @@ function hasOwn(obj: object, key: string): boolean {
 export function getCapability(adapterId?: string): Capability {
   const a = (adapterId ?? "generic").toLowerCase();
 
-  // Get a guaranteed concrete fallback without a risky annotation
-  const generic = (CAPABILITY_MATRIX as Record<string, Capability | undefined>).generic ?? GENERIC_CAP;
+  // Guaranteed concrete fallback without unsafe assertions
+  const generic =
+    (CAPABILITY_MATRIX as Record<string, Capability | undefined>).generic ?? GENERIC_CAP;
 
-  // Fast path if the key exists (helps TS narrow but still coalesces safely)
   if (hasOwn(CAPABILITY_MATRIX, a)) {
     const entry = (CAPABILITY_MATRIX as Record<string, Capability | undefined>)[a];
     return entry ?? generic;
   }
 
-  // Fallback
   return generic;
 }
