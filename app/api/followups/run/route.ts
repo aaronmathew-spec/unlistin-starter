@@ -6,7 +6,8 @@ import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { ensureAiLimit } from "@/lib/ratelimit";
 import { selectFollowupCandidates, ActionRow } from "@/lib/auto/followups";
-import { isAllowed } from "@/lib/scan/domains-allowlist"; // defense in depth for any evidence urls if used later
+// Allowlist kept for future use if we attach evidence-based retries
+import { isAllowed } from "@/lib/scan/domains-allowlist";
 
 function supa() {
   const jar = cookies();
@@ -34,8 +35,8 @@ function json(data: any, init?: ResponseInit) {
  * Behavior:
  *  - Selects candidate actions (status=sent|pending_response)
  *  - Applies confidence bands + adapter capability policy
- *  - Performs a safe "nudge" (PII-safe): increments attempts metadata (if column exists), and
- *    idempotently bumps status back to "sent" (no schema changes required).
+ *  - Performs a safe "nudge": increments attempts metadata when available,
+ *    otherwise falls back to status-only update.
  *  - Returns a summary.
  *
  * Notes:
@@ -76,26 +77,25 @@ export async function POST(req: Request) {
   const results: Array<{ id: ActionRow["id"]; ok: boolean; reason?: string }> = [];
 
   for (const c of candidates) {
-    // Optional: ensure any associated evidence URLs would be allowlisted if we used them later.
-    // if (!isAllowed(someUrl)) continue;
-
     // Safe, idempotent "nudge": set status back to "sent" and increment attempts if column exists.
-    // We don't assume schema has attempts; do two-step update to be safe.
     let ok = false;
     let reason = c.reason;
 
-    // Try to increment attempts if the column exists; failures are non-fatal.
     try {
       const { error: e1 } = await db
         .from("actions")
-        .update({
-          // @ts-expect-error: attempts may not exist in schema; if it doesn't, Supabase will error—ignored below
-          attempts: (c.attempts ?? 0) + 1,
-          status: "sent",
-        } as any)
+        .update(
+          {
+            // If the column exists, this will succeed; if not, Supabase will error and we'll fall back.
+            // We use `as any` on the whole object to avoid strict type coupling to the DB schema.
+            attempts: (c.attempts ?? 0) + 1,
+            status: "sent",
+          } as any
+        )
         .eq("id", c.id);
-      if (!e1) ok = true;
-      else {
+      if (!e1) {
+        ok = true;
+      } else {
         // fallback: update only status
         const { error: e2 } = await db.from("actions").update({ status: "sent" } as any).eq("id", c.id);
         ok = !e2;
@@ -115,7 +115,7 @@ export async function POST(req: Request) {
     ok: true,
     considered: rows.length,
     selected: candidates.length,
-    updated: results.filter(r => r.ok).length,
+    updated: results.filter((r) => r.ok).length,
     results,
   });
 }
