@@ -1,4 +1,4 @@
-// lib/flags.ts
+// lib/flags.ts 
 
 // ===== Your existing flags (unchanged API) =====
 export const FEATURE_AI_UI =
