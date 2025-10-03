@@ -1,4 +1,4 @@
-// lib/auto/capability.ts
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
 export type Capability = {
   id: string;
@@ -8,9 +8,9 @@ export type Capability = {
   canAutoSubmitEmail: boolean;
 
   // Confidence thresholds
-  defaultMinConfidence: number;
-  thresholdHigh: number;
-  thresholdMedium: number;
+  defaultMinConfidence: number; // 0..1
+  thresholdHigh: number;        // banding cutoff
+  thresholdMedium: number;      // banding cutoff
 
   // Draft defaults
   attachmentsKind: string;
@@ -21,9 +21,7 @@ export type Capability = {
   maxFollowups?: number;
 
   /**
-   * Optional per-state overrides (e.g., different confidence floors,
-   * temporary allow/deny, etc.). Keys should be UPPERCASE state codes,
-   * since policy.ts uppercases before lookup.
+   * Optional per-state overrides; keys should be UPPERCASE.
    */
   perStateOverrides?: Record<
     string,
@@ -42,47 +40,71 @@ const GENERIC_CAP: Capability = {
   canAutoSubmitEmail: true,
   defaultMinConfidence: 0.82,
   thresholdHigh: 0.88,
-  thresholdMedium: 0.80,
+  thresholdMedium: 0.8,
   attachmentsKind: "screenshot",
   autoFollowups: true,
   followupCadenceDays: 7,
   maxFollowups: 2,
-  perStateOverrides: {}, // present so access is always safe
+  perStateOverrides: {},
 };
 
 /**
  * Central registry of adapter capabilities.
- * Add or override adapters here.
+ * NOTE: include adapters referenced elsewhere (justdial/sulekha/indiamart).
  */
 export const CAPABILITY_MATRIX: Record<string, Capability> = {
+  // baseline
   generic: GENERIC_CAP,
 
+  // adapters used by inferAdapterFrom* in various modules
+  justdial: {
+    ...GENERIC_CAP,
+    id: "justdial",
+    defaultMinConfidence: 0.84,
+    thresholdHigh: 0.9,
+    thresholdMedium: 0.82,
+    followupCadenceDays: 4,
+    maxFollowups: 2,
+  },
+  sulekha: {
+    ...GENERIC_CAP,
+    id: "sulekha",
+    defaultMinConfidence: 0.84,
+    thresholdHigh: 0.9,
+    thresholdMedium: 0.82,
+    followupCadenceDays: 4,
+    maxFollowups: 2,
+  },
+  indiamart: {
+    ...GENERIC_CAP,
+    id: "indiamart",
+    defaultMinConfidence: 0.85,
+    thresholdHigh: 0.9,
+    thresholdMedium: 0.82,
+    followupCadenceDays: 5,
+    maxFollowups: 2,
+  },
+
+  // the ones you listed previously
   whitepages: {
     ...GENERIC_CAP,
     id: "whitepages",
   },
-
   truecaller: {
     ...GENERIC_CAP,
     id: "truecaller",
-    canAutoSubmitEmail: false, // example: might require portal flow
+    canAutoSubmitEmail: false, // e.g., portal flow only
   },
-
   beenverified: {
     ...GENERIC_CAP,
     id: "beenverified",
     autoFollowups: true,
     followupCadenceDays: 5,
     maxFollowups: 3,
-    // Example of a stricter state-specific override:
     perStateOverrides: {
       IN_MH: { minConfidence: 0.86 },
     },
   },
-
-  // Add more:
-  // spokeo: { ...GENERIC_CAP, id: "spokeo" },
-  // pipl:   { ...GENERIC_CAP, id: "pipl", canAutoSubmitEmail: false },
 };
 
 function hasOwn(obj: object, key: string): boolean {
@@ -91,12 +113,11 @@ function hasOwn(obj: object, key: string): boolean {
 
 /**
  * Narrowing-safe lookup that ALWAYS returns a concrete Capability.
- * Falls back to GENERIC_CAP even if the matrix were somehow mutated.
+ * Falls back to GENERIC_CAP even if the matrix were mutated.
  */
 export function getCapability(adapterId?: string): Capability {
-  const a = (adapterId ?? "generic").toLowerCase();
+  const a = (adapterId ?? "generic").toLowerCase().trim();
 
-  // Guaranteed concrete fallback without unsafe assertions
   const generic =
     (CAPABILITY_MATRIX as Record<string, Capability | undefined>).generic ?? GENERIC_CAP;
 
@@ -104,6 +125,5 @@ export function getCapability(adapterId?: string): Capability {
     const entry = (CAPABILITY_MATRIX as Record<string, Capability | undefined>)[a];
     return entry ?? generic;
   }
-
   return generic;
 }
