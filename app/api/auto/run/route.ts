@@ -10,6 +10,10 @@ import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { sha256Hex, signEnvelope } from "@/lib/ledger";
 
+// NEW: admin gating (kill-switch, caps, min-confidence)
+import { gateCandidates } from "@/lib/auto/selector";
+import { getCapability } from "@/lib/auto/capability";
+
 function supa() {
   const jar = cookies();
   return createServerClient(
@@ -52,13 +56,11 @@ type Body = {
  * POST /api/auto/run
  * Body: { hits: NormalizedHit[] (redacted), ... }
  *
- * For now, this endpoint:
- *  - selects safe candidates (policy engine)
- *  - JSON-mode AI to generate drafts (server-only)
- *  - inserts prepared Actions (RLS applies) with proof hash/signature
- *  - returns a summary
- *
- * You can trigger it from a cron (later) or after Deep Scan completion.
+ * Keeps your existing contract & AI flow.
+ * Adds admin gating before draft generation:
+ *  - kill-switch
+ *  - per-adapter daily caps
+ *  - min-confidence override (falls back to capability defaults)
  */
 export async function POST(req: Request) {
   const rl = await ensureAiLimit(req);
@@ -74,14 +76,39 @@ export async function POST(req: Request) {
     return json({ ok: false, error: "Missing hits" }, { status: 400 });
   }
 
-  const candidates = selectAutoCandidates({
+  // Your existing candidate selection
+  const initial = selectAutoCandidates({
     hits: body.hits as any,
     maxCount: body.maxCount ?? 8,
     userState: body.userState || null,
     globalMinConfidence: body.globalMinConfidence ?? 0.82,
   });
 
-  if (candidates.length === 0) {
+  if (initial.length === 0) {
+    return json({ ok: true, prepared: 0, actions: [] });
+  }
+
+  // Map to gateCandidates input (preserve your fields like preview/why)
+  const mapped = initial.map((c) => {
+    const hit = c.hit as NormalizedHitLite;
+    return {
+      broker: hit.broker,
+      category: hit.kind || "directory",
+      adapter: (hit.adapter || inferAdapterFrom(hit.broker, hit.url)).toLowerCase(),
+      state: hit.state || null,
+      confidence: Number.isFinite(hit.confidence) ? Number(hit.confidence) : 1,
+      url: hit.url,
+      evidence: [{ url: hit.url }],
+      // carry through for downstream use
+      why: hit.why,
+      preview: hit.preview,
+      reply_channel: "email" as const,
+    } as any;
+  });
+
+  // Admin gating (kill, caps, min-confidence) + allowlist
+  const gated = await gateCandidates(mapped);
+  if (gated.length === 0) {
     return json({ ok: true, prepared: 0, actions: [] });
   }
 
@@ -97,29 +124,29 @@ export async function POST(req: Request) {
   const db = supa();
   const prepared: any[] = [];
 
-  for (const c of candidates) {
-    const hit = c.hit;
-
-    if (!isAllowed(hit.url)) {
-      continue; // strict allowlist enforcement
-    }
+  for (const h of gated) {
+    const url = firstUrl(h);
+    if (!url || !isAllowed(url)) continue; // strict allowlist enforcement
 
     const safeContext = {
-      namePreview: redactPreview(hit.preview?.name) ?? "N•",
-      emailPreview: redactPreview(hit.preview?.email) ?? "e•@•",
-      cityPreview: redactPreview(hit.preview?.city) ?? "C•",
-      exposureNotes: (hit.why || []).slice(0, 3).map(coarseMask),
+      namePreview: redactPreview(h.preview?.name) ?? "N•",
+      emailPreview: redactPreview(h.preview?.email) ?? "e•@•",
+      cityPreview: redactPreview(h.preview?.city) ?? "C•",
+      exposureNotes: (h.why || []).slice(0, 3).map(coarseMask),
     };
 
     const userPayload = {
-      broker: hit.broker,
-      category: hit.kind || "directory",
+      broker: h.broker,
+      category: h.category || "directory",
       locale: "en-IN",
       intent: body.intent || "remove_or_correct",
       context: safeContext,
-      evidence: [{ url: hit.url, note: safeContext.exposureNotes[0] || "Allowlisted listing" }],
+      evidence: [{ url, note: safeContext.exposureNotes[0] || "Allowlisted listing" }],
       preferences: { attachmentsAllowed: true, replyChannel: "email", replyEmailPreview: safeContext.emailPreview },
     };
+
+    // Capability lookup (used for sensible fallbacks, not exposed)
+    const cap = getCapability((h as any).__adapter || h.adapter || "generic");
 
     // Server-only AI draft generation (JSON mode)
     const completion = await client.chat.completions.create({
@@ -154,7 +181,7 @@ export async function POST(req: Request) {
         subject: coarseMask(`${obj.subject || "Data Removal Request"}`.slice(0, 140)),
         body: coarseMask(`${obj.body || ""}`.slice(0, 1800)),
         fields: {
-          action: obj?.fields?.action || "remove_or_correct",
+          action: obj?.fields?.action || (body.intent || "remove_or_correct"),
           data_categories: Array.isArray(obj?.fields?.data_categories)
             ? obj.fields.data_categories.slice(0, 8).map((x: any) => `${x}`.trim()).filter(Boolean)
             : ["personal information"],
@@ -164,7 +191,7 @@ export async function POST(req: Request) {
         attachments: Array.isArray(obj?.attachments)
           ? obj.attachments.slice(0, 2).map((a: any) => ({
               name: `${a?.name || "attachment"}`.slice(0, 60),
-              kind: `${a?.kind || "screenshot"}`.slice(0, 20),
+              kind: `${a?.kind || cap.attachmentsKind || "screenshot"}`.slice(0, 20),
               rationale: `${a?.rationale || ""}`.slice(0, 200),
             }))
           : [],
@@ -176,14 +203,14 @@ export async function POST(req: Request) {
     // Proof-of-Action (PII-safe)
     const env = {
       id: "pending",
-      broker: hit.broker,
-      category: hit.kind || "directory",
+      broker: h.broker,
+      category: h.category || "directory",
       redacted_identity: {
         namePreview: safeContext.namePreview,
         emailPreview: safeContext.emailPreview,
         cityPreview: safeContext.cityPreview,
       },
-      evidence_urls: [hit.url],
+      evidence_urls: [url],
       draft_subject_hash: draft.subject ? sha256Hex(draft.subject) : undefined,
       timestamp: new Date().toISOString(),
     };
@@ -191,22 +218,26 @@ export async function POST(req: Request) {
 
     // Insert prepared action (RLS applies)
     const row = {
-      broker: hit.broker,
-      category: hit.kind || "directory",
+      broker: h.broker,
+      category: h.category || "directory",
       status: "prepared",
       redacted_identity: {
         namePreview: safeContext.namePreview,
         emailPreview: safeContext.emailPreview,
         cityPreview: safeContext.cityPreview,
       },
-      evidence: [{ url: hit.url, note: safeContext.exposureNotes[0] || "Allowlisted listing" }],
+      evidence: [{ url, note: safeContext.exposureNotes[0] || "Allowlisted listing" }],
       draft_subject: draft.subject,
       draft_body: draft.body,
       fields: draft.fields,
-      reply_channel: "email",
+      reply_channel: "email" as const,
       reply_email_preview: safeContext.emailPreview,
       proof_hash: proof.hash,
       proof_sig: proof.sig,
+      // NEW: store adapter & confidence so later jobs can honor admin caps without inference
+      adapter: (h as any).__adapter || h.adapter || "generic",
+      confidence: Number.isFinite(h.confidence) ? Number(h.confidence) : null,
+      meta: { threshold: (h as any).__threshold || null, state: h.state || null, source: "auto-run" },
     };
 
     const { data, error } = await db.from("actions").insert(row).select("*").maybeSingle();
@@ -216,7 +247,11 @@ export async function POST(req: Request) {
   return NextResponse.json({ ok: true, prepared: prepared.length, actions: prepared });
 }
 
-// --- redaction helpers (defense in depth) ---
+// --- helpers ---
+function firstUrl(h: any): string | null {
+  const u = (Array.isArray(h.evidence) && h.evidence[0]?.url) || h.url || null;
+  return u || null;
+}
 function redactPreview(s?: string) {
   if (!s) return undefined;
   const t = s.trim();
@@ -234,4 +269,11 @@ function maskPhones(s: string): string {
 }
 function coarseMask(s: string): string {
   return maskPhones(maskEmails(s));
+}
+function inferAdapterFrom(broker?: string, url?: string) {
+  const s = (broker || url || "").toLowerCase();
+  if (s.includes("justdial")) return "justdial";
+  if (s.includes("sulekha")) return "sulekha";
+  if (s.includes("indiamart")) return "indiamart";
+  return "generic";
 }
