@@ -6,6 +6,7 @@ import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { isAllowed } from "@/lib/scan/domains-allowlist";
 import { recordOutcome } from "@/lib/auto/learn";
+import { beat } from "@/lib/ops/heartbeat";
 
 function supa() {
   const jar = cookies();
@@ -51,10 +52,11 @@ function inferAdapterFrom(broker: string, url?: string) {
  *
  * Safe "change detection" for sent actions (allowlisted URLs only).
  * - If the evidence URL now returns 404/410, we auto-close the action as resolved (removed).
- * - Otherwise, we do nothing (no risky heuristics).
- * - Writes non-PII note into actions.meta.change.
+ * - Writes non-PII note into actions.meta.change and heartbeat.
  */
 export async function POST(req: Request) {
+  await beat("detect.changes");
+
   let limit = 20;
   try {
     const body = await req.json().catch(() => ({}));
@@ -92,7 +94,7 @@ export async function POST(req: Request) {
     try {
       res = await headWithTimeout(url, 5000);
     } catch {
-      // HEAD may be blocked; fall back to GET (metadata only, no scraping beyond allowlist)
+      // HEAD may be blocked; fall back to GET (metadata only)
       try {
         const ac = new AbortController();
         const to = setTimeout(() => ac.abort(), 5000);
