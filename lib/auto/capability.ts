@@ -19,9 +19,10 @@ export type Capability = {
   followupStepHours?: number; // backoff step in hours (linear backoff)
   followupCadenceDays?: number; // days between scheduled followups (queue-based)
 
-  // Confidence tuning (used by lib/auto/confidence.ts)
+  // Confidence tuning (used by lib/auto/confidence.ts and submit flow)
   thresholdHigh?: number;   // scores >= thresholdHigh => "high"
   thresholdMedium?: number; // scores >= thresholdMedium => "medium"
+  defaultMinConfidence?: number; // hard floor for auto-submission in /api/actions/submit
 };
 
 export const CAPABILITY_MATRIX: Record<string, Capability> = {
@@ -38,6 +39,7 @@ export const CAPABILITY_MATRIX: Record<string, Capability> = {
     followupCadenceDays: 7,
     thresholdHigh: 0.88,
     thresholdMedium: 0.8,
+    defaultMinConfidence: 0.82,
   },
 
   // Example adapter tuning — adjust as needed as we learn
@@ -53,6 +55,7 @@ export const CAPABILITY_MATRIX: Record<string, Capability> = {
     followupCadenceDays: 6,
     thresholdHigh: 0.9,
     thresholdMedium: 0.82,
+    defaultMinConfidence: 0.84,
   },
 
   justdial: {
@@ -67,6 +70,7 @@ export const CAPABILITY_MATRIX: Record<string, Capability> = {
     followupCadenceDays: 7,
     thresholdHigh: 0.89,
     thresholdMedium: 0.81,
+    defaultMinConfidence: 0.83,
   },
 };
 
