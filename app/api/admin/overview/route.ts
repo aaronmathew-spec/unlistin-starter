@@ -41,8 +41,8 @@ export async function GET() {
     const now = Date.now();
     const since24h = new Date(now - 24 * 60 * 60 * 1000).toISOString();
 
-    // Helper to safely fetch a count with exact/head and return 0 on error.
-    async function safeCount(q: any): Promise<number> {
+    // Helper to safely read an exact count result; caller passes a *promise* from the query
+    async function safeCount(q: Promise<{ count: number | null; error: any }>): Promise<number> {
       const { count, error } = await q;
       if (error) return 0;
       return count ?? 0;
@@ -66,8 +66,7 @@ export async function GET() {
         .or("reply_channel.is.null,reply_channel.eq.email")
     );
 
-    // Follow-ups due today (very basic heuristic):
-    // status='sent' and updated_at older than 24h
+    // Follow-ups due (simple heuristic): status='sent' and updated_at older than 24h
     const followupsDue = await safeCount(
       db
         .from("actions")
