@@ -11,6 +11,7 @@ import { recordOutcome } from "@/lib/auto/learn";
 import { beat } from "@/lib/ops/heartbeat";
 import { isKilled, loadControlsMap, minConfidence, underDailyCap } from "@/lib/auto/controls";
 import { chunk, mapWithConcurrency } from "@/lib/utils/batch";
+import { flags } from "@/lib/flags";
 
 type ActionRow = {
   id: number;
@@ -56,6 +57,11 @@ function json(data: any, init?: ResponseInit) {
  */
 export async function POST(req: Request) {
   await beat("actions.submit");
+
+  // Master kill for the entire auto pipeline (keeps prior behavior if env not set)
+  if (!flags().AUTO_RUN_ENABLED) {
+    return json({ ok: false, error: "auto-run-disabled" }, { status: 503 });
+  }
 
   // -------- inputs ----------
   let limit = 50;
