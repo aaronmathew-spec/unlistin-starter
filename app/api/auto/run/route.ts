@@ -9,10 +9,7 @@ import OpenAI from "openai";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { sha256Hex, signEnvelope } from "@/lib/ledger";
-
-// Admin gating (kill-switch, caps, min-confidence)
-import { gateCandidates } from "@/lib/auto/selector";
-import { getCapability } from "@/lib/auto/capability";
+import { flags } from "@/lib/flags";
 
 function supa() {
   const jar = cookies();
@@ -45,24 +42,19 @@ type NormalizedHitLite = {
 };
 
 type Body = {
-  hits: NormalizedHitLite[];         // server-provided normalized hits (redacted)
-  userState?: string | null;         // optional state inferred from user Deep Scan consent
+  hits: NormalizedHitLite[];
+  userState?: string | null;
   maxCount?: number;
   globalMinConfidence?: number;
   intent?: "remove_or_correct" | "remove" | "correct";
 };
 
-/**
- * POST /api/auto/run
- * Body: { hits: NormalizedHit[] (redacted), ... }
- *
- * Keeps your existing contract & AI flow.
- * Adds admin gating before draft generation:
- *  - kill-switch
- *  - per-adapter daily caps
- *  - min-confidence override (falls back to capability defaults)
- */
 export async function POST(req: Request) {
+  const { AUTO_RUN_ENABLED } = flags();
+  if (!AUTO_RUN_ENABLED) {
+    return json({ ok: false, error: "Auto-run disabled" }, { status: 503 });
+  }
+
   const rl = await ensureAiLimit(req);
   if (!rl?.ok) return json({ ok: false, error: "Rate limit exceeded" }, { status: 429 });
 
@@ -76,39 +68,14 @@ export async function POST(req: Request) {
     return json({ ok: false, error: "Missing hits" }, { status: 400 });
   }
 
-  // Your existing candidate selection
-  const initial = selectAutoCandidates({
+  const candidates = selectAutoCandidates({
     hits: body.hits as any,
     maxCount: body.maxCount ?? 8,
     userState: body.userState || null,
     globalMinConfidence: body.globalMinConfidence ?? 0.82,
   });
 
-  if (initial.length === 0) {
-    return json({ ok: true, prepared: 0, actions: [] });
-  }
-
-  // Map to gateCandidates input (preserve your fields like preview/why)
-  const mapped = initial.map((c) => {
-    const hit = c.hit as NormalizedHitLite;
-    return {
-      broker: hit.broker,
-      category: hit.kind || "directory",
-      adapter: (hit.adapter || inferAdapterFrom(hit.broker, hit.url)).toLowerCase(),
-      state: hit.state || null,
-      confidence: Number.isFinite(hit.confidence) ? Number(hit.confidence) : 1,
-      url: hit.url,
-      evidence: [{ url: hit.url }],
-      // carry through for downstream use
-      why: hit.why,
-      preview: hit.preview,
-      reply_channel: "email" as const,
-    } as any;
-  });
-
-  // Admin gating (kill, caps, min-confidence) + allowlist
-  const gated = await gateCandidates(mapped);
-  if (gated.length === 0) {
+  if (candidates.length === 0) {
     return json({ ok: true, prepared: 0, actions: [] });
   }
 
@@ -124,31 +91,30 @@ export async function POST(req: Request) {
   const db = supa();
   const prepared: any[] = [];
 
-  for (const h of gated) {
-    const url = firstUrl(h);
-    if (!url || !isAllowed(url)) continue; // strict allowlist enforcement
+  for (const c of candidates) {
+    const hit = c.hit;
+
+    if (!isAllowed(hit.url)) {
+      continue;
+    }
 
     const safeContext = {
-      namePreview: redactPreview(h.preview?.name) ?? "N•",
-      emailPreview: redactPreview(h.preview?.email) ?? "e•@•",
-      cityPreview: redactPreview(h.preview?.city) ?? "C•",
-      exposureNotes: (h.why || []).slice(0, 3).map(coarseMask),
+      namePreview: redactPreview(hit.preview?.name) ?? "N•",
+      emailPreview: redactPreview(hit.preview?.email) ?? "e•@•",
+      cityPreview: redactPreview(hit.preview?.city) ?? "C•",
+      exposureNotes: (hit.why || []).slice(0, 3).map(coarseMask),
     };
 
     const userPayload = {
-      broker: h.broker || "Unknown",
-      category: h.category || "directory",
+      broker: hit.broker,
+      category: hit.kind || "directory",
       locale: "en-IN",
       intent: body.intent || "remove_or_correct",
       context: safeContext,
-      evidence: [{ url, note: safeContext.exposureNotes[0] || "Allowlisted listing" }],
+      evidence: [{ url: hit.url, note: safeContext.exposureNotes[0] || "Allowlisted listing" }],
       preferences: { attachmentsAllowed: true, replyChannel: "email", replyEmailPreview: safeContext.emailPreview },
     };
 
-    // Capability lookup (kept for potential future use)
-    void getCapability((h as any).__adapter || h.adapter || "generic");
-
-    // Server-only AI draft generation (JSON mode)
     const completion = await client.chat.completions.create({
       model: MODEL,
       response_format: { type: "json_object" },
@@ -181,7 +147,7 @@ export async function POST(req: Request) {
         subject: coarseMask(`${obj.subject || "Data Removal Request"}`.slice(0, 140)),
         body: coarseMask(`${obj.body || ""}`.slice(0, 1800)),
         fields: {
-          action: obj?.fields?.action || (body.intent || "remove_or_correct"),
+          action: obj?.fields?.action || "remove_or_correct",
           data_categories: Array.isArray(obj?.fields?.data_categories)
             ? obj.fields.data_categories.slice(0, 8).map((x: any) => `${x}`.trim()).filter(Boolean)
             : ["personal information"],
@@ -197,47 +163,53 @@ export async function POST(req: Request) {
           : [],
       };
     } catch {
-      continue; // skip this candidate if the AI response is malformed
+      continue;
     }
 
-    // Proof-of-Action (PII-safe) — ensure broker is a definite string
     const env = {
       id: "pending",
-      broker: h.broker || "Unknown",
-      category: h.category || "directory",
+      broker: hit.broker,
+      category: hit.kind || "directory",
       redacted_identity: {
         namePreview: safeContext.namePreview,
         emailPreview: safeContext.emailPreview,
         cityPreview: safeContext.cityPreview,
       },
-      evidence_urls: [url],
+      evidence_urls: [hit.url],
       draft_subject_hash: draft.subject ? sha256Hex(draft.subject) : undefined,
       timestamp: new Date().toISOString(),
     };
     const proof = signEnvelope(env);
 
-    // Insert prepared action (RLS applies) — ensure broker is a string
+    // IDEMPOTENCY: avoid duplicate prepared rows with same broker + proof hash
+    const idemKey = { broker: hit.broker, proof_hash: proof.hash };
+    const { data: existing } = await db
+      .from("actions")
+      .select("id")
+      .eq("broker", idemKey.broker)
+      .eq("proof_hash", idemKey.proof_hash)
+      .maybeSingle();
+    if (existing?.id) {
+      continue; // already prepared
+    }
+
     const row = {
-      broker: h.broker || "Unknown",
-      category: h.category || "directory",
+      broker: hit.broker,
+      category: hit.kind || "directory",
       status: "prepared",
       redacted_identity: {
         namePreview: safeContext.namePreview,
         emailPreview: safeContext.emailPreview,
         cityPreview: safeContext.cityPreview,
       },
-      evidence: [{ url, note: safeContext.exposureNotes[0] || "Allowlisted listing" }],
+      evidence: [{ url: hit.url, note: safeContext.exposureNotes[0] || "Allowlisted listing" }],
       draft_subject: draft.subject,
       draft_body: draft.body,
       fields: draft.fields,
-      reply_channel: "email" as const,
+      reply_channel: "email",
       reply_email_preview: safeContext.emailPreview,
       proof_hash: proof.hash,
       proof_sig: proof.sig,
-      // Store adapter & confidence for later jobs
-      adapter: (h as any).__adapter || h.adapter || "generic",
-      confidence: Number.isFinite(h.confidence) ? Number(h.confidence) : null,
-      meta: { threshold: (h as any).__threshold || null, state: h.state || null, source: "auto-run" },
     };
 
     const { data, error } = await db.from("actions").insert(row).select("*").maybeSingle();
@@ -247,11 +219,7 @@ export async function POST(req: Request) {
   return NextResponse.json({ ok: true, prepared: prepared.length, actions: prepared });
 }
 
-// --- helpers ---
-function firstUrl(h: any): string | null {
-  const u = (Array.isArray(h.evidence) && h.evidence[0]?.url) || h.url || null;
-  return u || null;
-}
+// --- redaction helpers ---
 function redactPreview(s?: string) {
   if (!s) return undefined;
   const t = s.trim();
@@ -269,11 +237,4 @@ function maskPhones(s: string): string {
 }
 function coarseMask(s: string): string {
   return maskPhones(maskEmails(s));
-}
-function inferAdapterFrom(broker?: string, url?: string) {
-  const s = (broker || url || "").toLowerCase();
-  if (s.includes("justdial")) return "justdial";
-  if (s.includes("sulekha")) return "sulekha";
-  if (s.includes("indiamart")) return "indiamart";
-  return "generic";
 }
