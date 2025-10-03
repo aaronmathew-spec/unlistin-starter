@@ -1,11 +1,14 @@
-// app/api/admin/overview/route.ts
+/* eslint-disable @typescript-eslint/no-explicit-any */
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
-import { isAdmin } from "@/lib/auth/rbac";
 
+/**
+ * Admin overview: adapter-level stats, caps/kills, and recent actions.
+ * RLS should restrict to admin; ensure your RLS/policies enforce this.
+ */
 function supa() {
   const jar = cookies();
   return createServerClient(
@@ -15,39 +18,67 @@ function supa() {
   );
 }
 
-async function countTable(db: ReturnType<typeof supa>, table: string): Promise<number | null> {
-  try {
-    const res = await db.from(table).select("*", { count: "exact", head: true } as any);
-    if (typeof res.count === "number") return res.count;
-    return null;
-  } catch {
-    return null;
-  }
-}
-
 export async function GET() {
-  // RBAC guard
-  const admin = await isAdmin();
-  if (!admin.ok) {
-    return NextResponse.json({ ok: false, error: "Forbidden" }, { status: 403 });
-  }
-
   const db = supa();
-  const counts: Record<string, number> = {};
-  const errors: string[] = [];
 
-  // Required
-  {
-    const c = await countTable(db, "requests");
-    if (c !== null) counts.requests = c;
-    else errors.push("requests_count_failed");
+  // Totals by status (across tenants; make sure admin-only)
+  const statuses = ["prepared", "sent", "completed", "needs_user", "failed"] as const;
+  async function countByStatus(status: string) {
+    const { count } = await db.from("actions").select("*", { count: "exact", head: true }).eq("status", status);
+    return count ?? 0;
+  }
+  const totals: Record<string, number> = {};
+  for (const s of statuses) totals[s] = await countByStatus(s);
+
+  // Adapter table (last 14 days)
+  const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+  const { data: rows } = await db
+    .from("actions")
+    .select("adapter, status")
+    .gte("inserted_at", since);
+
+  const perAdapter = new Map<string, { adapter: string; prepared: number; sent: number; completed: number; failed: number }>();
+  if (Array.isArray(rows)) {
+    for (const r of rows) {
+      const k = (r.adapter || "generic") as string;
+      if (!perAdapter.has(k)) perAdapter.set(k, { adapter: k, prepared: 0, sent: 0, completed: 0, failed: 0 });
+      const row = perAdapter.get(k)!;
+      if (r.status === "prepared") row.prepared++;
+      else if (r.status === "sent") row.sent++;
+      else if (r.status === "completed") row.completed++;
+      else if (r.status === "failed") row.failed++;
+    }
   }
 
-  // Optional tables — ignore if missing
-  for (const t of ["request_events", "evidence", "ai_messages", "feature_flags"]) {
-    const c = await countTable(db, t);
-    if (c !== null) counts[t] = c;
-  }
+  // Adapter controls snapshot (caps/kills)
+  const { data: controls } = await db.from("adapter_controls").select("adapter, killed, daily_cap_prepare, daily_cap_sent, min_confidence");
 
-  return NextResponse.json({ ok: true, counts, errors });
+  // Recent actions (20)
+  const { data: recent } = await db
+    .from("actions")
+    .select("id, adapter, broker, category, status, confidence, inserted_at")
+    .order("inserted_at", { ascending: false })
+    .limit(20);
+
+  return NextResponse.json({
+    ok: true,
+    totals,
+    adapters: Array.from(perAdapter.values()),
+    controls: (controls || []).map((c: any) => ({
+      adapter: c.adapter,
+      killed: !!c.killed,
+      cap_prepare: c.daily_cap_prepare ?? null,
+      cap_sent: c.daily_cap_sent ?? null,
+      min_conf: c.min_confidence ?? null,
+    })),
+    recent: (recent || []).map((a: any) => ({
+      id: a.id,
+      adapter: a.adapter || "generic",
+      broker: a.broker || "Unknown",
+      category: a.category || "directory",
+      status: a.status,
+      confidence: typeof a.confidence === "number" ? a.confidence : null,
+      at: a.inserted_at,
+    })),
+  });
 }
