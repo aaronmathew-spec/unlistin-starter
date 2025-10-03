@@ -1,14 +1,35 @@
+// lib/auto/learn.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
+
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 
-type OutcomeEvent = {
+/**
+ * Minimal learning hook for auditing outcomes of the pipeline.
+ * This is intentionally lightweight & idempotent-ish (by (action_id,resolution) pair).
+ *
+ * Table suggested:
+ *   outcomes(
+ *     id bigint pk,
+ *     action_id bigint not null,
+ *     broker text,
+ *     adapter text,
+ *     state text,
+ *     resolution text,            -- e.g. 'sent','skipped','prepared','error'
+ *     took_ms integer null,
+ *     created_at timestamptz default now()
+ *   )
+ * Unique index recommended over (action_id, resolution) for dedupe.
+ */
+
+export type Outcome = {
   action_id: number;
-  broker: string;
-  state?: string | null;
+  broker?: string | null;
   adapter?: string | null;
-  resolution: "removed" | "failed" | "sent" | "prepared";
-  took_ms?: number | null; // optional latency metric
+  state?: string | null;
+  resolution: string;
+  took_ms?: number | null;
+  note?: string | null;
 };
 
 function supa() {
@@ -20,54 +41,39 @@ function supa() {
   );
 }
 
-/**
- * Upserts non-PII adapter stats by (adapter_id, state).
- * This is append-only style: we keep counters & basic aggregates.
- * Safe to call only from server routes (Node runtime).
- */
-export async function recordOutcome(ev: OutcomeEvent) {
-  const adapter_id = (ev.adapter || inferAdapterFromBrokerOrUrl(ev.broker)).toLowerCase();
-  const st = (ev.state || "").toUpperCase() || null;
+/** Best-effort write. Never throws. */
+export async function recordOutcome(out: Outcome): Promise<{ ok: boolean; id?: number }> {
+  try {
+    const db = supa();
 
-  const delta = {
-    adapter_id,
-    state: st,
-    cnt_prepared: ev.resolution === "prepared" ? 1 : 0,
-    cnt_sent: ev.resolution === "sent" ? 1 : 0,
-    cnt_removed: ev.resolution === "removed" ? 1 : 0,
-    cnt_failed: ev.resolution === "failed" ? 1 : 0,
-    sum_ms: ev.took_ms && ev.took_ms > 0 ? ev.took_ms : 0,
-  };
+    // Try a naive insert first
+    const { data, error } = await db
+      .from("outcomes")
+      .insert({
+        action_id: out.action_id,
+        broker: out.broker ?? null,
+        adapter: out.adapter ?? null,
+        state: out.state ?? null,
+        resolution: `${out.resolution}`.slice(0, 40),
+        took_ms: Number.isFinite(out.took_ms as any) ? Number(out.took_ms) : null,
+        note: out.note ?? null,
+      })
+      .select("id")
+      .maybeSingle();
 
-  const db = supa();
-  await db.rpc("adapter_stats_upsert_delta", {
-    p_adapter_id: delta.adapter_id,
-    p_state: delta.state,
-    p_cnt_prepared: delta.cnt_prepared,
-    p_cnt_sent: delta.cnt_sent,
-    p_cnt_removed: delta.cnt_removed,
-    p_cnt_failed: delta.cnt_failed,
-    p_sum_ms: delta.sum_ms,
-  });
-}
+    if (!error && data?.id) return { ok: true, id: data.id };
 
-/**
- * Lightweight suggestion: proposes a small minConfidence nudge based on win rate.
- * (Does not change runtime policy — wire admin acceptance later if desired.)
- */
-export function suggestMinConfidenceBump(winRate: number): number {
-  // Conservative bounds: ±0.03 per weekly window
-  if (!Number.isFinite(winRate)) return 0;
-  if (winRate > 0.85) return 0.02;
-  if (winRate < 0.6) return -0.02;
-  return 0;
-}
+    // Idempotency fallback: return the existing row id if unique constraint triggers
+    const { data: existing } = await db
+      .from("outcomes")
+      .select("id")
+      .eq("action_id", out.action_id)
+      .eq("resolution", out.resolution)
+      .maybeSingle();
 
-// Fallback inference if adapter isn’t stored:
-function inferAdapterFromBrokerOrUrl(brokerOrUrl: string) {
-  const s = (brokerOrUrl || "").toLowerCase();
-  if (s.includes("justdial")) return "justdial";
-  if (s.includes("sulekha")) return "sulekha";
-  if (s.includes("indiamart")) return "indiamart";
-  return "generic";
+    if (existing?.id) return { ok: true, id: existing.id };
+    return { ok: false };
+  } catch {
+    return { ok: false };
+  }
 }
