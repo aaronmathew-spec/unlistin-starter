@@ -26,23 +26,24 @@ export type Capability = {
   defaultMinConfidence?: number; // hard floor for auto-submission in /api/actions/submit
 };
 
+const DEFAULT_CAPABILITY: Capability = {
+  id: "generic",
+  name: "Generic Directory",
+  supportsForm: false,
+  attachmentsDefaultKind: "screenshot",
+  canAutoSubmitEmail: true,
+  autoFollowups: true,
+  autoFollowupsMediumBand: false,
+  maxFollowups: 2,
+  followupStepHours: 72,
+  followupCadenceDays: 7,
+  thresholdHigh: 0.88,
+  thresholdMedium: 0.8,
+  defaultMinConfidence: 0.82,
+};
+
 export const CAPABILITY_MATRIX: Record<string, Capability> = {
-  // Safe fallback for unknown adapters
-  generic: {
-    id: "generic",
-    name: "Generic Directory",
-    supportsForm: false,
-    attachmentsDefaultKind: "screenshot",
-    canAutoSubmitEmail: true,          // default: we can send email-based requests
-    autoFollowups: true,
-    autoFollowupsMediumBand: false,
-    maxFollowups: 2,
-    followupStepHours: 72, // 72h, 144h…
-    followupCadenceDays: 7,
-    thresholdHigh: 0.88,
-    thresholdMedium: 0.8,
-    defaultMinConfidence: 0.82,
-  },
+  generic: DEFAULT_CAPABILITY,
 
   // Example adapter tuning — adjust as needed as we learn
   indiamart: {
@@ -80,11 +81,16 @@ export const CAPABILITY_MATRIX: Record<string, Capability> = {
 
 /**
  * Never returns undefined; always falls back to "generic".
- * Uses a narrow lookup with explicit undefined handling to satisfy TS.
+ * Uses an "in" guard and explicit constant fallback to satisfy TS.
  */
 export function getCapability(adapterId?: string): Capability {
   const a = (adapterId || "generic").toLowerCase();
-  const table = CAPABILITY_MATRIX as Record<string, Capability>;
-  const entry = (table as Record<string, Capability | undefined>)[a];
-  return entry !== undefined ? entry : table["generic"];
+
+  // Fast path: exact hit in matrix
+  if (a in CAPABILITY_MATRIX) {
+    return (CAPABILITY_MATRIX as Record<string, Capability>)[a];
+  }
+
+  // Fallback: generic default (constant, not optional)
+  return DEFAULT_CAPABILITY;
 }
