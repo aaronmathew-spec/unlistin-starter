@@ -30,10 +30,13 @@ export async function GET() {
     return count ?? 0;
   }
 
-  // Basic KPIs
-  const [prepared, sent, completed, needsUser] = await Promise.all(
-    statuses.map((s) => countByStatus(s))
-  );
+  // Basic KPIs (add safe defaults so TS knows they're numbers)
+  const [
+    prepared = 0,
+    sent = 0,
+    completed = 0,
+    needsUser = 0,
+  ] = await Promise.all(statuses.map((s) => countByStatus(s)));
 
   // Exposure = prepared + sent + completed (rough proxy for items detected)
   const exposure = prepared + sent + completed;
