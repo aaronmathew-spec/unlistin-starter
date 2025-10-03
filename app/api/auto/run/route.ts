@@ -136,7 +136,7 @@ export async function POST(req: Request) {
     };
 
     const userPayload = {
-      broker: h.broker,
+      broker: h.broker || "Unknown",
       category: h.category || "directory",
       locale: "en-IN",
       intent: body.intent || "remove_or_correct",
@@ -191,7 +191,6 @@ export async function POST(req: Request) {
         attachments: Array.isArray(obj?.attachments)
           ? obj.attachments.slice(0, 2).map((a: any) => ({
               name: `${a?.name || "attachment"}`.slice(0, 60),
-              // FIX: remove non-existent cap.attachmentsKind, default to "screenshot"
               kind: `${a?.kind || "screenshot"}`.slice(0, 20),
               rationale: `${a?.rationale || ""}`.slice(0, 200),
             }))
@@ -201,10 +200,10 @@ export async function POST(req: Request) {
       continue; // skip this candidate if the AI response is malformed
     }
 
-    // Proof-of-Action (PII-safe)
+    // Proof-of-Action (PII-safe) — ensure broker is a definite string
     const env = {
       id: "pending",
-      broker: h.broker,
+      broker: h.broker || "Unknown",
       category: h.category || "directory",
       redacted_identity: {
         namePreview: safeContext.namePreview,
@@ -217,9 +216,9 @@ export async function POST(req: Request) {
     };
     const proof = signEnvelope(env);
 
-    // Insert prepared action (RLS applies)
+    // Insert prepared action (RLS applies) — ensure broker is a string
     const row = {
-      broker: h.broker,
+      broker: h.broker || "Unknown",
       category: h.category || "directory",
       status: "prepared",
       redacted_identity: {
