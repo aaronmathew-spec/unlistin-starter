@@ -12,6 +12,12 @@ export type CandidateHit = {
   confidence?: number;
   url?: string;
   evidence?: Array<{ url: string }>;
+
+  // carry-through fields used by callers (e.g., auto/run route)
+  preview?: { email?: string; name?: string; city?: string };
+  why?: string[];
+
+  // optional proto-draft bits
   redacted_identity?: any;
   draft_subject?: string;
   draft_body?: string;
@@ -28,7 +34,7 @@ export type GateResult = CandidateHit & {
 /**
  * Applies admin gates + capability defaults to a batch of candidate hits.
  * - Kill switch
- * - Daily cap (counts 'sent' if opts.countSent; here we use 'prepared' as we're creating them)
+ * - Daily cap (counts 'sent' if opts.countSent; here we usually gate for 'prepared')
  * - Min confidence (adapter_controls override -> capability default -> 0.82)
  * - Allowlist on first evidence URL
  */
@@ -50,7 +56,7 @@ export async function gateCandidates(
     // kill switch
     if (isKilled(controls, adapterId)) continue;
 
-    // daily cap (prepare-stage; not counting 'sent' here)
+    // daily cap (prepare-stage by default; set countSent=true to cap on 'sent')
     const capOk = await underDailyCap(adapterId, { countSent: !!opts?.countSent });
     if (!capOk) continue;
 
@@ -63,7 +69,7 @@ export async function gateCandidates(
     // channel sanity (we prefer email in phase 1; keep flexible)
     const chan = (h.reply_channel || "email") as CandidateHit["reply_channel"];
     if (chan === "portal") {
-      // portals typically require OTP/login; we still allow prepare, not auto-submit
+      // portals usually need OTP/login; we still allow prepare (no auto-submit)
     }
 
     out.push({ ...h, __adapter: adapterId, __threshold: threshold });
