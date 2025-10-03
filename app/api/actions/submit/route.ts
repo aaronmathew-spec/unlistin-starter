@@ -10,7 +10,24 @@ import { queueEmailFromAction } from "@/lib/mailer";
 import { recordOutcome } from "@/lib/auto/learn";
 import { beat } from "@/lib/ops/heartbeat";
 import { isKilled, loadControlsMap, minConfidence, underDailyCap } from "@/lib/auto/controls";
-import { AUTO_RUN_ENABLED } from "@/lib/flags"; // <-- guard
+import { chunk, mapWithConcurrency } from "@/lib/utils/batch";
+
+type ActionRow = {
+  id: number;
+  broker: string;
+  category: string | null;
+  status: string;
+  evidence: Array<{ url?: string }> | null;
+  draft_subject: string | null;
+  draft_body: string | null;
+  fields: any;
+  reply_channel: string | null;
+  reply_email_preview: string | null;
+  meta: Record<string, any> | null;
+  state: string | null;
+  adapter: string | null;
+  confidence?: number | null;
+};
 
 function supa() {
   const jar = cookies();
@@ -35,110 +52,106 @@ function json(data: any, init?: ResponseInit) {
  * Phase 1 Auto-Submit (email-only) with admin overrides:
  *  - adapter_controls: killed, daily_cap, min_confidence
  *  - allowlist + capability gates still apply
- *  - idempotent outbox enqueue (skip if already queued for action_id)
+ *  - MEGA BATCH: chunks of 50, concurrency=5
  */
 export async function POST(req: Request) {
   await beat("actions.submit");
 
-  // Global kill (feature flag)
-  if (!AUTO_RUN_ENABLED) {
-    return json({ ok: false, error: "Auto-run disabled" }, { status: 503 });
-  }
-
-  let limit = 10;
+  // -------- inputs ----------
+  let limit = 50;
   try {
     const body = await req.json().catch(() => ({}));
-    if (Number.isFinite(body?.limit)) limit = Math.max(1, Math.min(50, body.limit));
+    if (Number.isFinite(body?.limit)) {
+      limit = Math.max(1, Math.min(500, body.limit));
+    }
   } catch {
-    // ignore malformed JSON
+    /* ignore */
   }
 
   const db = supa();
 
-  // Fetch eligible actions
+  // -------- fetch candidates ----------
   const { data: actions, error } = await db
     .from("actions")
-    .select("id, broker, category, status, evidence, draft_subject, draft_body, fields, reply_channel, reply_email_preview, meta, state, adapter, confidence")
+    .select(
+      "id, broker, category, status, evidence, draft_subject, draft_body, fields, reply_channel, reply_email_preview, meta, state, adapter, confidence"
+    )
     .eq("status", "prepared")
     .limit(limit);
 
   if (error) return json({ ok: false, error: error.message }, { status: 400 });
-  if (!actions || actions.length === 0) return NextResponse.json({ ok: true, sent: 0, actions: [] });
+  const rows: ActionRow[] = Array.isArray(actions) ? actions : [];
+  if (rows.length === 0) return NextResponse.json({ ok: true, sent: 0, action_ids: [] });
 
   const controls = await loadControlsMap();
   const sentIds: number[] = [];
 
-  for (const act of actions) {
-    try {
-      // must be email channel
-      if ((act.reply_channel || "email") !== "email") continue;
+  // -------- batch process ----------
+  const batches = chunk(rows, 50);
 
-      const ev = Array.isArray(act.evidence) ? act.evidence : [];
-      const url = ev[0]?.url;
-      if (!url || !isAllowed(url)) continue;
+  for (const batch of batches) {
+    const { results } = await mapWithConcurrency(batch, 5, async (act) => {
+      try {
+        // must be email channel (default to email)
+        if ((act.reply_channel || "email") !== "email") return false;
 
-      // adapter capability
-      const adapterId = (act as any).adapter || inferAdapterFrom(act.broker, url);
-      const cap = getCapability(adapterId);
+        const ev = Array.isArray(act.evidence) ? act.evidence : [];
+        const url = ev[0]?.url;
+        if (!url || !isAllowed(url)) return false;
 
-      // admin kill switch
-      if (isKilled(controls, adapterId)) continue;
+        const adapterId = (act.adapter || inferAdapterFrom(act.broker, url)).toLowerCase();
+        const cap = getCapability(adapterId);
 
-      // min-confidence override (fall back to capability default or 0.82)
-      const rawConf = Number.isFinite((act as any).confidence)
-        ? Number((act as any).confidence)
-        : (act.meta?.confidence ?? null);
-      const hitConf = Number.isFinite(rawConf) ? Number(rawConf) : 1;
-      const threshold = minConfidence(controls, adapterId, (cap as any).defaultMinConfidence ?? 0.82);
-      if (hitConf < threshold) continue;
+        // admin kill switch
+        if (isKilled(controls, adapterId)) return false;
 
-      // daily cap (count 'sent')
-      const capOk = await underDailyCap(adapterId, { countSent: true });
-      if (!capOk) continue;
+        // min-confidence override (fall back to capability default or 0.82)
+        const rawConf =
+          Number.isFinite(act.confidence) && act.confidence != null
+            ? Number(act.confidence)
+            : (act.meta?.confidence as number | undefined) ?? null;
+        const hitConf = Number.isFinite(rawConf) && rawConf != null ? Number(rawConf) : 1;
+        const threshold = minConfidence(controls, adapterId, cap.defaultMinConfidence ?? 0.82);
+        if (hitConf < threshold) return false;
 
-      if (!(cap as any).canAutoSubmitEmail) continue;
+        // daily cap (count 'sent')
+        const capOk = await underDailyCap(adapterId, { countSent: true });
+        if (!capOk) return false;
 
-      // IDEMPOTENCY: if already queued for this action, skip enqueue
-      const { data: existingOutbox } = await db
-        .from("outbox")
-        .select("id")
-        .eq("action_id", act.id)
-        .maybeSingle();
-      if (existingOutbox?.id) {
-        // still ensure status reflects sent
-        await db.from("actions").update({ status: "sent" }).eq("id", act.id);
+        if (!cap.canAutoSubmitEmail) return false;
+
+        // queue outbox (no body persisted)
+        const queued = await queueEmailFromAction({
+          actionId: act.id,
+          broker: act.broker,
+          subjectPreview: (act.draft_subject || "Data request").slice(0, 160),
+          hasBody: !!act.draft_body,
+        });
+        if (!queued.ok) return false;
+
+        // Update action -> 'sent'
+        const { error: uerr } = await db.from("actions").update({ status: "sent" }).eq("id", act.id);
+        if (uerr) return false;
+
+        // Learning hook
+        await recordOutcome({
+          action_id: act.id,
+          broker: act.broker,
+          state: act.state || null,
+          adapter: adapterId,
+          resolution: "sent",
+          took_ms: null,
+        });
+
         sentIds.push(act.id);
-        continue;
+        return true;
+      } catch {
+        return false;
       }
+    });
 
-      // queue outbox (no body persisted)
-      const queued = await queueEmailFromAction({
-        actionId: act.id,
-        broker: act.broker,
-        subjectPreview: (act.draft_subject || "Data request").slice(0, 160),
-        hasBody: !!act.draft_body,
-      });
-      if (!queued.ok) continue;
-
-      // Update action -> 'sent' (idempotent)
-      const { error: uerr } = await db.from("actions").update({ status: "sent" }).eq("id", act.id);
-      if (uerr) continue;
-
-      // Learning hook (best-effort)
-      await recordOutcome({
-        action_id: act.id,
-        broker: act.broker,
-        state: (act as any).state || null,
-        adapter: adapterId,
-        resolution: "sent",
-        took_ms: null,
-      });
-
-      sentIds.push(act.id);
-    } catch {
-      // skip this action on any unexpected error
-      continue;
-    }
+    // Optional small pause to be gentle with rate limits
+    if (results.length > 0) await new Promise((r) => setTimeout(r, 25));
   }
 
   return NextResponse.json({ ok: true, sent: sentIds.length, action_ids: sentIds });
