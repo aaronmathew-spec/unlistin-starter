@@ -26,14 +26,10 @@ export async function GET() {
 
     // Surface current server + client flags so the admin UI can render truth.
     const flags = {
-      FEATURE_AI_UI:
-        (process.env.NEXT_PUBLIC_FEATURE_AI ?? "0") === "1",
-      FEATURE_AI_SERVER:
-        (process.env.FEATURE_AI_SERVER ?? "0") === "1",
-      FEATURE_AGENTS_UI:
-        (process.env.NEXT_PUBLIC_FEATURE_AGENTS ?? "0") === "1",
-      FEATURE_AGENTS_SERVER:
-        (process.env.FEATURE_AGENTS_SERVER ?? "0") === "1",
+      FEATURE_AI_UI:       (process.env.NEXT_PUBLIC_FEATURE_AI ?? "0") === "1",
+      FEATURE_AI_SERVER:   (process.env.FEATURE_AI_SERVER ?? "0") === "1",
+      FEATURE_AGENTS_UI:   (process.env.NEXT_PUBLIC_FEATURE_AGENTS ?? "0") === "1",
+      FEATURE_AGENTS_SERVER:(process.env.FEATURE_AGENTS_SERVER ?? "0") === "1",
     };
 
     return NextResponse.json({ ok: true, flags });
