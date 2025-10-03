@@ -1,4 +1,3 @@
-// app/admin/page.tsx
 import { isAdmin } from "@/lib/auth";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -17,28 +16,36 @@ export default async function AdminPage() {
   }).catch(() => null);
 
   let metrics = {
-    automation_users: 0,
-    prepared_24h: 0,
-    auto_submit_ready: 0,
-    followups_due_today: 0,
+    prepared24h: 0,          // matches /api/admin/overview current payload
+    autoSubmitReady: 0,
+    followupsDue: 0,
+    automationUsers: 0,      // if you add this later
   };
   let actorEmail: string | null = null;
 
   if (res && res.ok) {
     try {
       const payload = await res.json();
-      metrics = payload?.metrics ?? metrics;
-      actorEmail = payload?.actor?.email ?? null;
+      // accept either shape
+      const m = payload?.metrics ?? {};
+      metrics = {
+        prepared24h: Number(m.prepared24h ?? m.prepared_24h ?? 0),
+        autoSubmitReady: Number(m.autoSubmitReady ?? m.auto_submit_ready ?? 0),
+        followupsDue: Number(m.followupsDue ?? m.followups_due_today ?? 0),
+        automationUsers: Number(m.automationUsers ?? m.automation_users ?? 0),
+      };
+      const actorObj = payload?.actor ?? payload?.user ?? null;
+      actorEmail = actorObj?.email ?? null;
     } catch {
       // fall back to defaults
     }
   }
 
   const cards = [
-    { kpi: "Automation Enabled Users", value: String(metrics.automation_users), href: "/settings" },
-    { kpi: "Prepared Actions (24h)", value: String(metrics.prepared_24h), href: "/actions" },
-    { kpi: "Auto-Submit Ready", value: String(metrics.auto_submit_ready), href: "/actions" },
-    { kpi: "Follow-ups Due (Today)", value: String(metrics.followups_due_today), href: "/actions" },
+    { kpi: "Automation Enabled Users", value: String(metrics.automationUsers), href: "/settings" },
+    { kpi: "Prepared Actions (24h)", value: String(metrics.prepared24h), href: "/actions" },
+    { kpi: "Auto-Submit Ready", value: String(metrics.autoSubmitReady), href: "/actions" },
+    { kpi: "Follow-ups Due (Today)", value: String(metrics.followupsDue), href: "/actions" },
   ];
 
   return (
@@ -70,7 +77,7 @@ export default async function AdminPage() {
         <div className="text-base font-medium">Automation Controls</div>
         <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-muted-foreground">
           <li>Tune capability thresholds (coming soon).</li>
-          <li>Adapter kill-switch & rate caps (coming soon).</li>
+          <li>Adapter kill-switch &amp; rate caps (coming soon).</li>
           <li>Outcome learning overview (coming soon).</li>
         </ul>
         <div className="mt-4 text-xs text-muted-foreground">
