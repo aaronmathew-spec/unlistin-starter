@@ -1,4 +1,3 @@
-// lib/ledger.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { createHash, createHmac, randomBytes, timingSafeEqual as tse } from "crypto";
 
