@@ -1,36 +1,45 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-import { getCapability } from "./capability";
+// lib/auto/capability.ts
 
-/**
- * Confidence banding per adapter with safe defaults.
- * - "high": fire automatically
- * - "medium": fire if adapter allows auto followups
- * - "low": require human review (we won't auto-run)
- */
-export type ConfidenceBand = "high" | "medium" | "low";
+export type Capability = {
+  // orchestration flags
+  canAutoPrepare: boolean;         // <— needed by lib/auto/policy.ts
+  canAutoSubmitEmail: boolean;     // <— used by actions/submit route
+  autoFollowups: boolean;          // <— used by confidence/followups logic
 
-export function bandFor(adapterId?: string, score?: number): ConfidenceBand {
-  const cap = getCapability(adapterId);
-  const s = typeof score === "number" ? score : 0;
-  // Base thresholds (cap overrides allow adapter tuning)
-  const hi = clamp01(cap.thresholdHigh ?? 0.88);
-  const md = clamp01(cap.thresholdMedium ?? 0.80);
-  if (s >= hi) return "high";
-  if (s >= md) return "medium";
-  return "low";
-}
+  // followup tuning
+  followupCadenceDays?: number;    // days between followups
+  maxFollowups?: number;           // how many followups to schedule
 
-/**
- * Returns whether we should auto-send a followup given adapter capabilities & band.
- */
-export function canAutoFollowup(adapterId: string | undefined, band: ConfidenceBand): boolean {
-  const cap = getCapability(adapterId);
-  if (!cap.autoFollowups) return false;
-  if (band === "high") return true;
-  if (band === "medium") return !!cap.autoFollowupsMediumBand;
-  return false;
-}
+  // content / attachment defaults
+  attachmentsKind?: string;        // e.g. "screenshot"
 
-function clamp01(n: number) {
-  return Math.max(0, Math.min(1, n));
+  // confidence thresholds / gates
+  thresholdHigh?: number;          // e.g. 0.88
+  thresholdMedium?: number;        // e.g. 0.80
+  defaultMinConfidence?: number;   // e.g. 0.82
+};
+
+// Adapter capabilities (override generic as needed)
+export const CAPABILITY_MATRIX: Record<string, Capability> = {
+  generic: {
+    canAutoPrepare: true,
+    canAutoSubmitEmail: false, // default: prep only, no auto-send
+    autoFollowups: true,
+    followupCadenceDays: 14,
+    maxFollowups: 2,
+    attachmentsKind: "screenshot",
+    thresholdHigh: 0.88,
+    thresholdMedium: 0.80,
+    defaultMinConfidence: 0.82,
+  },
+
+  // examples — adjust to your adapters
+  // "indiamart": { ...CAPABILITY_MATRIX.generic, canAutoSubmitEmail: true },
+  // "justdial":  { ...CAPABILITY_MATRIX.generic, maxFollowups: 3 },
+};
+
+export function getCapability(adapterId: string | undefined): Capability {
+  const a = (adapterId ?? "generic").toLowerCase();
+  const table = CAPABILITY_MATRIX as Record<string, Capability>;
+  return Object.prototype.hasOwnProperty.call(table, a) ? table[a] : table["generic"];
 }
