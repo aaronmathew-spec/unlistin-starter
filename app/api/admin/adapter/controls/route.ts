@@ -2,18 +2,9 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { createServerClient } from "@supabase/ssr";
 import { isAdmin } from "@/lib/auth";
-
-function supa() {
-  const jar = cookies();
-  return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { cookies: { get: (k) => jar.get(k)?.value } }
-  );
-}
+import { beat } from "@/lib/ops/heartbeat";
+import { loadControlsMap } from "@/lib/auto/controls"; // read-only view of admin controls
 
 function json(data: any, init?: ResponseInit) {
   return new Response(JSON.stringify(data), {
@@ -22,42 +13,41 @@ function json(data: any, init?: ResponseInit) {
   });
 }
 
-// GET: list all adapter controls
-export async function GET() {
-  if (!(await isAdmin())) return json({ ok: false, error: "Not found" }, { status: 404 });
-  const db = supa();
-  const { data, error } = await db.from("adapter_controls").select("*").order("adapter_id");
-  if (error) return json({ ok: false, error: error.message }, { status: 400 });
-  return NextResponse.json({ ok: true, rows: data || [] });
+async function assertAdmin() {
+  const ok = await isAdmin();
+  if (!ok) throw Object.assign(new Error("Forbidden"), { status: 403 });
 }
 
-// POST: upsert a control row { adapter_id, killed?, daily_cap?, min_confidence? }
-export async function POST(req: Request) {
-  if (!(await isAdmin())) return json({ ok: false, error: "Not found" }, { status: 404 });
-  const db = supa();
-
-  let body: any = null;
+/**
+ * GET /api/admin/adapter/controls
+ * - Read current adapter controls (kill switches, caps, thresholds).
+ * - This uses your existing read helper and avoids schema writes.
+ */
+export async function GET() {
   try {
-    body = await req.json();
-  } catch {
-    return json({ ok: false, error: "Invalid JSON" }, { status: 400 });
+    await beat("admin.adapter.controls:get");
+    await assertAdmin();
+
+    const controls = await loadControlsMap(); // { [adapterId]: { killed?: boolean, ... } }
+    return NextResponse.json({ ok: true, controls });
+  } catch (err: any) {
+    const status = Number.isFinite(err?.status) ? err.status : 500;
+    return json({ ok: false, error: err?.message || "Internal error" }, { status });
   }
+}
 
-  const adapter_id = (body?.adapter_id || "").toLowerCase();
-  if (!adapter_id) return json({ ok: false, error: "Missing adapter_id" }, { status: 400 });
-
-  const patch: any = { adapter_id };
-  if (typeof body.killed === "boolean") patch.killed = body.killed;
-  if (Number.isFinite(body.daily_cap)) patch.daily_cap = Math.max(0, Math.min(1000, body.daily_cap));
-  if (Number.isFinite(body.min_confidence))
-    patch.min_confidence = Math.max(0.5, Math.min(0.99, Number(body.min_confidence)));
-
-  const { data, error } = await db
-    .from("adapter_controls")
-    .upsert(patch, { onConflict: "adapter_id" })
-    .select("*")
-    .maybeSingle();
-
-  if (error) return json({ ok: false, error: error.message }, { status: 400 });
-  return NextResponse.json({ ok: true, row: data });
+/**
+ * POST /api/admin/adapter/controls
+ * - Kept as 405 to avoid coupling to a specific DB schema.
+ * - If/when you add a Supabase table for controls, implement an upsert here.
+ */
+export async function POST() {
+  try {
+    await beat("admin.adapter.controls:post");
+    await assertAdmin();
+    return json({ ok: false, error: "Not implemented (read-only endpoint)" }, { status: 405 });
+  } catch (err: any) {
+    const status = Number.isFinite(err?.status) ? err.status : 500;
+    return json({ ok: false, error: err?.message || "Internal error" }, { status });
+  }
 }
