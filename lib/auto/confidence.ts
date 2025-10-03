@@ -1,45 +1,41 @@
-// lib/auto/capability.ts
+// lib/auto/confidence.ts
+import { Capability, getCapability } from "./capability";
 
-export type Capability = {
-  // orchestration flags
-  canAutoPrepare: boolean;         // <— needed by lib/auto/policy.ts
-  canAutoSubmitEmail: boolean;     // <— used by actions/submit route
-  autoFollowups: boolean;          // <— used by confidence/followups logic
+export type ConfidenceBand = "high" | "medium" | "low";
 
-  // followup tuning
-  followupCadenceDays?: number;    // days between followups
-  maxFollowups?: number;           // how many followups to schedule
+function clamp01(n: number) {
+  return Math.max(0, Math.min(1, n));
+}
 
-  // content / attachment defaults
-  attachmentsKind?: string;        // e.g. "screenshot"
+/**
+ * Map a numeric score into a confidence band using adapter thresholds.
+ */
+export function bandFor(score: number | undefined, adapterId?: string): ConfidenceBand {
+  const cap: Capability = getCapability(adapterId);
+  const s = typeof score === "number" ? score : 0;
 
-  // confidence thresholds / gates
-  thresholdHigh?: number;          // e.g. 0.88
-  thresholdMedium?: number;        // e.g. 0.80
-  defaultMinConfidence?: number;   // e.g. 0.82
-};
+  const hi = clamp01(cap.thresholdHigh ?? 0.88);
+  const md = clamp01(cap.thresholdMedium ?? 0.80);
 
-// Adapter capabilities (override generic as needed)
-export const CAPABILITY_MATRIX: Record<string, Capability> = {
-  generic: {
-    canAutoPrepare: true,
-    canAutoSubmitEmail: false, // default: prep only, no auto-send
-    autoFollowups: true,
-    followupCadenceDays: 14,
-    maxFollowups: 2,
-    attachmentsKind: "screenshot",
-    thresholdHigh: 0.88,
-    thresholdMedium: 0.80,
-    defaultMinConfidence: 0.82,
-  },
+  if (s >= hi) return "high";
+  if (s >= md) return "medium";
+  return "low";
+}
 
-  // examples — adjust to your adapters
-  // "indiamart": { ...CAPABILITY_MATRIX.generic, canAutoSubmitEmail: true },
-  // "justdial":  { ...CAPABILITY_MATRIX.generic, maxFollowups: 3 },
-};
+/**
+ * Returns whether we should auto-send a follow-up, given adapter capabilities & band.
+ * - High/Medium bands are allowed if the adapter enables autoFollowups and has capacity.
+ * - Low band is never auto-followed.
+ */
+export function canAutoFollowup(band: ConfidenceBand, adapterId?: string): boolean {
+  const cap: Capability = getCapability(adapterId);
+  if (!cap.autoFollowups) return false;
 
-export function getCapability(adapterId: string | undefined): Capability {
-  const a = (adapterId ?? "generic").toLowerCase();
-  const table = CAPABILITY_MATRIX as Record<string, Capability>;
-  return Object.prototype.hasOwnProperty.call(table, a) ? table[a] : table["generic"];
+  // If adapter allows followups but has no quota configured, treat as disabled.
+  const hasQuota = (cap.maxFollowups ?? 0) > 0;
+  if (!hasQuota) return false;
+
+  if (band === "high") return true;
+  if (band === "medium") return true;
+  return false; // "low"
 }
