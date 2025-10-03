@@ -1,7 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import React from "react";
 import dynamic from "next/dynamic";
-import { ArrowUpRight, ShieldCheck, Timer, Bell } from "lucide-react";
 
 async function getData() {
   const base = process.env.NEXT_PUBLIC_SITE_URL || "";
@@ -24,25 +23,25 @@ export default async function DashboardPage() {
         <KpiCard
           title="Exposures Detected"
           value={fmt(data?.kpis?.exposure)}
-          icon={<ShieldCheck className="w-5 h-5" />}
+          icon={<ShieldCheckIcon className="w-5 h-5" />}
           hint="Total items we’re working on"
         />
         <KpiCard
           title="Prepared"
           value={fmt(data?.kpis?.prepared)}
-          icon={<Timer className="w-5 h-5" />}
+          icon={<TimerIcon className="w-5 h-5" />}
           hint="Drafted & queued"
         />
         <KpiCard
           title="In Flight"
           value={fmt(data?.kpis?.sent)}
-          icon={<ArrowUpRight className="w-5 h-5" />}
+          icon={<ArrowUpRightIcon className="w-5 h-5" />}
           hint="Requests sent to brokers"
         />
         <KpiCard
           title="Needs You"
           value={fmt(data?.kpis?.needsUser)}
-          icon={<Bell className="w-5 h-5" />}
+          icon={<BellIcon className="w-5 h-5" />}
           hint="We’ll nudge you only when needed"
           accent
         />
@@ -132,5 +131,39 @@ function fmt(n?: number) {
   return n.toLocaleString();
 }
 
-// Client chart (recharts) loaded dynamically
+// Client chart (pure SVG) loaded dynamically
 const TrendChart = dynamic(() => import("./trend-client").then(m => m.TrendClient), { ssr: false });
+
+// --- Inline SVG Icons (no external deps) ---
+function ShieldCheckIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
+      <path d="M12 3l7 4v5c0 4.418-3.582 8-8 8s-8-3.582-8-8V7l9-4z" stroke="currentColor" strokeWidth="1.5"/>
+      <path d="M9 12l2 2 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+    </svg>
+  );
+}
+function TimerIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
+      <circle cx="12" cy="13" r="8" stroke="currentColor" strokeWidth="1.5"/>
+      <path d="M9 2h6M12 7v6l4 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+    </svg>
+  );
+}
+function ArrowUpRightIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
+      <path d="M7 17L17 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+      <path d="M9 7h8v8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+    </svg>
+  );
+}
+function BellIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
+      <path d="M15 17H5l2-3v-3a5 5 0 1110 0v3l2 3h-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+      <circle cx="12" cy="20" r="1.5" fill="currentColor"/>
+    </svg>
+  );
+}
