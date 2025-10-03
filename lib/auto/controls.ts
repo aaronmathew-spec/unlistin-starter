@@ -1,13 +1,12 @@
-// lib/auto/controls.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 
 export type AdapterControl = {
-  adapter_id: string;
+  adapter_id: string;           // normalized lowercase key
   killed: boolean;
-  daily_cap: number | null;       // 0 or null = unlimited
-  min_confidence: number | null;  // 0.500..0.990 or null to use defaults
+  daily_cap: number | null;     // 0 or null = unlimited
+  min_confidence: number | null; // 0.500..0.990 or null to use defaults
 };
 
 export type ControlsMap = Record<string, AdapterControl>;
@@ -27,9 +26,11 @@ export async function loadControlsMap(): Promise<ControlsMap> {
   const { data } = await db.from("adapter_controls").select("*");
   const map: ControlsMap = {};
   (data || []).forEach((r: any) => {
-    if (!r?.adapter_id) return;
-    map[String(r.adapter_id).toLowerCase()] = {
-      adapter_id: String(r.adapter_id).toLowerCase(),
+    // Support both column names: adapter_id (preferred) or adapter (older)
+    const keyRaw = (r?.adapter_id ?? r?.adapter ?? "").toString().trim().toLowerCase();
+    if (!keyRaw) return;
+    map[keyRaw] = {
+      adapter_id: keyRaw,
       killed: !!r.killed,
       daily_cap: Number.isFinite(r.daily_cap) ? Number(r.daily_cap) : null,
       min_confidence: Number.isFinite(r.min_confidence) ? Number(r.min_confidence) : null,
@@ -59,12 +60,18 @@ export async function underDailyCap(adapterId: string, opts?: { countSent?: bool
   dayStart.setUTCHours(0, 0, 0, 0);
   const startIso = dayStart.toISOString();
 
-  // Read cap
-  const { data: capRow } = await db
+  // Read cap (support both adapter_id and adapter)
+  const key = adapterId.toLowerCase();
+  const { data: capRowA } = await db
     .from("adapter_controls")
     .select("daily_cap")
-    .eq("adapter_id", adapterId.toLowerCase())
+    .eq("adapter_id", key)
     .maybeSingle();
+  const capRow = capRowA ?? (await db
+    .from("adapter_controls")
+    .select("daily_cap")
+    .eq("adapter", key)
+    .maybeSingle()).data;
 
   const cap = (capRow?.daily_cap ?? 0) as number;
   if (!cap || cap <= 0) return true; // unlimited
@@ -74,7 +81,7 @@ export async function underDailyCap(adapterId: string, opts?: { countSent?: bool
   const { count } = await db
     .from("actions")
     .select("id", { count: "exact", head: true })
-    .eq("adapter", adapterId.toLowerCase())
+    .eq("adapter", key)
     .eq("status", statusFilter as any)
     .gte("created_at", startIso);
 
