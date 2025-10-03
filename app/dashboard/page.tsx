@@ -1,78 +1,83 @@
-import Link from "next/link";
+// app/dashboard/page.tsx
+import { cookies } from "next/headers";
+import { createServerClient } from "@supabase/ssr";
+import { notFound } from "next/navigation";
+import { getSessionUser } from "@/lib/auth";
+import { TrendClient } from "./trend-client"; // <-- named import
 
-// Server component: fetches dashboard metrics and renders the chart client component
-type TrendPoint = { date: string; prepared: number; completed: number };
+export const metadata = {
+  title: "Dashboard",
+};
 
-async function getDashboard() {
-  try {
-    const res = await fetch(`${process.env.NEXT_PUBLIC_SITE_URL ?? ""}/api/dashboard`, {
-      cache: "no-store",
-    });
-    if (!res.ok) return null;
-    return (await res.json()) as {
-      ok: boolean;
-      stats?: {
-        exposure?: number;
-        prepared?: number;
-        sent?: number;
-        completed?: number;
-      };
-      trend?: TrendPoint[];
-    };
-  } catch {
-    return null;
-  }
+function supa() {
+  const jar = cookies();
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    { cookies: { get: (k) => jar.get(k)?.value } }
+  );
 }
 
 export default async function DashboardPage() {
-  const payload = await getDashboard();
+  const user = await getSessionUser();
+  if (!user) return notFound();
 
-  const stats = payload?.stats ?? {};
-  const exposure = stats.exposure ?? 0;
-  const prepared = stats.prepared ?? 0;
-  const sent = stats.sent ?? 0;
-  const completed = stats.completed ?? 0;
-  const trend = payload?.trend ?? [];
+  const db = supa();
 
-  // lazy import the client chart (Next will split it)
-  const TrendClient = (await import("./trend-client")).default;
+  // Pull simple 14-day prepared/completed trend
+  const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
 
-  const cards = [
-    { kpi: "Exposure (approx.)", value: exposure },
-    { kpi: "Prepared", value: prepared },
-    { kpi: "Sent", value: sent },
-    { kpi: "Completed", value: completed },
-  ];
+  const [preparedRes, completedRes] = await Promise.all([
+    db
+      .from("actions")
+      .select("created_at", { count: "exact" })
+      .eq("status", "prepared")
+      .gte("created_at", since),
+    db
+      .from("actions")
+      .select("created_at", { count: "exact" })
+      .eq("status", "completed")
+      .gte("created_at", since),
+  ]);
+
+  // Group counts per day (server-side quick and dirty)
+  function toSeries(rows: any[] | null | undefined) {
+    const byDay = new Map<string, number>();
+    (rows || []).forEach((r: any) => {
+      const d = (r.created_at || "").slice(0, 10); // YYYY-MM-DD
+      byDay.set(d, (byDay.get(d) || 0) + 1);
+    });
+    return byDay;
+  }
+
+  const preparedByDay = toSeries(preparedRes.data);
+  const completedByDay = toSeries(completedRes.data);
+
+  // Build ordered 14-day array
+  const days: string[] = [];
+  for (let i = 13; i >= 0; i--) {
+    const d = new Date(Date.now() - i * 24 * 60 * 60 * 1000);
+    const iso = d.toISOString().slice(0, 10);
+    days.push(iso);
+  }
+
+  const trend = days.map((d) => ({
+    date: d,
+    prepared: preparedByDay.get(d) || 0,
+    completed: completedByDay.get(d) || 0,
+  }));
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-10">
-      <div className="flex items-baseline justify-between">
-        <h1 className="text-3xl font-semibold tracking-tight">Dashboard</h1>
-        <Link href="/settings" className="text-sm text-muted-foreground hover:underline">
-          Settings
-        </Link>
-      </div>
-
+      <h1 className="text-3xl font-semibold tracking-tight">Dashboard</h1>
       <p className="mt-2 text-sm text-muted-foreground">
-        A private overview of your current progress. Your personal identity is never shown here.
+        Your recent activity at a glance.
       </p>
 
-      <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {cards.map((c) => (
-          <div
-            key={c.kpi}
-            className="rounded-2xl border bg-card p-4 shadow-sm transition"
-          >
-            <div className="text-sm text-muted-foreground">{c.kpi}</div>
-            <div className="mt-2 text-2xl font-semibold">{c.value}</div>
-          </div>
-        ))}
-      </div>
-
-      <section className="mt-8 rounded-2xl border bg-card p-4 shadow-sm">
-        <div className="mb-2 text-base font-medium">14-day Trend</div>
+      <div className="mt-6 rounded-2xl border bg-card p-4 shadow-sm">
+        <div className="mb-2 text-base font-medium">14-Day Trend</div>
         <TrendClient data={trend} />
-      </section>
+      </div>
     </div>
   );
 }
