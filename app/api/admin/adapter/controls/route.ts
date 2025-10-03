@@ -37,7 +37,7 @@ function normalizeAdapterId(v: unknown): string | null {
 // GET: return current adapter controls map
 export async function GET() {
   try {
-    // Use an allowed beat topic (type-safe)
+    // Allowed beat topic (lib/ops/heartbeat accepts string)
     await beat("detect.changes");
 
     // Server-side admin gate
