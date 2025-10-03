@@ -19,18 +19,10 @@ function supa() {
 function json(data: any, init?: ResponseInit) {
   return new Response(JSON.stringify(data), {
     ...init,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      ...(init?.headers || {}),
-    },
+    headers: { "content-type": "application/json; charset=utf-8", ...(init?.headers || {}) },
   });
 }
 
-/**
- * GET /api/admin/overview
- * Returns high-level metrics for the admin dashboard.
- * All numbers are aggregate-only; no PII.
- */
 export async function GET() {
   try {
     await beat("admin.overview:get");
@@ -40,64 +32,62 @@ export async function GET() {
     const now = Date.now();
     const since24h = new Date(now - 24 * 60 * 60 * 1000).toISOString();
 
-    // Helpers so we never throw if a column/table is different than expected.
-    async function safeCount(q: any): Promise<number> {
-      try {
-        const { count, error } = await q.select("id", { count: "exact", head: true });
-        if (error) return 0;
-        return count ?? 0;
-      } catch {
-        return 0;
-      }
+    // today 00:00–23:59:59.999 (UTC; adjust if you store with tz)
+    const startOfDay = new Date();
+    startOfDay.setUTCHours(0, 0, 0, 0);
+    const endOfDay = new Date();
+    endOfDay.setUTCHours(23, 59, 59, 999);
+    const todayStartIso = startOfDay.toISOString();
+    const todayEndIso = endOfDay.toISOString();
+
+    // Helper that returns a numeric count, never undefined
+    async function exactCount(builder: any): Promise<number> {
+      const { count, error } = await builder;
+      if (error) return 0;
+      return typeof count === "number" ? count : 0;
     }
 
     // Prepared in last 24h
-    const prepared24h = await safeCount(
-      db.from("actions").eq("status", "prepared").gte("created_at", since24h)
-    );
-
-    // Ready to auto-submit (prepared + email channel). If reply_channel missing, treat as email by default.
-    const autoSubmitReady = await safeCount(
+    const prepared24h = await exactCount(
       db
         .from("actions")
+        .select("id", { count: "exact", head: true })
         .eq("status", "prepared")
-        .or("reply_channel.eq.email,reply_channel.is.null")
+        .gte("created_at", since24h)
+    );
+
+    // Ready to auto-submit (prepared + email channel). If reply_channel is missing, treat as email.
+    const autoSubmitReady = await exactCount(
+      db
+        .from("actions")
+        .select("id", { count: "exact", head: true })
+        .eq("status", "prepared")
+        // reply_channel is NULL OR 'email'
+        .or("reply_channel.is.null,reply_channel.eq.email")
     );
 
     // Follow-ups due today (unscheduled)
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const dueSince = startOfDay.toISOString();
-    const followupsDueToday = await safeCount(
-      db.from("followups").eq("scheduled", false).gte("due_at", dueSince)
+    const followupsDueToday = await exactCount(
+      db
+        .from("followups")
+        .select("id", { count: "exact", head: true })
+        .eq("scheduled", false)
+        .gte("due_at", todayStartIso)
+        .lte("due_at", todayEndIso)
     );
-
-    // A rough proxy of “users with automation enabled”. If your schema has a better signal,
-    // replace this with that. Here we count distinct users with any action row.
-    let automationUsers = 0;
-    try {
-      const { data, error } = await db
-        .from("actions")
-        .select("user_id", { count: "exact", head: true });
-      if (!error) automationUsers = (data as any)?.length ?? 0; // count is unreliable in head mode on some clients
-    } catch {
-      automationUsers = 0;
-    }
 
     const user = await getSessionUser();
 
-    return json({
+    return NextResponse.json({
       ok: true,
-      actor: { id: user?.id || null, email: user?.email || null },
+      user: { id: user?.id || null, email: user?.email || null },
       metrics: {
-        prepared_24h: prepared24h,
-        auto_submit_ready: autoSubmitReady,
-        followups_due_today: followupsDueToday,
-        automation_users: automationUsers,
+        prepared24h,
+        autoSubmitReady,
+        followupsDueToday,
       },
-      generated_at: new Date().toISOString(),
     });
   } catch (e: any) {
-    return json({ ok: false, error: e?.message || "failed" }, { status: 500 });
+    return json({ ok: false, error: e?.message ?? "admin.overview failed" }, { status: 500 });
   }
 }
