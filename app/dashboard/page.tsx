@@ -3,7 +3,7 @@ import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { notFound } from "next/navigation";
 import { getSessionUser } from "@/lib/auth";
-import { TrendClient } from "./trend-client"; // <-- named import
+import TrendClient from "./trend-client"; // <-- default import
 
 export const metadata = {
   title: "Dashboard",
@@ -24,23 +24,21 @@ export default async function DashboardPage() {
 
   const db = supa();
 
-  // Pull simple 14-day prepared/completed trend
   const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
 
   const [preparedRes, completedRes] = await Promise.all([
     db
       .from("actions")
-      .select("created_at", { count: "exact" })
+      .select("created_at")
       .eq("status", "prepared")
       .gte("created_at", since),
     db
       .from("actions")
-      .select("created_at", { count: "exact" })
+      .select("created_at")
       .eq("status", "completed")
       .gte("created_at", since),
   ]);
 
-  // Group counts per day (server-side quick and dirty)
   function toSeries(rows: any[] | null | undefined) {
     const byDay = new Map<string, number>();
     (rows || []).forEach((r: any) => {
@@ -53,12 +51,10 @@ export default async function DashboardPage() {
   const preparedByDay = toSeries(preparedRes.data);
   const completedByDay = toSeries(completedRes.data);
 
-  // Build ordered 14-day array
   const days: string[] = [];
   for (let i = 13; i >= 0; i--) {
     const d = new Date(Date.now() - i * 24 * 60 * 60 * 1000);
-    const iso = d.toISOString().slice(0, 10);
-    days.push(iso);
+    days.push(d.toISOString().slice(0, 10));
   }
 
   const trend = days.map((d) => ({
