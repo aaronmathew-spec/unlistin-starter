@@ -39,6 +39,9 @@ export type ActionRow = {
   due_at?: string | null;     // ISO string when a follow-up is due
   created_at?: string | null; // ISO timestamps from Supabase
   updated_at?: string | null; // ISO timestamps from Supabase
+
+  // Optional reason (used by the API route to carry a skip/explain message)
+  reason?: string;
 };
 
 /**
@@ -46,18 +49,15 @@ export type ActionRow = {
  * Falls back through updated_at -> created_at -> id.
  */
 function numericSortKey(r: ActionRow): number {
-  // Prefer due_at/updated_at/created_at in that order, else id-as-number
   const k =
     (r.updated_at && Date.parse(r.updated_at)) ||
     (r.created_at && Date.parse(r.created_at)) ||
     0;
 
-  // Id can be string (uuid) or number; we just take a stable hash-ish number for tie-break
   let idNum = 0;
   if (typeof r.id === "number") {
     idNum = r.id;
   } else if (typeof r.id === "string") {
-    // simple 32-bit fold
     for (let i = 0; i < r.id.length; i++) {
       idNum = (idNum * 33 + r.id.charCodeAt(i)) | 0;
     }
@@ -69,7 +69,7 @@ function numericSortKey(r: ActionRow): number {
  * Returns a trimmed, sorted list of rows that are eligible for a follow-up “nudge”.
  * - Honors `scheduled === true` (skip already scheduled).
  * - If `due_at` is present, requires it to be <= now.
- * - By default, only actions with status "sent" are eligible (follow-ups come after an initial send).
+ * - By default, only actions with status "sent" are eligible.
  * - Limits the result length and keeps ordering stable.
  *
  * Keep this function pure; DB writes happen in the API route.
@@ -82,16 +82,10 @@ export function selectFollowupCandidates(
   const max = Math.max(1, Math.min(50, Number.isFinite(limit) ? limit : 10));
 
   const eligible = rows.filter((r) => {
-    // Only follow-up items that have been sent already
     if (r.status !== "sent") return false;
-
-    // Respect any “already scheduled” marker if your workflow sets it
     if (r.scheduled === true) return false;
-
-    // Optional app-level fail-safes via meta
     if (r.meta && (r.meta.noFollowup === true || r.meta.blockFollowup === true)) return false;
 
-    // If due_at exists, require it to be due
     if (r.due_at) {
       const due = Date.parse(r.due_at);
       if (!Number.isFinite(due) || due > nowMs) return false;
@@ -100,14 +94,11 @@ export function selectFollowupCandidates(
     return true;
   });
 
-  // Sort: earliest due first; items without due_at next by recency; then stable tie-breaker.
   eligible.sort((a, b) => {
     const aDue = a.due_at ? Date.parse(a.due_at) : Number.POSITIVE_INFINITY;
     const bDue = b.due_at ? Date.parse(b.due_at) : Number.POSITIVE_INFINITY;
-
     if (aDue !== bDue) return aDue - bDue;
 
-    // If neither has due_at, sort by updated/created timestamp (desc — nudge newer first)
     const aRec =
       (a.updated_at && Date.parse(a.updated_at)) ||
       (a.created_at && Date.parse(a.created_at)) ||
@@ -116,10 +107,8 @@ export function selectFollowupCandidates(
       (b.updated_at && Date.parse(b.updated_at)) ||
       (b.created_at && Date.parse(b.created_at)) ||
       0;
-
     if (aRec !== bRec) return bRec - aRec;
 
-    // Stable tie-breaker
     return numericSortKey(a) - numericSortKey(b);
   });
 
