@@ -27,20 +27,24 @@ export async function queueEmailFromAction(params: {
   subjectPreview: string; // redacted/short
   hasBody: boolean;       // true if we had a body (not stored)
 }) : Promise<OutboxQueueResult> {
-  const db = supa();
-  const subject_hash = sha256Hex((params.subjectPreview || "").slice(0, 160));
-  const { data, error } = await db
-    .from("outbox_emails")
-    .insert({
-      action_id: params.actionId,
-      broker: params.broker,
-      subject_hash,
-      body_present: params.hasBody,
-      status: "queued"
-    })
-    .select("id")
-    .maybeSingle();
+  try {
+    const db = supa();
+    const subject_hash = sha256Hex((params.subjectPreview || "").slice(0, 160));
+    const { data, error } = await db
+      .from("outbox_emails")
+      .insert({
+        action_id: params.actionId,
+        broker: params.broker,
+        subject_hash,
+        body_present: params.hasBody,
+        status: "queued"
+      })
+      .select("id")
+      .maybeSingle();
 
-  if (error) return { ok: false, error: error.message };
-  return { ok: true, outboxId: data?.id };
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, outboxId: data?.id };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || "queue-insert-failed" };
+  }
 }
