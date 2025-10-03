@@ -1,169 +1,70 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-import React from "react";
-import dynamic from "next/dynamic";
+// app/dashboard/page.tsx
+"use client";
 
-async function getData() {
-  const base = process.env.NEXT_PUBLIC_SITE_URL || "";
-  const res = await fetch(`${base}/api/dashboard`, { cache: "no-store" });
-  if (!res.ok) return null;
-  return (await res.json()) as any;
-}
+import { useEffect, useState } from "react";
+import TrendClient from "./trend-client";
 
-export default async function DashboardPage() {
-  const data = await getData();
+type TrendPoint = { date: string; prepared: number; completed: number };
+type Summary = {
+  exposure: number;
+  prepared: number;
+  sent: number;
+  completed: number;
+  trend: TrendPoint[];
+};
+
+export default function DashboardPage() {
+  const [summary, setSummary] = useState<Summary | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await fetch("/api/dashboard", { cache: "no-store" });
+        const j = await r.json();
+        if (alive) setSummary(j);
+      } catch {
+        // swallow
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (loading) {
+    return <div className="p-6">Loading…</div>;
+  }
+
+  if (!summary) {
+    return <div className="p-6 text-red-500">Couldn’t load dashboard.</div>;
+  }
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-8 text-white">
-      <header className="mb-8">
-        <h1 className="text-2xl font-semibold tracking-tight">Welcome back</h1>
-        <p className="text-sm text-neutral-300">Your privacy status at a glance</p>
-      </header>
-
-      <section className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <KpiCard
-          title="Exposures Detected"
-          value={fmt(data?.kpis?.exposure)}
-          icon={<ShieldCheckIcon className="w-5 h-5" />}
-          hint="Total items we’re working on"
-        />
-        <KpiCard
-          title="Prepared"
-          value={fmt(data?.kpis?.prepared)}
-          icon={<TimerIcon className="w-5 h-5" />}
-          hint="Drafted & queued"
-        />
-        <KpiCard
-          title="In Flight"
-          value={fmt(data?.kpis?.sent)}
-          icon={<ArrowUpRightIcon className="w-5 h-5" />}
-          hint="Requests sent to brokers"
-        />
-        <KpiCard
-          title="Needs You"
-          value={fmt(data?.kpis?.needsUser)}
-          icon={<BellIcon className="w-5 h-5" />}
-          hint="We’ll nudge you only when needed"
-          accent
-        />
-      </section>
-
-      <section className="mt-8 grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2">
-          <div className="rounded-2xl border border-neutral-800 bg-neutral-900/50 p-4">
-            <div className="flex items-center justify-between mb-2">
-              <h2 className="text-base font-medium">14-Day Progress</h2>
-              <span className="text-xs text-neutral-400">Prepared vs Completed</span>
-            </div>
-            <TrendChart data={data?.trend || []} />
+    <div className="p-6 space-y-6">
+      {/* KPI cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {[
+          { label: "Exposure", value: summary.exposure },
+          { label: "Prepared", value: summary.prepared },
+          { label: "Sent", value: summary.sent },
+          { label: "Completed", value: summary.completed },
+        ].map((c) => (
+          <div key={c.label} className="rounded-2xl shadow-sm p-5 bg-white">
+            <div className="text-sm text-gray-500">{c.label}</div>
+            <div className="text-2xl font-semibold mt-1">{c.value}</div>
           </div>
-        </div>
-        <div className="lg:col-span-1 space-y-6">
-          <div className="rounded-2xl border border-neutral-800 bg-neutral-900/50 p-4">
-            <h3 className="text-base font-medium mb-3">Needs Your Attention</h3>
-            <ul className="space-y-3">
-              {(data?.needs || []).map((n: any) => (
-                <li key={n.id} className="flex items-center justify-between">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm">{n.broker}</p>
-                    <p className="text-xs text-neutral-400">{new Date(n.since).toLocaleString()}</p>
-                  </div>
-                  <a
-                    href={`/requests/${n.id}`}
-                    className="text-xs px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
-                  >
-                    Review
-                  </a>
-                </li>
-              ))}
-              {(!data?.needs || data.needs.length === 0) && (
-                <p className="text-sm text-neutral-400">All clear for now ✨</p>
-              )}
-            </ul>
-          </div>
-
-          <div className="rounded-2xl border border-neutral-800 bg-neutral-900/50 p-4">
-            <h3 className="text-base font-medium mb-3">Recent Activity</h3>
-            <ul className="space-y-2">
-              {(data?.recent || []).map((r: any) => (
-                <li key={r.id} className="text-sm flex items-center justify-between">
-                  <span className="truncate">{r.broker} • {r.status}</span>
-                  <span className="text-xs text-neutral-400">{new Date(r.at).toLocaleString()}</span>
-                </li>
-              ))}
-              {(!data?.recent || data.recent.length === 0) && (
-                <p className="text-sm text-neutral-400">No recent events.</p>
-              )}
-            </ul>
-          </div>
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function KpiCard({
-  title,
-  value,
-  hint,
-  icon,
-  accent,
-}: {
-  title: string;
-  value: string;
-  hint?: string;
-  icon?: React.ReactNode;
-  accent?: boolean;
-}) {
-  return (
-    <div className={`rounded-2xl border p-4 ${accent ? "border-emerald-700/40 bg-emerald-900/10" : "border-neutral-800 bg-neutral-900/50"}`}>
-      <div className="flex items-center gap-2 text-neutral-300">
-        <span className="text-neutral-200">{icon}</span>
-        <span className="text-sm">{title}</span>
+        ))}
       </div>
-      <div className="mt-2 text-2xl font-semibold">{value}</div>
-      {hint && <div className="mt-1 text-xs text-neutral-400">{hint}</div>}
+
+      {/* Trend chart */}
+      <div className="rounded-2xl shadow-sm p-5 bg-white">
+        <div className="text-sm text-gray-500 mb-3">14-day Trend</div>
+        <TrendClient data={summary.trend} />
+      </div>
     </div>
-  );
-}
-
-function fmt(n?: number) {
-  if (typeof n !== "number") return "0";
-  return n.toLocaleString();
-}
-
-// Client chart (pure SVG) loaded dynamically
-const TrendChart = dynamic(() => import("./trend-client").then(m => m.TrendClient), { ssr: false });
-
-// --- Inline SVG Icons (no external deps) ---
-function ShieldCheckIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
-      <path d="M12 3l7 4v5c0 4.418-3.582 8-8 8s-8-3.582-8-8V7l9-4z" stroke="currentColor" strokeWidth="1.5"/>
-      <path d="M9 12l2 2 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-    </svg>
-  );
-}
-function TimerIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
-      <circle cx="12" cy="13" r="8" stroke="currentColor" strokeWidth="1.5"/>
-      <path d="M9 2h6M12 7v6l4 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-    </svg>
-  );
-}
-function ArrowUpRightIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
-      <path d="M7 17L17 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-      <path d="M9 7h8v8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-    </svg>
-  );
-}
-function BellIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
-      <path d="M15 17H5l2-3v-3a5 5 0 1110 0v3l2 3h-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-      <circle cx="12" cy="20" r="1.5" fill="currentColor"/>
-    </svg>
   );
 }
