@@ -51,12 +51,30 @@ function json(data: any, init?: ResponseInit) {
   });
 }
 
+// Best-effort: if a 'note' column exists in followups, try to set it; otherwise ignore
+async function setFollowupScheduled(
+  db: ReturnType<typeof supa>,
+  id: number,
+  maybeNote?: string
+) {
+  // try w/ note first
+  if (maybeNote) {
+    const { error } = await db
+      .from("followups")
+      .update({ scheduled: true, note: maybeNote } as any)
+      .eq("id", id);
+    if (!error) return;
+  }
+  // fallback without note (works if schema lacks the column)
+  await db.from("followups").update({ scheduled: true } as any).eq("id", id);
+}
+
 /**
  * POST /api/followups/run
  * Body: { limit?: number }
  *
  * - Picks due follow-ups.
- * - Prepares a new "prepared" action using prior redacted draft (no new AI call).
+ * - Preps a new "prepared" action using prior redacted draft (no new AI call).
  * - Respect allowlist, adapter caps, and admin kill-switch.
  * - Marks followup as scheduled=true.
  * - MEGA BATCH: chunks of 50, concurrency=5
@@ -75,11 +93,12 @@ export async function POST(req: Request) {
   const db = supa();
   const nowIso = new Date().toISOString();
 
+  // accept scheduled === false OR NULL to avoid stuck rows from older migrations
   const { data: due, error } = await db
     .from("followups")
     .select("*")
     .lte("due_at", nowIso)
-    .eq("scheduled", false)
+    .in("scheduled", [false, null] as any) // tolerant filter
     .order("due_at", { ascending: true })
     .limit(limit);
 
@@ -99,12 +118,12 @@ export async function POST(req: Request) {
 
       // Admin kill/cap checks
       if (isKilled(controls, adapterId)) {
-        await db.from("followups").update({ scheduled: true, note: "adapter-killed" }).eq("id", f.id);
+        await setFollowupScheduled(db, f.id, "adapter-killed");
         return;
       }
       const capOk = await underDailyCap(adapterId, { countSent: false });
       if (!capOk) {
-        await db.from("followups").update({ scheduled: true, note: "adapter-cap-reached" }).eq("id", f.id);
+        await setFollowupScheduled(db, f.id, "adapter-cap-reached");
         return;
       }
 
@@ -120,14 +139,15 @@ export async function POST(req: Request) {
         .maybeSingle();
 
       if (!parent) {
-        await db.from("followups").update({ scheduled: true, note: "parent-missing" }).eq("id", f.id);
+        await setFollowupScheduled(db, f.id, "parent-missing");
         return;
       }
 
       const ev = Array.isArray(parent.evidence) ? parent.evidence : [];
-      const url = ev[0]?.url;
+      const first = ev.find((e) => typeof e?.url === "string" && e.url.length > 0);
+      const url = first?.url;
       if (!url || !isAllowed(url)) {
-        await db.from("followups").update({ scheduled: true, note: "evidence-not-allowlisted" }).eq("id", f.id);
+        await setFollowupScheduled(db, f.id, "evidence-not-allowlisted");
         return;
       }
 
@@ -160,11 +180,16 @@ export async function POST(req: Request) {
         meta: { followup_of: parent.id, n: f.n, adapter: adapterId },
       };
 
-      const { data: created, error: ierr } = await db.from("actions").insert(row).select("*").maybeSingle();
+      const { data: created, error: ierr } = await db
+        .from("actions")
+        .insert(row)
+        .select("*")
+        .maybeSingle();
+
       if (!ierr && created) {
         prepared.push(created);
         // mark followup scheduled
-        await db.from("followups").update({ scheduled: true }).eq("id", f.id);
+        await setFollowupScheduled(db, f.id);
 
         // queue another follow-up if within cap
         const countNext = (f.n ?? 0) + 1;
@@ -177,10 +202,10 @@ export async function POST(req: Request) {
             broker: parent.broker,
             state: f.state || null,
             n: countNext,
-          });
+          } as any);
         }
       } else {
-        await db.from("followups").update({ scheduled: true, note: ierr?.message || "insert-failed" }).eq("id", f.id);
+        await setFollowupScheduled(db, f.id, ierr?.message || "insert-failed");
       }
     });
 
