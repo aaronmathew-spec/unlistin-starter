@@ -80,10 +80,11 @@ export const CAPABILITY_MATRIX: Record<string, Capability> = {
 
 /**
  * Never returns undefined; always falls back to "generic".
+ * Uses a narrow lookup with explicit undefined handling to satisfy TS.
  */
 export function getCapability(adapterId?: string): Capability {
   const a = (adapterId || "generic").toLowerCase();
   const table = CAPABILITY_MATRIX as Record<string, Capability>;
   const entry = (table as Record<string, Capability | undefined>)[a];
-  return entry ?? table["generic"];
+  return entry !== undefined ? entry : table["generic"];
 }
