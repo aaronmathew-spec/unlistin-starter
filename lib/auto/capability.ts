@@ -42,7 +42,7 @@ const DEFAULT_CAPABILITY: Capability = {
   defaultMinConfidence: 0.82,
 };
 
-export const CAPABILITY_MATRIX: Record<string, Capability> = {
+export const CAPABILITY_MATRIX: Readonly<Record<string, Capability>> = {
   generic: DEFAULT_CAPABILITY,
 
   // Example adapter tuning — adjust as needed as we learn
@@ -80,17 +80,12 @@ export const CAPABILITY_MATRIX: Record<string, Capability> = {
 };
 
 /**
- * Never returns undefined; always falls back to "generic".
- * Uses an "in" guard and explicit constant fallback to satisfy TS.
+ * Never returns undefined; always falls back to DEFAULT_CAPABILITY.
+ * Written to satisfy projects with `noUncheckedIndexedAccess`.
  */
 export function getCapability(adapterId?: string): Capability {
   const a = (adapterId || "generic").toLowerCase();
-
-  // Fast path: exact hit in matrix
-  if (a in CAPABILITY_MATRIX) {
-    return (CAPABILITY_MATRIX as Record<string, Capability>)[a];
-  }
-
-  // Fallback: generic default (constant, not optional)
+  const entry = (CAPABILITY_MATRIX as Record<string, Capability | undefined>)[a];
+  if (entry) return entry;
   return DEFAULT_CAPABILITY;
 }
