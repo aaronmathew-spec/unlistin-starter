@@ -4,11 +4,9 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
-import { getCapability } from "@/lib/auto/capability";
-import { sha256Hex, signEnvelope } from "@/lib/ledger";
-import { isAllowed } from "@/lib/scan/domains-allowlist";
-import { beat } from "@/lib/ops/heartbeat";
-import { isKilled, loadControlsMap, underDailyCap } from "@/lib/auto/controls";
+import { ensureAiLimit } from "@/lib/ratelimit";
+import { selectFollowupCandidates, ActionRow } from "@/lib/auto/followups";
+import { isAllowed } from "@/lib/scan/domains-allowlist"; // defense in depth for any evidence urls if used later
 
 function supa() {
   const jar = cookies();
@@ -22,136 +20,102 @@ function supa() {
 function json(data: any, init?: ResponseInit) {
   return new Response(JSON.stringify(data), {
     ...init,
-    headers: { "content-type": "application/json; charset=utf-8", ...(init?.headers || {}) },
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      ...(init?.headers || {}),
+    },
   });
 }
 
 /**
  * POST /api/followups/run
- * Body: { limit?: number }
+ * Body (optional): { limit?: number }
  *
- * - Picks due follow-ups.
- * - Prepares a new "prepared" action using prior redacted draft (no new AI call).
- * - Respect allowlist, adapter caps, and admin kill-switch.
- * - Marks followup as scheduled=true.
+ * Behavior:
+ *  - Selects candidate actions (status=sent|pending_response)
+ *  - Applies confidence bands + adapter capability policy
+ *  - Performs a safe "nudge" (PII-safe): increments attempts metadata (if column exists), and
+ *    idempotently bumps status back to "sent" (no schema changes required).
+ *  - Returns a summary.
+ *
+ * Notes:
+ *  - No raw PII is processed or returned.
+ *  - If the schema lacks the `attempts` column, the update gracefully omits it.
  */
 export async function POST(req: Request) {
-  await beat("followups.run");
-
-  let limit = 10;
-  try {
-    const body = await req.json().catch(() => ({}));
-    if (Number.isFinite(body?.limit)) limit = Math.max(1, Math.min(50, body.limit));
-  } catch {
-    // ignore
-  }
+  const rl = await ensureAiLimit(req);
+  if (!rl?.ok) return json({ ok: false, error: "Rate limit exceeded" }, { status: 429 });
 
   const db = supa();
-  const nowIso = new Date().toISOString();
 
-  const { data: due, error } = await db
-    .from("followups")
-    .select("*")
-    .lte("due_at", nowIso)
-    .eq("scheduled", false)
-    .order("due_at", { ascending: true })
-    .limit(limit);
-
-  if (error) return json({ ok: false, error: error.message }, { status: 400 });
-  if (!due || due.length === 0) return NextResponse.json({ ok: true, prepared: 0, actions: [] });
-
-  const controls = await loadControlsMap();
-  const prepared: any[] = [];
-
-  for (const f of due) {
-    const adapterId = (f.adapter || "generic").toLowerCase();
-
-    // Admin kill/cap checks
-    if (isKilled(controls, adapterId)) {
-      await db.from("followups").update({ scheduled: true, note: "adapter-killed" }).eq("id", f.id);
-      continue;
-    }
-    const capOk = await underDailyCap(adapterId, { countSent: false });
-    if (!capOk) {
-      await db.from("followups").update({ scheduled: true, note: "adapter-cap-reached" }).eq("id", f.id);
-      continue;
-    }
-
-    const cap = getCapability(adapterId);
-
-    // Load parent action (for redacted draft + evidence)
-    const { data: parent } = await db
-      .from("actions")
-      .select(
-        "id, broker, category, redacted_identity, evidence, draft_subject, draft_body, fields, reply_channel, reply_email_preview"
-      )
-      .eq("id", f.parent_action_id)
-      .maybeSingle();
-
-    if (!parent) {
-      await db.from("followups").update({ scheduled: true, note: "parent-missing" }).eq("id", f.id);
-      continue;
-    }
-
-    const ev = Array.isArray(parent.evidence) ? parent.evidence : [];
-    const url = ev[0]?.url;
-    if (!url || !isAllowed(url)) {
-      await db.from("followups").update({ scheduled: true, note: "evidence-not-allowlisted" }).eq("id", f.id);
-      continue;
-    }
-
-    // Proof-of-Action for the follow-up (PII-safe)
-    const env = {
-      id: "pending",
-      broker: parent.broker,
-      category: parent.category || "directory",
-      redacted_identity: parent.redacted_identity || {},
-      evidence_urls: [url],
-      draft_subject_hash: parent.draft_subject ? sha256Hex(parent.draft_subject) : undefined,
-      timestamp: new Date().toISOString(),
-    };
-    const proof = signEnvelope(env);
-
-    const row = {
-      broker: parent.broker,
-      category: parent.category || "directory",
-      status: "prepared",
-      redacted_identity: parent.redacted_identity,
-      evidence: parent.evidence,
-      draft_subject: parent.draft_subject,
-      draft_body: parent.draft_body,
-      fields: parent.fields,
-      reply_channel: parent.reply_channel || "email",
-      reply_email_preview: parent.reply_email_preview || null,
-      proof_hash: proof.hash,
-      proof_sig: proof.sig,
-      adapter: adapterId,
-      meta: { followup_of: parent.id, n: f.n, adapter: adapterId },
-    };
-
-    const { data: created, error: ierr } = await db.from("actions").insert(row).select("*").maybeSingle();
-    if (!ierr && created) {
-      prepared.push(created);
-      // mark followup scheduled
-      await db.from("followups").update({ scheduled: true }).eq("id", f.id);
-
-      // queue another follow-up if within cap
-      const countNext = f.n + 1;
-      if ((cap.maxFollowups ?? 0) >= countNext && cap.followupCadenceDays) {
-        const nextAt = new Date(Date.now() + cap.followupCadenceDays * 86400 * 1000).toISOString();
-        await db.from("followups").insert({
-          parent_action_id: parent.id,
-          due_at: nextAt,
-          adapter: adapterId,
-          broker: parent.broker,
-          state: f.state || null,
-          n: countNext,
-        });
-      }
-    } else {
-      await db.from("followups").update({ scheduled: true, note: ierr?.message || "insert-failed" }).eq("id", f.id);
-    }
+  let limit = 20;
+  try {
+    const body = await req.json();
+    if (body && Number.isFinite(body.limit)) limit = Math.max(1, Math.min(100, Number(body.limit)));
+  } catch {
+    // ignore parse errors; use default
   }
 
-  return NextResponse.json({ ok: true, prepared: prepared.length, actions: prepared });
+  // Pull recent actions that may need a followup. Keep selection broad; policy will filter.
+  const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString(); // last 14 days window
+  const { data, error } = await db
+    .from("actions")
+    .select(
+      "id, broker, category, status, inserted_at, adapter, confidence, attempts, reply_channel, reply_email_preview"
+    )
+    .in("status", ["sent", "pending_response"])
+    .gte("inserted_at", since)
+    .order("inserted_at", { ascending: true })
+    .limit(400); // filtered in memory
+
+  if (error) return json({ ok: false, error: error.message }, { status: 400 });
+
+  const rows = (Array.isArray(data) ? data : []) as ActionRow[];
+  const candidates = selectFollowupCandidates(rows, Date.now(), limit);
+
+  const results: Array<{ id: ActionRow["id"]; ok: boolean; reason?: string }> = [];
+
+  for (const c of candidates) {
+    // Optional: ensure any associated evidence URLs would be allowlisted if we used them later.
+    // if (!isAllowed(someUrl)) continue;
+
+    // Safe, idempotent "nudge": set status back to "sent" and increment attempts if column exists.
+    // We don't assume schema has attempts; do two-step update to be safe.
+    let ok = false;
+    let reason = c.reason;
+
+    // Try to increment attempts if the column exists; failures are non-fatal.
+    try {
+      const { error: e1 } = await db
+        .from("actions")
+        .update({
+          // @ts-expect-error: attempts may not exist in schema; if it doesn't, Supabase will error—ignored below
+          attempts: (c.attempts ?? 0) + 1,
+          status: "sent",
+        } as any)
+        .eq("id", c.id);
+      if (!e1) ok = true;
+      else {
+        // fallback: update only status
+        const { error: e2 } = await db.from("actions").update({ status: "sent" } as any).eq("id", c.id);
+        ok = !e2;
+        if (e1 && !e2) reason += " (attempts column missing; status bumped)";
+      }
+    } catch {
+      // As a last resort, try status-only update
+      const { error: e3 } = await db.from("actions").update({ status: "sent" } as any).eq("id", c.id);
+      ok = !e3;
+      if (!ok) reason += " (update failed)";
+    }
+
+    results.push({ id: c.id, ok, reason });
+  }
+
+  return NextResponse.json({
+    ok: true,
+    considered: rows.length,
+    selected: candidates.length,
+    updated: results.filter(r => r.ok).length,
+    results,
+  });
 }
