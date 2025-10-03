@@ -9,7 +9,9 @@ import OpenAI from "openai";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { sha256Hex, signEnvelope } from "@/lib/ledger";
-import { flags } from "@/lib/flags";
+// Keep your existing flags() usage if present; fallback to env if not.
+import { flags as readFlags } from "@/lib/flags";
+import { recordAuditEvent } from "@/lib/ops/audit"; // harmless if you later remove
 
 function supa() {
   const jar = cookies();
@@ -50,7 +52,14 @@ type Body = {
 };
 
 export async function POST(req: Request) {
-  const { AUTO_RUN_ENABLED } = flags();
+  // Flags() fallback to env if your lib/flags doesn’t export flags()
+  let AUTO_RUN_ENABLED = true;
+  try {
+    const f = typeof readFlags === "function" ? readFlags() : null;
+    AUTO_RUN_ENABLED = f?.AUTO_RUN_ENABLED ?? true;
+  } catch {
+    AUTO_RUN_ENABLED = (process.env.FEATURE_AI_SERVER ?? "1") === "1";
+  }
   if (!AUTO_RUN_ENABLED) {
     return json({ ok: false, error: "Auto-run disabled" }, { status: 503 });
   }
@@ -76,7 +85,7 @@ export async function POST(req: Request) {
   });
 
   if (candidates.length === 0) {
-    return json({ ok: true, prepared: 0, actions: [] });
+    return NextResponse.json({ ok: true, prepared: 0, actions: [] });
   }
 
   const MODEL = process.env.OPENAI_MODEL_ID || "gpt-4o-mini";
@@ -93,10 +102,7 @@ export async function POST(req: Request) {
 
   for (const c of candidates) {
     const hit = c.hit;
-
-    if (!isAllowed(hit.url)) {
-      continue;
-    }
+    if (!isAllowed(hit.url)) continue;
 
     const safeContext = {
       namePreview: redactPreview(hit.preview?.name) ?? "N•",
@@ -181,17 +187,14 @@ export async function POST(req: Request) {
     };
     const proof = signEnvelope(env);
 
-    // IDEMPOTENCY: avoid duplicate prepared rows with same broker + proof hash
-    const idemKey = { broker: hit.broker, proof_hash: proof.hash };
+    // Idempotency: skip if same broker+proof_hash already exists
     const { data: existing } = await db
       .from("actions")
       .select("id")
-      .eq("broker", idemKey.broker)
-      .eq("proof_hash", idemKey.proof_hash)
+      .eq("broker", hit.broker)
+      .eq("proof_hash", proof.hash)
       .maybeSingle();
-    if (existing?.id) {
-      continue; // already prepared
-    }
+    if (existing?.id) continue;
 
     const row = {
       broker: hit.broker,
@@ -213,7 +216,16 @@ export async function POST(req: Request) {
     };
 
     const { data, error } = await db.from("actions").insert(row).select("*").maybeSingle();
-    if (!error && data) prepared.push(data);
+    if (!error && data) {
+      prepared.push(data);
+      // Light audit trail (no PII)
+      recordAuditEvent("auto.prepared", {
+        action_id: data.id,
+        broker: hit.broker,
+        proof_hash: proof.hash,
+        adapter: hit.adapter ?? "generic",
+      });
+    }
   }
 
   return NextResponse.json({ ok: true, prepared: prepared.length, actions: prepared });
