@@ -11,6 +11,7 @@ export type Capability = {
   // Submission surface
   supportsForm?: boolean; // adapter has a web form we can re-submit
   attachmentsDefaultKind?: string; // default attachment kind for drafts/followups
+  canAutoSubmitEmail?: boolean; // allow auto email submission from /api/actions/submit
 
   // Automation & follow-ups
   autoFollowups?: boolean; // allow auto follow-ups at all
@@ -32,6 +33,7 @@ export const CAPABILITY_MATRIX: Record<string, Capability> = {
     name: "Generic Directory",
     supportsForm: false,
     attachmentsDefaultKind: "screenshot",
+    canAutoSubmitEmail: true,          // default: we can send email-based requests
     autoFollowups: true,
     autoFollowupsMediumBand: false,
     maxFollowups: 2,
@@ -48,6 +50,7 @@ export const CAPABILITY_MATRIX: Record<string, Capability> = {
     name: "IndiaMART",
     supportsForm: true,
     attachmentsDefaultKind: "screenshot",
+    canAutoSubmitEmail: true,
     autoFollowups: true,
     autoFollowupsMediumBand: true,
     maxFollowups: 3,
@@ -63,6 +66,7 @@ export const CAPABILITY_MATRIX: Record<string, Capability> = {
     name: "Justdial",
     supportsForm: true,
     attachmentsDefaultKind: "screenshot",
+    canAutoSubmitEmail: true,
     autoFollowups: true,
     autoFollowupsMediumBand: false,
     maxFollowups: 2,
