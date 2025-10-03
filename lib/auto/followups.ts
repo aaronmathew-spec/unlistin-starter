@@ -1,81 +1,124 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-import { bandFor, canAutoFollowup } from "./confidence";
-import { getCapability } from "./capability";
+// lib/auto/followups.ts
+import { getCapability, type Capability } from "./capability";
+import { bandFor, canAutoFollowup, type ConfidenceBand } from "./confidence";
 
 /**
- * Shape we rely on from the `actions` table.
- * Keep fields loose to avoid schema mismatches; RLS must be enforced by caller.
+ * Return the maximum number of followups an adapter allows.
+ * Falls back to 0 if unspecified.
  */
-export type ActionRow = {
-  id: string | number;
-  broker?: string;
-  category?: string;
-  status: string;
-  inserted_at: string;
-  adapter?: string;
-  confidence?: number;
-  attempts?: number; // optional; if absent we treat as 0
-  reply_channel?: string;
-  reply_email_preview?: string;
-};
-
-export type FollowupCandidate = ActionRow & {
-  band: "high" | "medium" | "low";
-  method: "resend_email" | "resubmit_form";
-  reason: string;
-  nextWaitMinutes: number;
-};
-
-export function pickFollowupMethod(a: ActionRow): "resend_email" | "resubmit_form" {
-  const cap = getCapability(a.adapter);
-  if (cap?.supportsForm) return "resubmit_form";
-  return "resend_email";
+export function maxFollowups(adapterId?: string): number {
+  const cap = getCapability(adapterId);
+  return Number.isFinite(cap.maxFollowups) ? (cap.maxFollowups as number) : 0;
 }
 
 /**
- * Policy:
- * - Consider actions with status "sent" or "pending_response"
- * - Apply adapter-specific SLA windows:
- *   - high band: retry after 72h
- *   - medium band: retry after 120h (unless adapter allows medium autofs)
- * - Max 3 attempts per action (cap.maxFollowups overrides)
+ * Return the cadence (in days) for followups for a given adapter.
+ * Falls back to 7 days if unspecified.
  */
-export function selectFollowupCandidates(rows: ActionRow[], now = Date.now(), limit = 20): FollowupCandidate[] {
-  const out: FollowupCandidate[] = [];
+export function followupCadenceDays(adapterId?: string): number {
+  const cap = getCapability(adapterId);
+  return Number.isFinite(cap.followupCadenceDays)
+    ? (cap.followupCadenceDays as number)
+    : 7;
+}
 
-  for (const r of rows) {
-    if (!r || !r.inserted_at) continue;
-    if (r.status !== "sent" && r.status !== "pending_response") continue;
+/**
+ * Compute the next followup due-at timestamp (ISO string) for a given adapter
+ * and the followup index `n` you’re about to send (1-based).
+ *
+ * If the adapter does not allow followups or `n` exceeds `maxFollowups`,
+ * returns `null`.
+ */
+export function computeFollowupDueAt(
+  adapterId?: string,
+  n?: number
+): string | null {
+  const cap = getCapability(adapterId);
+  const allowed = !!cap.autoFollowups;
+  const max = maxFollowups(adapterId);
+  const nextIndex = typeof n === "number" && Number.isFinite(n) ? n : 1;
 
-    const cap = getCapability(r.adapter);
-    const band = bandFor(r.adapter, r.confidence);
-    const mayAuto = canAutoFollowup(r.adapter, band);
-    if (!mayAuto) continue;
+  if (!allowed) return null;
+  if (nextIndex < 1 || nextIndex > max) return null;
 
-    const attempts = Number.isFinite(r.attempts as any) ? Number(r.attempts) : 0;
-    const maxAttempts = cap.maxFollowups ?? 3;
-    if (attempts >= maxAttempts) continue;
+  const days = followupCadenceDays(adapterId);
+  const when = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+  return when.toISOString();
+}
 
-    // Determine backoff by band or adapter overrides
-    const baseH = band === "high" ? 72 : 120; // hours
-    const stepH = cap.followupStepHours ?? baseH;
-    const waitH = stepH * (attempts + 1); // linear backoff (1x, 2x, 3x...)
-    const ageMs = now - new Date(r.inserted_at).getTime();
-    const due = ageMs >= waitH * 60 * 60 * 1000;
+/**
+ * Decide whether a followup may be auto-sent for a hit, based on:
+ *  - adapter capability
+ *  - confidence band (derived from numeric confidence)
+ *
+ * Returns an allow flag with an explanation reason and the resolved band.
+ */
+export function allowFollowup(
+  confidence: number,
+  adapterId?: string
+): { allow: boolean; band: ConfidenceBand; reason: string } {
+  const cap = getCapability(adapterId);
+  const band = bandFor(confidence, adapterId);
 
-    if (!due) continue;
-
-    const method = pickFollowupMethod(r);
-    out.push({
-      ...r,
-      band,
-      method,
-      reason: `Auto-followup (${band}) after ${waitH}h; attempts=${attempts + 1}/${maxAttempts}`,
-      nextWaitMinutes: stepH * 60 * (attempts + 2),
-    });
-
-    if (out.length >= limit) break;
+  if (!cap.autoFollowups) {
+    return { allow: false, band, reason: "adapter-disabled" };
   }
 
-  return out;
+  const ok = canAutoFollowup(adapterId, band);
+  return {
+    allow: ok,
+    band,
+    reason: ok ? "policy-allowed" : "band-blocked",
+  };
 }
+
+/**
+ * Lightweight redacted-draft sanitizer used by followup scheduling.
+ * Keeps body/subject length boundaries and strips obviously unsafe content.
+ * NOTE: This does NOT de-redact anything—only trims and normalizes.
+ */
+export function sanitizeRedactedDraft(draft: {
+  subject?: string | null;
+  body?: string | null;
+}) {
+  const subj = (draft.subject ?? "").toString().slice(0, 140);
+  const body = (draft.body ?? "").toString().slice(0, 1800);
+
+  // extremely conservative scrub for accidental secrets (defense-in-depth)
+  const scrub = (s: string) =>
+    s
+      // keep redactions as-is but neutralize long digit runs
+      .replace(/\d{6,}/g, "•".repeat(6))
+      // neutralize typical tokens
+      .replace(/(api|bearer|token|secret|key)=?[a-z0-9-_]{10,}/gi, "[redacted]")
+      // collapse control characters
+      .replace(/[\u0000-\u001f]+/g, " ")
+      .trim();
+
+  return {
+    subject: scrub(subj),
+    body: scrub(body),
+  };
+}
+
+/**
+ * A compact summary describing *how* we will plan followups for a given adapter.
+ * Useful for debugging/admin surfaces; avoid surfacing directly to end users.
+ */
+export function describeFollowupPlan(adapterId?: string) {
+  const cap: Capability = getCapability(adapterId);
+  return {
+    adapter: adapterId ?? "generic",
+    enabled: !!cap.autoFollowups,
+    maxFollowups: maxFollowups(adapterId),
+    cadenceDays: followupCadenceDays(adapterId),
+    thresholds: {
+      high: cap.thresholdHigh ?? 0.88,
+      medium: cap.thresholdMedium ?? 0.8,
+      defaultMinConfidence: cap.defaultMinConfidence ?? 0.82,
+    },
+  };
+}
+
+// Re-export types for convenience in callers that import from this module
+export type { ConfidenceBand } from "./confidence";
