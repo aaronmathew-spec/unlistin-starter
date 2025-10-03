@@ -37,10 +37,8 @@ function normalizeAdapterId(v: unknown): string | null {
 // GET: return current adapter controls map
 export async function GET() {
   try {
-    // Allowed beat topic (lib/ops/heartbeat accepts string)
-    await beat("detect.changes");
+    await beat("admin.adapter.controls:get");
 
-    // Server-side admin gate
     if (!(await isAdmin())) {
       return json({ ok: false, error: "forbidden" }, { status: 403 });
     }
@@ -57,7 +55,7 @@ export async function GET() {
 // Body: { adapterId: string, updates: { killed?: boolean, daily_cap?: number, min_confidence?: number } }
 export async function POST(req: Request) {
   try {
-    await beat("detect.changes");
+    await beat("admin.adapter.controls:post");
 
     if (!(await isAdmin())) {
       return json({ ok: false, error: "forbidden" }, { status: 403 });
