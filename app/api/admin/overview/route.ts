@@ -4,9 +4,18 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
+import { isAdmin, getSessionUser } from "@/lib/auth";
 import { beat } from "@/lib/ops/heartbeat";
-import { getSessionUser, assertAdmin } from "@/lib/auth";
 
+// Minimal JSON helper
+function json(data: any, init?: ResponseInit) {
+  return new Response(JSON.stringify(data), {
+    ...init,
+    headers: { "content-type": "application/json; charset=utf-8", ...(init?.headers || {}) },
+  });
+}
+
+// Supabase server client (cookie-bound)
 function supa() {
   const jar = cookies();
   return createServerClient(
@@ -16,79 +25,69 @@ function supa() {
   );
 }
 
-function json(data: any, init?: ResponseInit) {
-  return new Response(JSON.stringify(data), {
-    ...init,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      ...(init?.headers || {}),
-    },
-  });
-}
-
-type CountBuilder =
-  | ReturnType<ReturnType<typeof createServerClient>["from"]>;
-
-async function safeCount(builder: CountBuilder) {
-  // Supabase requires select("*", { count: "exact", head: true }) for a count-only.
-  const { count, error } = await (builder as any)
-    .select("*", { count: "exact", head: true });
-  if (error) throw error;
-  return count ?? 0;
-}
-
-/**
- * GET /api/admin/overview
- * Aggregate-only stats for admin dashboard cards. No PII.
- */
 export async function GET() {
   try {
+    // Heartbeat (topic is free-form now)
     await beat("admin.overview:get");
-    await assertAdmin();
+
+    // Admin gate
+    if (!(await isAdmin())) {
+      return json({ ok: false, error: "forbidden" }, { status: 403 });
+    }
 
     const db = supa();
+    const user = await getSessionUser();
+
     const now = Date.now();
     const since24h = new Date(now - 24 * 60 * 60 * 1000).toISOString();
 
+    // Helper to safely fetch a count with exact/head and return 0 on error.
+    async function safeCount(q: any): Promise<number> {
+      const { count, error } = await q;
+      if (error) return 0;
+      return count ?? 0;
+    }
+
     // Prepared in last 24h
     const prepared24h = await safeCount(
-      db.from("actions").eq("status", "prepared").gte("created_at", since24h)
+      db
+        .from("actions")
+        .select("*", { head: true, count: "exact" })
+        .eq("status", "prepared")
+        .gte("created_at", since24h)
     );
 
-    // Auto-submit ready = prepared + email channel (default email if null)
-    const readyEmail = await safeCount(
-      db.from("actions")
+    // Auto-submit ready = prepared + email channel (default to email if null)
+    const autoSubmitReady = await safeCount(
+      db
+        .from("actions")
+        .select("*", { head: true, count: "exact" })
         .eq("status", "prepared")
         .or("reply_channel.is.null,reply_channel.eq.email")
     );
 
-    // Follow-ups due today (scheduled=false, due_at <= today 23:59:59)
-    const endOfToday = new Date();
-    endOfToday.setHours(23, 59, 59, 999);
+    // Follow-ups due today (very basic heuristic):
+    // status='sent' and updated_at older than 24h
     const followupsDue = await safeCount(
-      db.from("followups")
-        .eq("scheduled", false)
-        .lte("due_at", endOfToday.toISOString())
+      db
+        .from("actions")
+        .select("*", { head: true, count: "exact" })
+        .eq("status", "sent")
+        .lt("updated_at", since24h)
     );
 
-    // Automation enabled users (feature flag on profile)
-    const enabledUsers = await safeCount(
-      db.from("profiles").eq("automation_enabled", true)
-    );
-
-    const me = await getSessionUser();
-
-    return NextResponse.json({
+    const payload = {
       ok: true,
-      me: { id: me?.id, email: me?.email ?? null },
+      user: { id: user?.id || null, email: user?.email || null },
       metrics: {
         prepared24h,
-        readyEmail,
+        autoSubmitReady,
         followupsDue,
-        enabledUsers,
       },
-    });
+    };
+
+    return NextResponse.json(payload);
   } catch (err: any) {
-    return json({ ok: false, error: err?.message ?? String(err) }, { status: 400 });
+    return json({ ok: false, error: err?.message || "unexpected-error" }, { status: 500 });
   }
 }
