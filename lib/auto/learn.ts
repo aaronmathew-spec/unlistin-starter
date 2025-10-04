@@ -9,7 +9,6 @@ import { createServerClient } from "@supabase/ssr";
  */
 function supa() {
   const jar = cookies?.();
-  // In non-request contexts cookies() can throw; guard it.
   const getCookie = (() => {
     try {
       return (k: string) => jar?.get(k)?.value;
@@ -28,29 +27,14 @@ function supa() {
 /**
  * Persist an automation outcome for learning / telemetry.
  * Totally safe: catches and swallows errors (so the main flow never breaks).
- *
- * Example payload (fields are flexible):
- * {
- *   action_id: number,
- *   broker: string,
- *   state?: string|null,
- *   adapter?: string|null,
- *   resolution: "sent" | "prepared" | "skipped" | "failed" | string,
- *   took_ms?: number | null,
- *   confidence?: number | null,
- *   reason?: string | null,
- * }
  */
 export async function recordOutcome(payload: any): Promise<{ ok: boolean; error?: string }> {
   try {
     const db = supa();
 
-    // Prefer an existing table if you already created one; otherwise this will
-    // just fail silently (we swallow errors below).
-    // You can rename this to match your schema ("outcomes" / "action_outcomes" / etc.)
     const table =
       process.env.OUTCOMES_TABLE ||
-      "action_outcomes"; // change here if your table name differs
+      "action_outcomes"; // change if your table name differs
 
     const toInsert = {
       created_at: new Date().toISOString(),
@@ -66,44 +50,50 @@ export async function recordOutcome(payload: any): Promise<{ ok: boolean; error?
     };
 
     const { error } = await db.from(table).insert(toInsert);
-    if (error) {
-      // swallow but report "ok: false" so callers may log if desired
-      return { ok: false, error: error.message };
-    }
+    if (error) return { ok: false, error: error.message };
     return { ok: true };
   } catch (e: any) {
-    // absolutely do not throw from learning paths
     return { ok: false, error: e?.message || "unexpected-error" };
   }
 }
 
 /**
- * Heuristic: suggest raising the min-confidence floor so that the share of
- * "good" outcomes (e.g., resolution === "sent" or "completed") among hits
- * above that floor is at least `targetPassRate`.
+ * === Backward-compatible API ===
+ * Return a NUMBER (as your page expects).
  *
- * Flexible signature so your admin page can call it however it likes:
- *   - suggestMinConfidenceBump(samples)
- *   - suggestMinConfidenceBump(samples, currentFloor)
- *   - suggestMinConfidenceBump(samples, currentFloor, targetPassRate)
+ * Heuristic: suggest raising the min-confidence floor so the share of "good"
+ * outcomes among hits above that floor meets targetPassRate.
  *
- * Where `samples` can be:
- *   Array<{ confidence?: number|null, resolution?: string|null }>
- *
- * Returns:
- *   { suggested: number|null, details: any }
+ * Usage in your page (unchanged):
+ *   const bump = suggestMinConfidenceBump(samples, currentFloor, 0.9);
+ *   bump > 0 ? `+${bump.toFixed(2)}` : bump.toFixed(2)
  */
 export function suggestMinConfidenceBump(
-  ...args: any[]
-): { suggested: number | null; details: any } {
-  const samples = Array.isArray(args[0]) ? (args[0] as any[]) : [];
-  const currentFloor =
-    typeof args[1] === "number" && isFinite(args[1]) ? Math.max(0, Math.min(1, args[1])) : 0.82;
-  const targetPassRate =
-    typeof args[2] === "number" && isFinite(args[2]) ? Math.max(0.5, Math.min(0.99, args[2])) : 0.9;
+  samples: any[],
+  currentFloor: number = 0.82,
+  targetPassRate: number = 0.9
+): number {
+  const { suggested } = suggestMinConfidenceDetails(samples, currentFloor, targetPassRate);
+  // if no suggestion found, return 0 delta (keeps UI simple)
+  if (suggested == null) return 0;
+  // return DELTA (suggested - currentFloor), since pages often show +/- bump
+  return round2(suggested - clamp01(currentFloor));
+}
 
-  if (!samples.length) {
-    return { suggested: null, details: { reason: "no-samples", currentFloor, targetPassRate } };
+/**
+ * === Optional details helper ===
+ * If you ever want the full context in admin UI, import and use this function.
+ */
+export function suggestMinConfidenceDetails(
+  samples: any[],
+  currentFloor: number = 0.82,
+  targetPassRate: number = 0.9
+): { suggested: number | null; details: any } {
+  const floor = clamp01(typeof currentFloor === "number" ? currentFloor : 0.82);
+  const target = clamp01(typeof targetPassRate === "number" ? targetPassRate : 0.9);
+
+  if (!Array.isArray(samples) || samples.length === 0) {
+    return { suggested: null, details: { reason: "no-samples", currentFloor: floor, targetPassRate: target } };
   }
 
   // Normalize into { c, ok }
@@ -117,24 +107,20 @@ export function suggestMinConfidenceBump(
     .filter(Boolean) as Array<{ c: number; ok: boolean }>;
 
   if (!norm.length) {
-    return { suggested: null, details: { reason: "no-usable-samples", currentFloor, targetPassRate } };
+    return { suggested: null, details: { reason: "no-usable-samples", currentFloor: floor, targetPassRate: target } };
   }
 
-  // Try thresholds from currentFloor up to 0.99 in small steps,
-  // pick the smallest that achieves the target pass-rate.
+  // Try thresholds from currentFloor up to 0.99 in 0.01 steps,
+  // pick the smallest that achieves the target pass-rate with >=10 samples above threshold.
   const step = 0.01;
   let best: number | null = null;
 
-  for (let t = Math.max(0, Math.min(1, currentFloor)); t <= 0.99 + 1e-9; t += step) {
+  for (let t = floor; t <= 0.99 + 1e-9; t += step) {
     const eligible = norm.filter((s) => s.c >= t);
-    if (eligible.length < 10) {
-      // avoid overfitting on tiny samples
-      continue;
-    }
+    if (eligible.length < 10) continue; // avoid overfitting on tiny samples
     const good = eligible.filter((s) => s.ok).length;
     const pass = good / eligible.length;
-
-    if (pass >= targetPassRate) {
+    if (pass >= target) {
       best = round2(t);
       break;
     }
@@ -143,8 +129,8 @@ export function suggestMinConfidenceBump(
   return {
     suggested: best,
     details: {
-      currentFloor,
-      targetPassRate,
+      currentFloor: floor,
+      targetPassRate: target,
       totalSamples: norm.length,
       note:
         best == null
@@ -157,7 +143,6 @@ export function suggestMinConfidenceBump(
 function clamp01(n: number) {
   return Math.max(0, Math.min(1, n));
 }
-
 function round2(n: number) {
   return Math.round(n * 100) / 100;
 }
