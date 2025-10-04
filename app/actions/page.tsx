@@ -1,86 +1,82 @@
 // app/actions/page.tsx
-"use client";
+import { cookies } from "next/headers";
+import { createServerClient } from "@supabase/ssr";
+import { getSessionUser } from "@/lib/auth";
+import { notFound } from "next/navigation";
 
-import { useEffect, useState } from "react";
+// Force dynamic so the list is always fresh
+export const dynamic = "force-dynamic";
+export const metadata = { title: "Action Queue" };
+
+function supa() {
+  const jar = cookies();
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    { cookies: { get: (k) => jar.get(k)?.value } }
+  );
+}
 
 type Action = {
-  id: string;
+  id: string | number;
   created_at: string;
-  updated_at: string;
+  updated_at: string | null;
   broker: string;
-  category: string;
+  category: string | null;
   status: string;
   redacted_identity: {
     namePreview?: string;
     emailPreview?: string;
     cityPreview?: string;
-  };
-  evidence: { url: string; note?: string }[];
+  } | null;
+  evidence: { url: string; note?: string }[] | null;
   draft_subject?: string | null;
   draft_body?: string | null;
-  reply_channel?: "email" | "portal" | "phone";
+  reply_channel?: "email" | "portal" | "phone" | null;
   reply_email_preview?: string | null;
   proof_hash?: string | null;
   proof_sig?: string | null;
 };
 
-export default function ActionsPage() {
-  const [loading, setLoading] = useState(false);
-  const [actions, setActions] = useState<Action[]>([]);
-  const [error, setError] = useState<string | null>(null);
+export default async function ActionsPage() {
+  const user = await getSessionUser();
+  if (!user) return notFound();
 
-  async function load() {
-    setLoading(true);
-    setError(null);
-    try {
-      const r = await fetch("/api/actions", { cache: "no-store" });
-      const j = await r.json();
-      if (!j.ok) throw new Error(j.error || "Failed");
-      setActions(j.actions || []);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  }
+  const db = supa();
+  const { data } = await db
+    .from("actions")
+    .select(
+      [
+        "id",
+        "created_at",
+        "updated_at",
+        "broker",
+        "category",
+        "status",
+        "redacted_identity",
+        "evidence",
+        "draft_subject",
+        "draft_body",
+        "reply_channel",
+        "reply_email_preview",
+        "proof_hash",
+        "proof_sig",
+      ].join(",")
+    )
+    .order("created_at", { ascending: false })
+    .limit(50);
 
-  useEffect(() => { load(); }, []);
-
-  async function advance(id: string, status: string) {
-    setLoading(true);
-    try {
-      const r = await fetch("/api/actions", {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id, update: { status } }),
-      });
-      const j = await r.json();
-      if (!j.ok) throw new Error(j.error || "Update failed");
-      await load();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  }
+  const actions: Action[] = Array.isArray(data) ? (data as any) : [];
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-10">
       <div className="flex items-baseline justify-between">
         <h1 className="text-3xl font-semibold tracking-tight">Action Queue</h1>
-        <button
-          onClick={load}
-          className="rounded-md border px-3 py-1.5 text-sm hover:bg-accent"
-          disabled={loading}
-        >
-          Refresh
-        </button>
+        <RefreshButton />
       </div>
       <p className="mt-2 text-sm text-muted-foreground">
-        Track removal actions, update statuses, and verify cryptographic proof without storing raw PII.
+        Track removal actions, and verify cryptographic proof without storing raw PII.
       </p>
-
-      {error && <div className="mt-4 text-sm text-red-500">Error: {error}</div>}
 
       <div className="mt-6 space-y-4">
         {actions.map((a) => (
@@ -88,7 +84,7 @@ export default function ActionsPage() {
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="text-sm">
                 <div className="font-semibold">{a.broker}</div>
-                <div className="text-muted-foreground">{a.category}</div>
+                <div className="text-muted-foreground">{a.category ?? "—"}</div>
               </div>
               <div className="text-xs text-muted-foreground">
                 Created {new Date(a.created_at).toLocaleString()}
@@ -122,7 +118,7 @@ export default function ActionsPage() {
                   <div className="text-xs break-all">sig: {a.proof_sig || "—"}</div>
                   {a.id && (
                     <a
-                      href={`/api/ledger/verify?id=${encodeURIComponent(a.id)}`}
+                      href={`/api/ledger/verify?id=${encodeURIComponent(String(a.id))}`}
                       target="_blank"
                       className="mt-2 inline-block text-xs underline"
                     >
@@ -135,28 +131,34 @@ export default function ActionsPage() {
 
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <div className="text-sm">
-                <span className="rounded-full border px-2 py-0.5">{a.status}</span>
+                <span className="rounded-full border px-2 py-0.5">
+                  {a.status}
+                </span>
               </div>
-              <div className="ml-auto flex gap-2">
-                {["prepared", "sent", "follow_up_due", "resolved", "cancelled"].map((s) => (
-                  <button
-                    key={s}
-                    onClick={() => advance(a.id, s)}
-                    className="rounded-md border px-2 py-1 text-xs hover:bg-accent"
-                    disabled={loading}
-                  >
-                    Mark {s.replaceAll("_", " ")}
-                  </button>
-                ))}
+              <div className="ml-auto text-xs text-muted-foreground">
+                Updated {new Date(a.updated_at ?? a.created_at).toLocaleString()}
               </div>
             </div>
           </div>
         ))}
 
-        {actions.length === 0 && !loading && (
+        {actions.length === 0 && (
           <div className="text-sm text-muted-foreground">No actions yet.</div>
         )}
       </div>
     </div>
+  );
+}
+
+/** Tiny client-side refresh button */
+function RefreshButton() {
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  return (
+    <button
+      onClick={() => (typeof window !== "undefined" ? window.location.reload() : undefined)}
+      className="rounded-md border px-3 py-1.5 text-sm hover:bg-accent"
+    >
+      Refresh
+    </button>
   );
 }
