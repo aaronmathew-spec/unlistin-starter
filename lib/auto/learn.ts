@@ -26,7 +26,7 @@ function supa() {
 
 /**
  * Persist an automation outcome for learning / telemetry.
- * Totally safe: catches and swallows errors (so the main flow never breaks).
+ * Safe: catches and swallows errors (so the main flow never breaks).
  */
 export async function recordOutcome(payload: any): Promise<{ ok: boolean; error?: string }> {
   try {
@@ -58,31 +58,40 @@ export async function recordOutcome(payload: any): Promise<{ ok: boolean; error?
 }
 
 /**
- * === Backward-compatible API ===
- * Return a NUMBER (as your page expects).
+ * Backward-compatible API that accepts EITHER:
+ *  - a win rate NUMBER (0..1), OR
+ *  - an array of samples [{ confidence:number, resolution:string }, ...]
  *
- * Heuristic: suggest raising the min-confidence floor so the share of "good"
- * outcomes among hits above that floor meets targetPassRate.
- *
- * Usage in your page (unchanged):
- *   const bump = suggestMinConfidenceBump(samples, currentFloor, 0.9);
- *   bump > 0 ? `+${bump.toFixed(2)}` : bump.toFixed(2)
+ * Returns a DELTA (positive bump to the min-confidence floor), not an absolute floor.
+ * So calling code can do: `bump > 0 ? \`+${bump.toFixed(2)}\` : bump.toFixed(2)`
  */
 export function suggestMinConfidenceBump(
-  samples: any[],
+  arg: number | any[],
   currentFloor: number = 0.82,
   targetPassRate: number = 0.9
 ): number {
-  const { suggested } = suggestMinConfidenceDetails(samples, currentFloor, targetPassRate);
-  // if no suggestion found, return 0 delta (keeps UI simple)
+  // If called with a number, treat it as "current pass-rate"
+  if (typeof arg === "number") {
+    const pass = clamp01(arg);
+    const target = clamp01(targetPassRate);
+    // already at/above target -> no bump
+    if (pass >= target) return 0;
+
+    // Heuristic: propose a small bump proportional to deficit.
+    // deficit 0.10 -> ~0.03 bump, deficit 0.20 -> ~0.05 bump, cap at 0.15
+    const deficit = target - pass;
+    const bump = Math.min(0.15, round2(deficit * 0.25 + 0.005));
+    return bump;
+  }
+
+  // Otherwise assume it's a samples array and do the more precise search.
+  const { suggested } = suggestMinConfidenceDetails(arg, currentFloor, targetPassRate);
   if (suggested == null) return 0;
-  // return DELTA (suggested - currentFloor), since pages often show +/- bump
   return round2(suggested - clamp01(currentFloor));
 }
 
 /**
- * === Optional details helper ===
- * If you ever want the full context in admin UI, import and use this function.
+ * Optional detailed variant — returns the absolute suggested floor plus context.
  */
 export function suggestMinConfidenceDetails(
   samples: any[],
@@ -94,7 +103,7 @@ export function suggestMinConfidenceDetails(
 
   if (!Array.isArray(samples) || samples.length === 0) {
     return { suggested: null, details: { reason: "no-samples", currentFloor: floor, targetPassRate: target } };
-  }
+    }
 
   // Normalize into { c, ok }
   const norm = samples
