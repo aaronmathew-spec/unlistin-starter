@@ -6,11 +6,6 @@ export const runtime = "nodejs";
 import OpenAI from "openai";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
-/** OPTIONAL extractors (only used when a file payload is provided in the request) */
-import pdf from "pdf-parse";
-import mammoth from "mammoth";
-import { htmlToText } from "html-to-text";
-
 type Chunk = {
   request_id: number | null;
   file_id: number | null;
@@ -34,7 +29,7 @@ function json(data: any, init?: ResponseInit) {
   });
 }
 
-function envBool(v: string | undefined) {
+function envBool(v?: string) {
   return v === "1" || v?.toLowerCase() === "true";
 }
 
@@ -72,30 +67,44 @@ function naiveChunk(text: string, target = 800): string[] {
   return out;
 }
 
-/** OPTIONAL: extract text from a file buffer if the client provided file payload */
+/** OPTIONAL: extract text from a file buffer if the client provided file payload (dynamic imports = build-safe) */
 async function extractTextFromBuffer(mime: string, buf: Buffer): Promise<string> {
-  const mt = mime.toLowerCase();
+  if (!envBool(process.env.FEATURE_FILE_EXTRACTORS)) {
+    // Feature flag off => just try UTF-8 text
+    return buf.toString("utf8").trim();
+  }
+
+  const mt = (mime || "").toLowerCase();
 
   if (mt.includes("pdf")) {
+    const pdfMod = await import("pdf-parse");              // works for ESM/CJS
+    const pdf = (pdfMod as any).default ?? (pdfMod as any);
     const out = await pdf(buf);
-    return (out.text || "").trim();
+    return (out?.text || "").trim();
   }
+
   if (mt.includes("word") || mt.includes("docx") || mt.includes("officedocument.wordprocessingml")) {
+    const mammothMod = await import("mammoth");
+    const mammoth = (mammothMod as any).default ?? (mammothMod as any);
     const out = await mammoth.extractRawText({ buffer: buf });
-    return (out.value || "").trim();
+    return (out?.value || "").trim();
   }
+
   if (mt.includes("html") || mt.includes("htm")) {
+    const h2t = await import("html-to-text");
+    const htmlToText = (h2t as any).htmlToText ?? (h2t as any).default?.htmlToText ?? (h2t as any).default;
     const html = buf.toString("utf8");
-    return htmlToText(html, {
+    const text = htmlToText(html, {
       wordwrap: false,
       selectors: [
         { selector: "script,style,noscript", format: "skip" },
         { selector: "a", options: { hideLinkHrefIfSameAsText: true } },
       ],
-    }).trim();
+    });
+    return (text || "").trim();
   }
 
-  // fallback to utf8 text
+  // fallback
   return buf.toString("utf8").trim();
 }
 
@@ -218,7 +227,7 @@ export async function POST(req: Request) {
 
     let chunks: Chunk[] = [];
 
-    // OPTIONAL: if a file payload is provided for a single file, prefer extracting that content
+    // OPTIONAL path: extract text from uploaded file payload for a single file
     if (body && (body as any).kind === "file" && typeof (body as any).id === "number" && (body as any).file) {
       const { id, file } = body as { id: number; file: { name: string; type: string; dataBase64: string } };
       const buf = Buffer.from(file.dataBase64, "base64");
@@ -227,7 +236,7 @@ export async function POST(req: Request) {
       if (text.trim().length > 0) {
         naiveChunk(text).forEach((c) =>
           chunks.push({
-            request_id: null, // we don't know request mapping from raw upload; your caller can pass it if needed
+            request_id: null, // set by caller if needed
             file_id: id,
             kind: "file",
             ref_id: id,
@@ -237,7 +246,7 @@ export async function POST(req: Request) {
       }
     }
 
-    // If not provided, or after optional extraction, fall back to your existing DB-loads
+    // Fallback to DB-source loads (your original behavior)
     if (chunks.length === 0) {
       if ((body as any).kind && typeof (body as any).id === "number") {
         const { kind, id } = body as { kind: "request" | "file"; id: number };
