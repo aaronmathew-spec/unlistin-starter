@@ -12,13 +12,18 @@ function serverDB() {
   return createClient(url, key, { auth: { persistSession: false } });
 }
 
+function isUUID(s: string | null | undefined) {
+  if (!s) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s);
+}
+
 export async function POST(req: NextRequest) {
   try {
     if (!envBool(process.env.FEATURE_MAILROOM)) {
       return NextResponse.json({ error: "mailroom disabled" }, { status: 503 });
     }
 
-    // Accept JSON or form-encoded (Mailgun), else try raw text->JSON
+    // Parse body (JSON, form-encoded, or raw)
     let parsed: any = null;
     const ct = req.headers.get("content-type") || "";
     if (ct.includes("application/json")) {
@@ -31,7 +36,7 @@ export async function POST(req: NextRequest) {
       try { parsed = JSON.parse(raw); } catch { parsed = { raw }; }
     }
 
-    // Normalize common fields across providers
+    // Normalize fields
     const from = parsed.from || parsed.sender || parsed.envelope?.from || "";
     const to = Array.isArray(parsed.to) ? parsed.to.join(", ") : (parsed.to || "");
     const subject = parsed.subject || "";
@@ -39,47 +44,47 @@ export async function POST(req: NextRequest) {
     const message_id =
       parsed["Message-Id"] || parsed.messageId || parsed.headers?.["message-id"] || "";
 
-    // Simple correlation: capture a request id if present in subject/body
-    // Matches: "request_id:123" OR "Request 123"
+    // Correlation: we keep a human hint AND (if present) a real UUID
     let correlation_hint = "";
     const joined = `${subject}\n${body_text}`;
-    const m1 = /request[_\s-]?id[:\s-]?(\d{1,10})/i.exec(joined);
-    const m2 = !m1 && /request\s+(\d{1,10})/i.exec(joined);
-    if (m1) correlation_hint = m1[1]!;
-    else if (m2) correlation_hint = m2[1]!;
 
-    // Insert into DB
+    // numeric “Request 101” -> goes to correlation_hint only
+    const mNum = /request[_\s-]?id[:\s-]?(\d{1,10})/i.exec(joined) || /request\s+(\d{1,10})/i.exec(joined);
+    if (mNum) correlation_hint = mNum[1]!;
+
+    // try to find a UUID in text; only this goes into routed_to_request_id (uuid column)
+    const mUUID = /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i.exec(joined);
+    const routedUUID = mUUID && isUUID(mUUID[0]!) ? mUUID[0]! : null;
+
+    // Insert
     const db = serverDB();
-    const orgId = null; // set from JWT claims later if you add multi-tenant orgs
-
     const { error } = await db.from("mail_intake").insert([{
-      org_id: orgId,
+      org_id: null,
       message_id: message_id || null,
       from,
       subject,
       body_text,
       attachments: Array.isArray(parsed.attachments) ? parsed.attachments : [],
-      correlation_hint,
-      routed_to_request_id: correlation_hint ? correlation_hint : null
+      correlation_hint,                 // "101" stays here for operators/heuristics
+      routed_to_request_id: routedUUID, // ONLY a UUID or null
     }]);
 
     if (error) {
       console.error("mail_intake insert error", error);
-      return NextResponse.json({ error: "db insert failed" }, { status: 500 });
+      return NextResponse.json({ error: "db insert failed", detail: error.message }, { status: 500 });
     }
 
-    // --- STEP 4 ADDITION: kick off a quick OTP scan immediately ---
-    // best-effort: even if this fails, we still return 200 to the email provider
+    // Best-effort trigger OTP scan
     try {
       const base = process.env.NEXT_PUBLIC_BASE_URL ?? "";
-      // Scan the last 5 minutes, at most 10 messages (this one will be included)
-      await fetch(`${base}/api/otp/scan`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ since_minutes: 5, limit: 10 })
-      });
+      if (base) {
+        await fetch(`${base}/api/otp/scan`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ since_minutes: 5, limit: 10 }),
+        });
+      }
     } catch (e) {
-      // don't block webhook success on scan failures
       console.warn("otp scan trigger failed:", (e as any)?.message ?? e);
     }
 
@@ -88,4 +93,14 @@ export async function POST(req: NextRequest) {
     console.error("mailroom webhook error", e);
     return NextResponse.json({ error: e?.message ?? "mail webhook failed" }, { status: 500 });
   }
+}
+
+// Optional ping to check env wiring
+export async function GET() {
+  return NextResponse.json({
+    ok: true,
+    feature_mailroom: envBool(process.env.FEATURE_MAILROOM ?? ""),
+    has_service_role: !!process.env.SUPABASE_SERVICE_ROLE,
+    base_url: process.env.NEXT_PUBLIC_BASE_URL ?? null,
+  });
 }
