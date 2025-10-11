@@ -25,7 +25,7 @@ function json(data: any, init?: ResponseInit) {
 
 /**
  * GET /api/ledger/verify?id=123
- * or   /api/ledger/verify?hash=...&sig=...
+ *  or /api/ledger/verify?hash=...&sig=...
  *
  * Returns: { ok: boolean, verified: boolean, method: "db"|"query", hash?: string }
  */
@@ -34,11 +34,11 @@ export async function GET(req: Request) {
 
   try {
     const url = new URL(req.url);
-    const id = url.searchParams.get("id");
-    const hash = url.searchParams.get("hash");
-    const sig = url.searchParams.get("sig");
+    const id = url.searchParams.get("id")?.trim();
+    const hash = url.searchParams.get("hash")?.trim();
+    const sig = url.searchParams.get("sig")?.trim();
 
-    // Path A: raw pair present
+    // Path A: raw pair present (does not hit DB)
     if (hash && sig) {
       const verified = verifySignature(hash, sig);
       return NextResponse.json({ ok: true, verified, method: "query", hash });
@@ -57,7 +57,8 @@ export async function GET(req: Request) {
       .maybeSingle();
 
     if (error) return json({ ok: false, error: error.message }, { status: 400 });
-    if (!data?.proof_hash || !data?.proof_sig) {
+    if (!data) return json({ ok: false, error: "not-found" }, { status: 404 });
+    if (!data.proof_hash || !data.proof_sig) {
       return json({ ok: false, error: "no-proof-for-action" }, { status: 404 });
     }
 
