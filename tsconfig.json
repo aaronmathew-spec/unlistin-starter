@@ -22,9 +22,10 @@
       "@/*": ["*"]
     },
 
-    "types": ["vitest/globals"],
+    /* ✅ removed vitest/globals here so Vercel doesn't need Vitest */
+    "types": [],
 
-    /* Added for Vercel/Next + local shims */
+    /* Added for Next + our local shims */
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "typeRoots": ["./types", "./node_modules/@types"],
