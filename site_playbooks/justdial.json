@@ -1,0 +1,27 @@
+{
+  "site_id": "justdial",
+  "intents": ["removal"],
+  "channels": ["email"],
+  "email": {
+    "to": ["grievance@justdial.com"],
+    "cc": [],
+    "subject": "Request for removal of personal data - {{fullName}}",
+    "body": [
+      "Hello Justdial Team,",
+      "",
+      "I am {{fullName}} ({{email}} / {{phone}}). I request removal of my personal data and profile/listings under DPDP and applicable laws.",
+      "",
+      "Links or identifiers:",
+      "{{links}}",
+      "",
+      "I am the data principal and authorize this request. Please confirm removal and share the ticket ID.",
+      "",
+      "Regards,",
+      "{{fullName}}"
+    ]
+  },
+  "required_fields": ["fullName", "email", "phone", "links"],
+  "evidence_rules": {
+    "store_message_id": true
+  }
+}
