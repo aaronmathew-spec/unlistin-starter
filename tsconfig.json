@@ -1,7 +1,11 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "allowJs": false,
     "skipLibCheck": true,
     "strict": true,
@@ -16,6 +20,7 @@
     "isolatedModules": true,
     "jsx": "preserve",
     "incremental": true,
+<<<<<<< HEAD
 
     "baseUrl": ".",
     "paths": {
@@ -31,14 +36,40 @@
     "typeRoots": ["./types", "./node_modules/@types"],
     "noEmit": true,
     "plugins": [{ "name": "next" }]
+=======
+    "types": [
+      "vitest/globals"
+    ],
+    "baseUrl": ".",
+    "paths": {
+      "@/*": [
+        "*"
+      ]
+    },
+    "noEmit": true,
+    "esModuleInterop": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ]
+>>>>>>> f9bc69d (WIP: local changes before rebase)
   },
   "include": [
     "next-env.d.ts",
     "**/*.ts",
     "**/*.tsx",
     "**/*.mdx",
+<<<<<<< HEAD
     ".next/types/**/*.ts",
     "types/**/*.d.ts"
   ],
   "exclude": ["node_modules"]
+=======
+    ".next/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+>>>>>>> f9bc69d (WIP: local changes before rebase)
 }
