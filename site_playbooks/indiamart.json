@@ -1,0 +1,26 @@
+{
+  "site_id": "indiamart",
+  "intents": ["removal"],
+  "channels": ["email"],
+  "email": {
+    "to": ["grievance@indiamart.com"],
+    "cc": [],
+    "subject": "Personal data removal request - {{fullName}}",
+    "body": [
+      "Dear IndiaMART Grievance Team,",
+      "",
+      "Please remove my personal data and any listings associated with me.",
+      "",
+      "Name: {{fullName}}",
+      "Email: {{email}}",
+      "Phone: {{phone}}",
+      "Evidence links: {{links}}",
+      "",
+      "Thank you."
+    ]
+  },
+  "required_fields": ["fullName", "email", "phone", "links"],
+  "evidence_rules": {
+    "store_message_id": true
+  }
+}
