@@ -6,6 +6,11 @@ export const runtime = "nodejs";
 import OpenAI from "openai";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
+/** OPTIONAL extractors (only used when a file payload is provided in the request) */
+import pdf from "pdf-parse";
+import mammoth from "mammoth";
+import { htmlToText } from "html-to-text";
+
 type Chunk = {
   request_id: number | null;
   file_id: number | null;
@@ -67,7 +72,34 @@ function naiveChunk(text: string, target = 800): string[] {
   return out;
 }
 
-/** Load a single request/file to index. */
+/** OPTIONAL: extract text from a file buffer if the client provided file payload */
+async function extractTextFromBuffer(mime: string, buf: Buffer): Promise<string> {
+  const mt = mime.toLowerCase();
+
+  if (mt.includes("pdf")) {
+    const out = await pdf(buf);
+    return (out.text || "").trim();
+  }
+  if (mt.includes("word") || mt.includes("docx") || mt.includes("officedocument.wordprocessingml")) {
+    const out = await mammoth.extractRawText({ buffer: buf });
+    return (out.value || "").trim();
+  }
+  if (mt.includes("html") || mt.includes("htm")) {
+    const html = buf.toString("utf8");
+    return htmlToText(html, {
+      wordwrap: false,
+      selectors: [
+        { selector: "script,style,noscript", format: "skip" },
+        { selector: "a", options: { hideLinkHrefIfSameAsText: true } },
+      ],
+    }).trim();
+  }
+
+  // fallback to utf8 text
+  return buf.toString("utf8").trim();
+}
+
+/** Load a single request/file to index (DB-source). */
 async function loadOne(db: SupabaseClient, kind: "request" | "file", id: number): Promise<Chunk[]> {
   if (kind === "request") {
     const { data, error } = await db
@@ -113,7 +145,7 @@ async function loadOne(db: SupabaseClient, kind: "request" | "file", id: number)
   }));
 }
 
-/** Load a recent window of requests/files. */
+/** Load a recent window of requests/files (DB-source). */
 async function loadRecent(db: SupabaseClient): Promise<Chunk[]> {
   const { data: reqs, error: rErr } = await db
     .from("requests")
@@ -176,14 +208,43 @@ export async function POST(req: Request) {
     const db = getDB();
     const body = (await req.json().catch(() => ({}))) as
       | { reindexAll?: boolean }
-      | { kind?: "request" | "file"; id?: number; reindexAll?: boolean };
+      | {
+          kind?: "request" | "file";
+          id?: number;
+          reindexAll?: boolean;
+          /** OPTIONAL: if you call this route with a file payload, we’ll extract text server-side */
+          file?: { name: string; type: string; dataBase64: string };
+        };
 
     let chunks: Chunk[] = [];
-    if ((body as any).kind && typeof (body as any).id === "number") {
-      const { kind, id } = body as { kind: "request" | "file"; id: number };
-      chunks = await loadOne(db, kind, id);
-    } else {
-      chunks = await loadRecent(db);
+
+    // OPTIONAL: if a file payload is provided for a single file, prefer extracting that content
+    if (body && (body as any).kind === "file" && typeof (body as any).id === "number" && (body as any).file) {
+      const { id, file } = body as { id: number; file: { name: string; type: string; dataBase64: string } };
+      const buf = Buffer.from(file.dataBase64, "base64");
+      const text = (await extractTextFromBuffer(file.type, buf)) || "";
+
+      if (text.trim().length > 0) {
+        naiveChunk(text).forEach((c) =>
+          chunks.push({
+            request_id: null, // we don't know request mapping from raw upload; your caller can pass it if needed
+            file_id: id,
+            kind: "file",
+            ref_id: id,
+            content: `# File ${id} — ${file.name}\n\n${c}`,
+          })
+        );
+      }
+    }
+
+    // If not provided, or after optional extraction, fall back to your existing DB-loads
+    if (chunks.length === 0) {
+      if ((body as any).kind && typeof (body as any).id === "number") {
+        const { kind, id } = body as { kind: "request" | "file"; id: number };
+        chunks = await loadOne(db, kind, id);
+      } else {
+        chunks = await loadRecent(db);
+      }
     }
 
     if (chunks.length === 0) return json({ inserted: 0, message: "Nothing to index." });
@@ -210,7 +271,6 @@ export async function POST(req: Request) {
         embedding: (vectors[j] as number[]) || [],
       }));
 
-      // NOTE: select() only takes one argument here. Count rows on the client.
       const { data, error } = await db.from("ai_chunks").insert(rows).select("id");
       if (error) throw new Error(error.message);
 
