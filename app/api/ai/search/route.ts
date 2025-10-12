@@ -4,6 +4,7 @@ export const runtime = "nodejs";
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 import { ensureSearchLimit } from "@/lib/ratelimit";
+import { cookies } from "next/headers";
 
 type SemanticHit = {
   kind: "request" | "file";
@@ -24,13 +25,10 @@ function envBool(v?: string) {
 }
 
 function cosine(a: number[], b: number[]): number {
-  let dp = 0,
-    na = 0,
-    nb = 0;
+  let dp = 0, na = 0, nb = 0;
   const n = Math.min(a.length, b.length);
   for (let i = 0; i < n; i++) {
-    const x = a[i]!,
-      y = b[i]!;
+    const x = a[i]!, y = b[i]!;
     dp += x * y;
     na += x * x;
     nb += y * y;
@@ -41,7 +39,6 @@ function cosine(a: number[], b: number[]): number {
 
 export async function POST(req: Request) {
   try {
-    // Feature flag — if you ever want to hide this endpoint
     if (!envBool(process.env.FEATURE_AI_SERVER)) {
       return json(
         { error: "AI server feature is disabled (set FEATURE_AI_SERVER=1 to enable)" },
@@ -82,6 +79,12 @@ export async function POST(req: Request) {
     const apiKey = process.env.OPENAI_API_KEY?.trim();
     if (!apiKey) return json({ error: "OPENAI_API_KEY missing" }, { status: 500 });
 
+    // 0) Require org_id from cookie to avoid cross-tenant leaks
+    const orgId = cookies().get("org_id")?.value || null;
+    if (!orgId) {
+      return json({ matches: [], note: "No org selected. Choose an org to search." }, { status: 200 });
+    }
+
     // 1) Embed the query
     const openai = new OpenAI({ apiKey });
     const emb = await openai.embeddings.create({
@@ -98,49 +101,39 @@ export async function POST(req: Request) {
     const db = createClient(supabaseUrl, supabaseKey, { auth: { persistSession: false } });
 
     // =========================
-    // Fast-path via pgvector RPC (optional, safe)
+    // Safe pgvector RPC path (only if RPC accepts org)
     // =========================
     if (envBool(process.env.FEATURE_VECTOR_SQL)) {
       try {
-        // try v2 first (no org filter)
-        let rpcName: "match_ai_chunks_v2" | "match_ai_chunks" = "match_ai_chunks_v2";
-        let rpc = await db.rpc(rpcName, {
+        // Use the RPC that supports org filtering.
+        const { data: matches, error: rpcErr } = await db.rpc("match_ai_chunks", {
           query_embedding: qvec as unknown as number[],
           match_count: hardLimit,
+          org: orgId,
         });
 
-        // if v2 not available, try original
-        if (rpc.error) {
-          rpcName = "match_ai_chunks";
-          rpc = await db.rpc(rpcName, {
-            query_embedding: qvec as unknown as number[],
-            match_count: hardLimit,
-            org: null,
-          });
-        }
-
-        if (!rpc.error && Array.isArray(rpc.data)) {
-          const results = rpc.data as Array<{ id: number; content?: string; distance?: number }>;
-
+        if (!rpcErr && Array.isArray(matches)) {
           // We still need request_id/file_id to decide `kind` and `ref_id`:
-          const ids = results.map((r) => r.id).filter((x) => typeof x === "number");
-          let rows: Array<{ id: number; request_id: number | null; file_id: number | null; content: string }> = [];
+          const ids = matches.map((r: any) => r.id).filter((x: any) => typeof x === "number");
+          let rows:
+            | Array<{ id: number; request_id: number | null; file_id: number | null; content: string }>
+            | [] = [];
 
           if (ids.length > 0) {
-            const { data: got, error: gerr } = await db
+            const { data: got } = await db
               .from("ai_chunks")
               .select("id, request_id, file_id, content")
-              .in("id", ids);
-            if (!gerr && Array.isArray(got)) {
-              rows = got as any[];
-            }
+              .in("id", ids)
+              .eq("org_id", orgId);
+            rows = (got as any[]) || [];
           }
 
           const byId = new Map(rows.map((r) => [r.id, r]));
-          const scored: SemanticHit[] = [];
-          for (const r of results) {
-            const row = byId.get(r.id);
+          const out: SemanticHit[] = [];
+          for (const m of matches as any[]) {
+            const row = byId.get(m.id);
             if (!row) continue;
+
             const isFile = typeof row.file_id === "number" && row.file_id !== null;
             const kind: SemanticHit["kind"] = isFile ? "file" : "request";
             if (!filterKinds.has(kind)) continue;
@@ -148,31 +141,34 @@ export async function POST(req: Request) {
             const ref_id = isFile ? (row.file_id as number) : (row.request_id as number);
             if (typeof ref_id !== "number") continue;
 
-            scored.push({
+            // If RPC returns cosine distance, invert to similarity-ish
+            const score =
+              typeof m.distance === "number" ? 1 - Math.min(Math.max(m.distance, 0), 1) : 0;
+
+            out.push({
               kind,
               ref_id,
-              content: row.content ?? r.content ?? "",
-              score: typeof r.distance === "number" ? 1 - Math.min(Math.max(r.distance, 0), 1) : 0, // invert cosine distance -> similarity-ish
+              content: row.content ?? m.content ?? "",
+              score,
             });
           }
 
-          scored.sort((a, b) => b.score - a.score);
-          return json({ matches: scored.slice(0, hardLimit) });
+          out.sort((a, b) => b.score - a.score);
+          return json({ matches: out.slice(0, hardLimit) });
         }
-        // If RPC failed, we fall through to the original cosine window below.
-      } catch (e) {
-        // Silent fall-through to original path
+        // If RPC failed, fall through to in-process path below.
+      } catch {
+        // silent fallthrough
       }
     }
 
     // =========================
-    // Original path (your code) — cosine in-process
+    // In-process cosine path (scoped to org)
     // =========================
-
-    // grab latest 200 chunks; adjust if you like
     const { data: rows, error } = await db
       .from("ai_chunks")
       .select("id, request_id, file_id, content, embedding")
+      .eq("org_id", orgId)
       .order("id", { ascending: false })
       .limit(200);
 
