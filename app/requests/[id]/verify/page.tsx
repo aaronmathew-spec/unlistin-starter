@@ -22,7 +22,7 @@ export default function VerifyRequestOtpPage() {
         timeoutMs: 20000,
         pollIntervalMs: 2000,
       });
-      setCode(res.code);
+      setCode(res.code ?? null);
       if (!res.code) setErr("Timed out waiting for OTP. Try again or resend.");
     } catch (e: any) {
       setErr(e?.message ?? "wait failed");
