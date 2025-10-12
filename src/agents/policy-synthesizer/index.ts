@@ -1,4 +1,3 @@
-// src/agents/policy-synthesizer/index.ts
 import { AgentState, AgentResult, Policy } from "../types";
 import { callLLMWithStructuredOutput } from "@/lib/openai-client";
 import { createClient } from "@supabase/supabase-js";
@@ -66,17 +65,20 @@ Output JSON schema:
   "reasoning": "Explain your choices"
 }`;
 
-  // ⬇️ Updated: pass a single options object with `schema`,
-  // and use the returned parsed object directly (no `.data`)
-  const result = await callLLMWithStructuredOutput<z.infer<typeof PolicyOutputSchema>>({
-    systemPrompt,
-    userPrompt,
-    schema: PolicyOutputSchema,
-    maxTokens: 3000,
-    temperature: 0.2,
-  });
+  // ✅ Use the 2-argument signature: (options, schema)
+  const result = await callLLMWithStructuredOutput(
+    {
+      systemPrompt,
+      userPrompt,
+      maxTokens: 3000,
+      temperature: 0.2,
+    },
+    PolicyOutputSchema
+  );
 
-  return result;
+  // Some helpers return the parsed object, others `{ data }`. Support both.
+  const parsed = (result as any)?.data ?? result;
+  return parsed as z.infer<typeof PolicyOutputSchema>;
 }
 
 export async function policySynthesizerAgent(state: AgentState): Promise<AgentResult> {
@@ -107,12 +109,8 @@ export async function policySynthesizerAgent(state: AgentState): Promise<AgentRe
 
         const policyData = await synthesizePolicyWithLLM(item.source, item.sourceType);
 
-        const controllerId =
-          (globalThis as any)?.crypto?.randomUUID?.() ??
-          Math.random().toString(36).slice(2);
-
         const policy: Policy = {
-          controllerId,
+          controllerId: crypto.randomUUID(),
           source: item.source,
           channel: policyData.channel,
           contact: policyData.contact,
@@ -127,11 +125,11 @@ export async function policySynthesizerAgent(state: AgentState): Promise<AgentRe
 
         // Insert controller if doesn't exist
         await supabase.from("controllers").upsert({
-          id: controllerId,
+          id: policy.controllerId,
           name: item.source,
           category: item.sourceType,
           tier: 3,
-          channels: policyData.contact,              // assumes jsonb column
+          channels: policyData.contact,
           sla_days: policyData.slaDays,
           identity_requirements: policyData.identityProof,
           policy_template: policyData.template,
@@ -144,24 +142,20 @@ export async function policySynthesizerAgent(state: AgentState): Promise<AgentRe
 
     console.log(`[Policy Synthesizer] Generated ${newPolicies.length} policies`);
 
-    // Be defensive if metadata/progress might be missing
-    const prevProgress = (state.metadata?.progress as any) || {};
-    const policyPercent = Math.min(
-      ((state.policies.length + newPolicies.length) / Math.max(state.discoveredItems.length, 1)) * 100,
-      100
-    );
-
     return {
       success: true,
       updatedState: {
         stage: "request_generation",
         policies: [...state.policies, ...newPolicies],
         metadata: {
-          ...(state.metadata || {}),
+          ...state.metadata,
           lastUpdatedAt: new Date(),
           progress: {
-            ...prevProgress,
-            policyPercent,
+            ...state.metadata.progress,
+            policyPercent: Math.min(
+              ((state.policies.length + newPolicies.length) / state.discoveredItems.length) * 100,
+              100
+            ),
           },
         },
       },
@@ -173,7 +167,7 @@ export async function policySynthesizerAgent(state: AgentState): Promise<AgentRe
       success: false,
       updatedState: {
         errors: [
-          ...(state.errors || []),
+          ...state.errors,
           {
             agent: "policy_synthesizer",
             error: error.message,
