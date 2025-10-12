@@ -83,12 +83,12 @@ export async function POST(req: NextRequest) {
         org_id: null, // set later when you have org routing
         message_id: message_id || null,
         from,
+        to,                // ✅ store the "to" address
         subject,
         body_text,
         attachments: Array.isArray(parsed.attachments) ? parsed.attachments : [],
-        correlation_hint, // e.g. "101"
+        correlation_hint,                 // e.g. "101"
         routed_to_request_id: routedUUID, // ONLY a UUID or null
-        // to is not currently stored; add a "to" column if you want to persist it
       },
     ]);
 
