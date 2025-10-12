@@ -3,6 +3,7 @@ export const runtime = "nodejs";
 
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { notifySlack } from "@/lib/notify";
 
 function envBool(v?: string) { return v === "1" || v?.toLowerCase() === "true"; }
 
@@ -13,11 +14,10 @@ function serverDB() {
 }
 
 async function triageNow(baseUrl: string) {
-  // call your existing triage endpoint to enrich meta (type/vendor/otp/request_hint)
   const res = await fetch(`${baseUrl}/api/agent/triage`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: "{}"
+    body: "{}",
   });
   const json = await res.json().catch(() => ({}));
   return { status: res.status, json };
@@ -37,10 +37,10 @@ export async function GET(req: NextRequest) {
 
     const db = serverDB();
 
-    // 1) triage recent un-triaged mail
+    // 1) triage
     const triage = await triageNow(base);
 
-    // 2) pick mail rows eligible to auto-open (no routed request yet; meta.type in allowlist)
+    // 2) select mail to open
     const { data: mails, error } = await db
       .from("mail_intake")
       .select("id, from, to, subject, body_text, created_at, meta, routed_to_request_id")
@@ -49,13 +49,10 @@ export async function GET(req: NextRequest) {
       .order("created_at", { ascending: false })
       .limit(20);
 
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
-    }
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
     let opened = 0;
     for (const m of mails ?? []) {
-      // build title/description
       const title =
         (m.subject && m.subject.trim()) ||
         `Inbound message from ${m.from || "unknown"} (${new Date(m.created_at).toLocaleString()})`;
@@ -68,31 +65,38 @@ export async function GET(req: NextRequest) {
         m.body_text || "",
       ].join("\n");
 
-      // create request
+      // (optional) org assignment happens in section 2; here we keep minimal fields
       const { data: created, error: cErr } = await db
         .from("requests")
         .insert([{ title, description, status: "new" } as any])
-        .select("id")
+        .select("id, title")
         .maybeSingle();
       if (cErr || !created?.id) continue;
 
-      // link mail -> request
       const { error: uErr } = await db
         .from("mail_intake")
         .update({ routed_to_request_id: created.id })
         .eq("id", m.id);
-      if (!uErr) opened += 1;
+      if (uErr) continue;
+
+      opened += 1;
+
+      // 🔔 Slack notice (best-effort)
+      const v = (m.meta?.type as string) || "unknown";
+      const vendor = (m.meta?.vendor as string) || "unknown";
+      const link = `${base}/requests/${created.id}/verify`;
+      notifySlack(`🆕 Opened request *${created.id}* (${v}/${vendor}) — <${link}|Verify OTP>`);
     }
 
     return NextResponse.json({
       ok: true,
       triage_status: triage.status,
       triaged: triage.json?.triaged ?? null,
-      opened
+      opened,
     });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? "auto-intake failed" }, { status: 500 });
   }
 }
 
-export const POST = GET; // allow POST trigger with same handler
+export const POST = GET;
