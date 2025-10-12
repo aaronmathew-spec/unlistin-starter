@@ -18,6 +18,68 @@
     "e2e:report": "playwright show-report"
   },
   "dependencies": {
+    "@langchain/core": "^0.3.23",
+    "@langchain/langgraph": "^0.2.19",
+    "@langchain/openai": "^0.3.14",
+    "@noble/ed25519": "^2.1.0",
+    "@supabase/ssr": "^0.4.0",
+    "@upstash/ratelimit": "^1.0.1",
+    "@upstash/redis": "^1.28.4",
+    "date-fns": "^4.1.0",
+    "html-to-text": "^9.0.5",
+    "mammoth": "^1.11.0",
+    "merkletreejs": "^0.4.0",
+    "next": "14.2.5",
+    "nodemailer": "^7.0.9",
+    "openai": "^4.58.1",
+    "p-limit": "^6.1.0",
+    "p-queue": "^8.0.1",
+    "pdf-parse": "^2.2.9",
+    "playwright": "^1.48.2",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.2",
+    "@types/node": "^20.12.12",
+    "@types/node-fetch": "^2.6.11",
+    "@types/react": "^18.2.79",
+    "@types/react-dom": "^18.2.25",
+    "@typescript-eslint/eslint-plugin": "^7.6.0",
+    "@typescript-eslint/parser": "^7.6.0",
+    "eslint": "^8.57.0",
+    "eslint-config-next": "14.2.5",
+    "prettier": "^3.3.3",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^1.6.0"
+  },
+  "engines": {
+    "node": ">=18.18.0"
+  }
+}
+{
+  "name": "unlistin",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --ext .ts,.tsx,.js,.cjs,.mjs",
+    "format": "prettier --write .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "generate": "node scripts/generate.mjs",
+    "e2e:install": "npx playwright install --with-deps",
+    "e2e": "playwright test",
+    "e2e:ui": "playwright test --ui",
+    "e2e:report": "playwright show-report"
+  },
+  "dependencies": {
     "@supabase/ssr": "^0.4.0",
     "@upstash/ratelimit": "^1.0.1",
     "@upstash/redis": "^1.28.4",
