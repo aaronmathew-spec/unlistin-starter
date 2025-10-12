@@ -16,16 +16,26 @@ export function getOpenAI(): OpenAI {
 }
 
 /** ---------- Types ---------- */
+type ChatMsg = { role: "user" | "assistant" | "system"; content: string };
+
 export type StructuredCallOptions<T> = {
-  schema: z.ZodType<T>;
+  /** Preferred: provide messages directly (system+user, etc) */
+  messages?: ChatMsg[];
+
+  /** Back-compat shorthands: if messages is omitted, these are used to build messages */
+  systemPrompt?: string; // older code’s name
+  userPrompt?: string;   // older code’s name
+
+  /** Also supported: modern 'system' (kept for completeness) */
   system?: string;
-  messages: Array<{ role: "user" | "assistant" | "system"; content: string }>;
+
+  schema: z.ZodType<T>;
   model?: string;
   temperature?: number;
   maxTokens?: number;
 };
 
-/** ---------- Helper (supports 1-arg and 2-arg styles) ---------- */
+/** ---------- Helper (supports both 1-arg and 2-arg styles) ---------- */
 // Overload signatures
 export async function callLLMWithStructuredOutput<T>(
   opts: StructuredCallOptions<T>
@@ -50,12 +60,39 @@ export async function callLLMWithStructuredOutput<T>(
 
   const {
     schema,
-    messages,
-    system = "You are a concise assistant. Always output valid JSON with no extra commentary.",
     model = process.env.OPENAI_MODEL_NAME?.trim() || "gpt-4o-mini",
     temperature = 0.2,
     maxTokens,
   } = opts;
+
+  // ----- Normalize messages -----
+  // 1) If messages provided, use them
+  let messages: ChatMsg[] | undefined = Array.isArray(opts.messages)
+    ? [...opts.messages]
+    : undefined;
+
+  // 2) Otherwise build from shorthands / legacy names
+  if (!messages) {
+    const sys =
+      opts.systemPrompt ??
+      opts.system ??
+      "You are a concise assistant. Always output valid JSON with no extra commentary.";
+    const user = opts.userPrompt ?? "";
+    messages = [
+      { role: "system", content: sys },
+      { role: "user", content: user },
+    ];
+  } else {
+    // Ensure there is at least one system message; if not, prepend a default/opt system
+    const hasSystem = messages.some((m) => m.role === "system");
+    if (!hasSystem) {
+      const sys =
+        opts.system ??
+        opts.systemPrompt ??
+        "You are a concise assistant. Always output valid JSON with no extra commentary.";
+      messages = [{ role: "system", content: sys }, ...messages];
+    }
+  }
 
   const client = getOpenAI();
 
@@ -65,7 +102,6 @@ export async function callLLMWithStructuredOutput<T>(
     max_tokens: maxTokens,
     response_format: { type: "json_object" },
     messages: [
-      { role: "system", content: system },
       ...messages,
       {
         role: "system",
