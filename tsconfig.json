@@ -19,11 +19,10 @@
 
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["*"]
     },
 
     "types": [],
-
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "typeRoots": ["./types", "./node_modules/@types"],
