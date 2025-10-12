@@ -21,7 +21,7 @@ export default function OtpWaitDemo() {
         pollIntervalMs: 2000,   // check every 2s
         withinMinutes: 30,      // look back 30m
       });
-      setCode(res.code);
+      setCode(res.code ?? null);
       if (!res.code) setErr("Timed out without finding a fresh OTP.");
     } catch (e: any) {
       setErr(e?.message ?? "Failed while waiting.");
