@@ -1,74 +1,184 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 export const runtime = "nodejs";
 
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
+import { createClient } from "@supabase/supabase-js";
 
 /**
- * Post-sign-in hook:
- * - Derives org by email domain (e.g., "acme.com")
- * - Creates org if missing (UUID id if your orgs.id is uuid)
- * - Upserts membership(user_id, role='owner') if none exists for this org
- * Safe to call multiple times; no-ops if already configured.
+ * Tables used here (your current schema):
+ * - public.organizations (id uuid pk, name text)
+ * - public.user_organizations (user_id uuid, org_id uuid, role text, pk (user_id, org_id))
+ *
+ * Flow:
+ * 1) Read current user from Supabase session (anon client).
+ * 2) If user already has a membership → pick most recent org.
+ * 3) Else try match org by email domain (name == domain).
+ * 4) Else create a Personal Org and add user as owner.
+ * 5) Set org_id cookie and return { ok, org_id, mode }.
  */
-function supa() {
+
+function supaAuthFromCookies() {
   const jar = cookies();
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { cookies: { get: (k) => jar.get(k)?.value } }
+    {
+      cookies: {
+        get: (key) => jar.get(key)?.value,
+      },
+    }
   );
 }
 
-export async function POST() {
-  const db = supa();
+function supaService() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const key =
+    process.env.SUPABASE_SERVICE_ROLE?.trim() ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+  return createClient(url, key, { auth: { persistSession: false } });
+}
 
-  // Who am I?
-  const { data: { user }, error: uerr } = await db.auth.getUser();
-  if (uerr || !user) {
-    return NextResponse.json({ ok: false, error: "Not signed in" }, { status: 401 });
-  }
-
-  const email = user.email || "";
-  const domain = email.split("@")[1]?.toLowerCase() || "";
-  if (!domain) {
-    return NextResponse.json({ ok: true, note: "No domain; personal account." });
-  }
-
-  // Ensure orgs exists (uuid id default)
+export async function POST(_req: NextRequest) {
   try {
-    await db.from("orgs").select("id").limit(1);
-  } catch {
-    // silently ignore; environment may not have orgs (then short-circuit)
-    return NextResponse.json({ ok: true, note: "Org model not present; skipped." });
+    // 1) Who am I?
+    const auth = supaAuthFromCookies();
+    const { data: uData, error: uErr } = await auth.auth.getUser();
+    if (uErr || !uData?.user) {
+      return NextResponse.json({ ok: false, error: "Not signed in" }, { status: 401 });
+    }
+
+    const user = uData.user;
+    const userId = user.id;
+    const email = (user.email || "").trim();
+    const domain = email.includes("@") ? email.split("@")[1]!.toLowerCase() : "";
+    const displayName =
+      (user.user_metadata?.name as string | undefined) ||
+      (user.user_metadata?.full_name as string | undefined) ||
+      (email ? email.split("@")[0] : "Personal");
+
+    const db = supaService();
+
+    // 2) If user already has an org, reuse the latest
+    const { data: memberships, error: mErr } = await db
+      .from("user_organizations")
+      .select("org_id, created_at")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    if (mErr) {
+      return NextResponse.json({ ok: false, error: mErr.message }, { status: 500 });
+    }
+
+    let orgId: string | null = memberships?.[0]?.org_id ?? null;
+    let mode: "existing-membership" | "domain-joined" | "personal-created" | "domain-created" | "noop" = "noop";
+
+    // 3) If none, try to match domain → organizations.name == domain
+    if (!orgId && domain) {
+      const { data: byDomain, error: dErr } = await db
+        .from("organizations")
+        .select("id")
+        .eq("name", domain)
+        .limit(1);
+      if (dErr) {
+        return NextResponse.json({ ok: false, error: dErr.message }, { status: 500 });
+      }
+
+      if (byDomain && byDomain.length) {
+        orgId = byDomain[0]!.id as string;
+
+        // Add membership (admin if someone already there, else owner)
+        const { data: anyMember, error: amErr } = await db
+          .from("user_organizations")
+          .select("user_id")
+          .eq("org_id", orgId)
+          .limit(1);
+
+        if (amErr) {
+          return NextResponse.json({ ok: false, error: amErr.message }, { status: 500 });
+        }
+
+        const role = anyMember && anyMember.length > 0 ? "admin" : "owner";
+        const { error: addErr } = await db
+          .from("user_organizations")
+          .insert([{ user_id: userId, org_id: orgId, role }])
+          .select("user_id")
+          .maybeSingle();
+        if (addErr && !addErr.message.includes("duplicate key")) {
+          return NextResponse.json({ ok: false, error: addErr.message }, { status: 500 });
+        }
+        mode = "domain-joined";
+      }
+    }
+
+    // 4) If still none, create a Personal Org and add membership
+    if (!orgId) {
+      const personalName = `${displayName} (Personal)`;
+
+      // Insert org if not exists by name (avoid ON CONFLICT, which may not exist)
+      let newOrgId: string | null = null;
+
+      const { data: existsByName, error: exErr } = await db
+        .from("organizations")
+        .select("id")
+        .eq("name", personalName)
+        .limit(1);
+      if (exErr) {
+        return NextResponse.json({ ok: false, error: exErr.message }, { status: 500 });
+      }
+
+      if (existsByName && existsByName.length) {
+        newOrgId = existsByName[0]!.id as string;
+      } else {
+        const { data: insOrg, error: insErr } = await db
+          .from("organizations")
+          .insert([{ name: personalName }])
+          .select("id")
+          .maybeSingle();
+        if (insErr) {
+          return NextResponse.json({ ok: false, error: insErr.message }, { status: 500 });
+        }
+        newOrgId = insOrg?.id ?? null;
+      }
+
+      if (!newOrgId) {
+        return NextResponse.json({ ok: false, error: "Failed to create or resolve personal org" }, { status: 500 });
+      }
+
+      const { error: uoErr } = await db
+        .from("user_organizations")
+        .insert([{ user_id: userId, org_id: newOrgId, role: "owner" }])
+        .select("user_id")
+        .maybeSingle();
+      if (uoErr && !uoErr.message.includes("duplicate key")) {
+        return NextResponse.json({ ok: false, error: uoErr.message }, { status: 500 });
+      }
+
+      orgId = newOrgId;
+      mode = "personal-created";
+    }
+
+    // If the user had an existing membership from step (2)
+    if (mode === "noop" && orgId) {
+      mode = "existing-membership";
+    }
+
+    // 5) Set the org cookie so the rest of the app scopes correctly
+    const res = NextResponse.json({ ok: true, org_id: orgId, mode, domain: domain || null });
+    if (orgId) {
+      res.cookies.set({
+        name: "org_id",
+        value: orgId,
+        httpOnly: true,
+        sameSite: "lax",
+        path: "/",
+      });
+    }
+
+    return res;
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: e?.message ?? "post-sign-in failed" }, { status: 500 });
   }
-
-  // Upsert org by name==domain if no exact semantics defined
-  let orgId: string | null = null;
-
-  // Try find
-  const found = await db.from("orgs").select("id,name").eq("name", domain).maybeSingle();
-  if (!found.error && found.data) {
-    orgId = (found.data as any).id;
-  } else {
-    // Try insert
-    const ins = await db.from("orgs").insert({ name: domain }).select("id").maybeSingle();
-    if (!ins.error && ins.data) orgId = (ins.data as any).id;
-  }
-
-  if (!orgId) {
-    return NextResponse.json({ ok: true, note: "Could not resolve org id; skipped membership." });
-  }
-
-  // Upsert membership (owner if none exist for org)
-  const existing = await db.from("org_memberships").select("id,role").eq("org_id", orgId).eq("user_id", user.id).maybeSingle();
-
-  if (!existing.data) {
-    // If org has no members yet, make this user owner; else admin
-    const anyMember = await db.from("org_memberships").select("id").eq("org_id", orgId).limit(1);
-    const role = anyMember.data && anyMember.data.length > 0 ? "admin" : "owner";
-    await db.from("org_memberships").insert({ org_id: orgId as any, user_id: user.id, role } as any);
-  }
-
-  return NextResponse.json({ ok: true, orgId, domain });
 }
