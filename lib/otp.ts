@@ -1,10 +1,11 @@
 /* lib/otp.ts */
+
 type OtpResponse = {
   code?: string;
   provider?: string | null;
   source_message_id?: string | null;
   created_at?: string | null;
-  request_id?: string | null;
+  request_id?: string | null | number;
   matched_on?: "correlation_hint" | "uuid" | string | null;
   ok?: boolean;
 };
@@ -20,9 +21,7 @@ function base(): string {
   return "";
 }
 
-/**
- * Fetch the latest OTP once (non-blocking).
- */
+/** Fetch the latest OTP once (non-blocking). */
 export async function getOtp(params: {
   requestId: number | string;
   withinMinutes?: number;
@@ -36,7 +35,6 @@ export async function getOtp(params: {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
-    // No-cache for immediacy
     cache: "no-store",
   });
   if (!res.ok) {
@@ -47,23 +45,37 @@ export async function getOtp(params: {
   return json;
 }
 
-/**
- * Block (via polling) until an OTP is available or timeout elapsed.
- * Intended for pages like /requests/[id]/verify or demo/otp.
- */
-export async function waitForOtp(params: {
+type WaitForOtpParams = {
   requestId: number | string;
   /** overall timeout in ms (default 60s) */
   timeoutMs?: number;
   /** poll interval in ms (default 2500ms) */
   pollMs?: number;
+  /** back-compat alias for pollMs (some callers use this name) */
+  pollIntervalMs?: number;
   /** how far back to look when matching (default 30min) */
   withinMinutes?: number;
   /** optionally override base url (rarely needed) */
   baseUrl?: string;
-}): Promise<OtpResponse> {
+};
+
+/**
+ * Block (via polling) until an OTP is available or timeout elapsed.
+ * Intended for pages like /requests/[id]/verify or demo/otp.
+ */
+export async function waitForOtp(params: WaitForOtpParams): Promise<OtpResponse> {
   const timeoutMs = Math.max(2_000, params.timeoutMs ?? 60_000);
-  const pollMs = Math.max(500, params.pollMs ?? 2_500);
+
+  // Accept both names; prefer explicit pollMs when both provided
+  const pollMs = Math.max(
+    500,
+    typeof params.pollMs === "number"
+      ? params.pollMs
+      : typeof params.pollIntervalMs === "number"
+      ? params.pollIntervalMs
+      : 2_500
+  );
+
   const start = Date.now();
 
   // If the API provides a blocking endpoint (/api/otp/wait), try that first.
@@ -78,6 +90,7 @@ export async function waitForOtp(params: {
           request_id: String(params.requestId),
           within_minutes: params.withinMinutes ?? 30,
           timeout_ms: Math.min(timeoutMs, 25_000), // keep server wait reasonable
+          poll_ms: pollMs,
         }),
         cache: "no-store",
       });
