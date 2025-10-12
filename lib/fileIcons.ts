@@ -1,111 +1,104 @@
-/* lib/otp.ts */
+// lib/fileIcons.ts
 
-/**
- * Fetch the latest OTP code for a request, polling until it appears or times out.
- * Accepts pollMs (canonical) or pollIntervalMs (back-compat with older pages).
- */
-export type WaitForOtpOptions = {
-  /** request id as number or string */
-  requestId: number | string;
-  /** total time to wait before giving up (ms) */
-  timeoutMs?: number;
-  /** how often to poll (ms) */
-  pollMs?: number;
-  /** @deprecated use pollMs instead */
-  pollIntervalMs?: number;
-  /** how far back the server should look for OTP e-mails (minutes) */
-  withinMinutes?: number;
-  /** override base URL (defaults to window.location.origin or NEXT_PUBLIC_BASE_URL) */
-  baseUrl?: string;
-};
-
-type OtpResponse = {
-  code?: string;
-  provider?: string;
-  source_message_id?: string;
-  created_at?: string;
-  request_id?: string | number | null;
-  matched_on?: "correlation_hint" | "routed_uuid" | string;
-};
-
-function resolveBaseUrl(explicit?: string): string {
-  if (explicit && explicit.trim().length > 0) return explicit;
-  if (typeof window !== "undefined" && window.location?.origin) return window.location.origin;
-  if (process.env.NEXT_PUBLIC_BASE_URL) return process.env.NEXT_PUBLIC_BASE_URL;
-  return ""; // relative fetch will still work in the browser, but not on the server
+/** Human friendly file size (e.g., 1.2 MB) */
+export function humanSize(bytes: number | null | undefined): string {
+  const b = typeof bytes === "number" && bytes >= 0 ? bytes : 0;
+  if (b < 1024) return `${b} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let i = -1;
+  let n = b;
+  do {
+    n /= 1024;
+    i++;
+  } while (n >= 1024 && i < units.length - 1);
+  return `${n.toFixed(n < 10 ? 1 : 0)} ${units[i]}`;
 }
 
-/**
- * Polls /api/otp/get until an OTP arrives or we hit timeout.
- * Returns the OTP payload (with .code) on success; throws on timeout.
- */
-export async function waitForOtp(opts: WaitForOtpOptions): Promise<OtpResponse> {
-  const {
-    requestId,
-    timeoutMs = 20_000,
-    withinMinutes = 30,
-    baseUrl,
-  } = opts;
+/** Best-effort emoji for a file based on mime and/or name */
+export function fileEmoji(mime?: string | null, name?: string | null): string {
+  const m = (mime || "").toLowerCase();
+  const n = (name || "").toLowerCase();
 
-  // Back-compat: prefer pollMs, but accept pollIntervalMs if provided
-  const pollMs =
-    typeof opts.pollMs === "number"
-      ? opts.pollMs
-      : typeof opts.pollIntervalMs === "number"
-      ? opts.pollIntervalMs
-      : 1_500;
+  const ext = (() => {
+    const i = n.lastIndexOf(".");
+    return i >= 0 ? n.slice(i + 1) : "";
+  })();
 
-  const base = resolveBaseUrl(baseUrl);
-  const url = `${base}/api/otp/get`;
+  // MIME-led checks
+  if (m.startsWith("image/")) return "🖼️";
+  if (m.startsWith("video/")) return "🎞️";
+  if (m.startsWith("audio/")) return "🎵";
+  if (m === "application/pdf") return "📕";
+  if (m.includes("zip") || m.includes("compressed")) return "🗜️";
+  if (m.includes("json")) return "🧾";
+  if (m.includes("csv")) return "🧮";
+  if (m.includes("html")) return "🌐";
+  if (m.includes("text")) return "📄";
 
-  const body = JSON.stringify({
-    request_id: String(requestId),
-    within_minutes: withinMinutes,
-  });
-
-  const deadline = Date.now() + timeoutMs;
-
-  while (true) {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body,
-    });
-
-    if (res.ok) {
-      const json = (await res.json()) as OtpResponse;
-      if (json?.code && String(json.code).length > 0) {
-        return json;
-      }
-    }
-
-    if (Date.now() >= deadline) {
-      throw new Error("Timed out waiting for OTP");
-    }
-
-    await new Promise((r) => setTimeout(r, pollMs));
+  // Extension fallbacks
+  switch (ext) {
+    case "pdf":
+      return "📕";
+    case "png":
+    case "jpg":
+    case "jpeg":
+    case "gif":
+    case "webp":
+    case "svg":
+      return "🖼️";
+    case "mp4":
+    case "mov":
+    case "avi":
+    case "mkv":
+    case "webm":
+      return "🎞️";
+    case "mp3":
+    case "wav":
+    case "aac":
+    case "flac":
+      return "🎵";
+    case "zip":
+    case "rar":
+    case "7z":
+    case "tar":
+    case "gz":
+      return "🗜️";
+    case "csv":
+      return "🧮";
+    case "json":
+      return "🧾";
+    case "html":
+    case "htm":
+      return "🌐";
+    case "txt":
+    case "md":
+      return "📄";
+    case "doc":
+    case "docx":
+      return "📝";
+    case "xls":
+    case "xlsx":
+      return "📊";
+    case "ppt":
+    case "pptx":
+      return "📈";
+    case "ts":
+    case "tsx":
+    case "js":
+    case "jsx":
+    case "py":
+    case "rb":
+    case "go":
+    case "java":
+    case "cs":
+    case "rs":
+    case "php":
+    case "sh":
+    case "yml":
+    case "yaml":
+    case "toml":
+      return "🧑‍💻";
+    default:
+      return "📄";
   }
-}
-
-/**
- * Convenience: single shot check (no polling). Useful if you just want the latest code
- * without waiting.
- */
-export async function getOtpOnce(
-  requestId: number | string,
-  withinMinutes = 30,
-  baseUrl?: string
-): Promise<OtpResponse | null> {
-  const base = resolveBaseUrl(baseUrl);
-  const res = await fetch(`${base}/api/otp/get`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      request_id: String(requestId),
-      within_minutes: withinMinutes,
-    }),
-  });
-  if (!res.ok) return null;
-  const json = (await res.json()) as OtpResponse;
-  return json?.code ? json : null;
 }
