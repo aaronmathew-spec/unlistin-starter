@@ -5,7 +5,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { notifySlack } from "@/lib/notify";
 
-function envBool(v?: string) { return v === "1" || v?.toLowerCase() === "true"; }
+function envBool(v?: string) {
+  return v === "1" || v?.toLowerCase() === "true";
+}
 
 function serverDB() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
@@ -65,19 +67,59 @@ export async function GET(req: NextRequest) {
         m.body_text || "",
       ].join("\n");
 
-      // (optional) org assignment happens in section 2; here we keep minimal fields
+      // --- org auto-assignment (safe/no-break) -------------------------
+      // Try to resolve org_id from mail_routing(to_address -> org_id).
+      // If the table/column doesn't exist, or no match: we proceed without org.
+      let org_id: string | null = null;
+      if (m.to) {
+        try {
+          const rt = await db
+            .from("mail_routing")
+            .select("org_id")
+            .eq("to_address", m.to)
+            .maybeSingle();
+          if (!rt.error) org_id = (rt.data as any)?.org_id ?? null;
+        } catch {
+          // ignore; routing table may not exist yet
+        }
+      }
+      // -----------------------------------------------------------------
+
+      // Create request (minimal fields first to avoid schema mismatches)
       const { data: created, error: cErr } = await db
         .from("requests")
         .insert([{ title, description, status: "new" } as any])
-        .select("id, title")
+        .select("id")
         .maybeSingle();
       if (cErr || !created?.id) continue;
 
-      const { error: uErr } = await db
-        .from("mail_intake")
-        .update({ routed_to_request_id: created.id })
-        .eq("id", m.id);
-      if (uErr) continue;
+      // If we discovered an org_id, try to set it on the request (ignore if column doesn't exist)
+      if (org_id) {
+        try {
+          await db.from("requests").update({ org_id } as any).eq("id", created.id);
+        } catch {
+          // ignore — safe if requests.org_id doesn't exist
+        }
+      }
+
+      // Link mail -> request; also persist org_id on mail row if we have it (ignore if column missing)
+      const mailUpdate: any = { routed_to_request_id: created.id };
+      if (org_id) mailUpdate.org_id = org_id;
+
+      const { error: uErr } = await db.from("mail_intake").update(mailUpdate).eq("id", m.id);
+      if (uErr) {
+        // As a fallback, at least set the link if the org column caused the error
+        if (org_id) {
+          try {
+            await db
+              .from("mail_intake")
+              .update({ routed_to_request_id: created.id } as any)
+              .eq("id", m.id);
+          } catch {
+            /* ignore */
+          }
+        }
+      }
 
       opened += 1;
 
