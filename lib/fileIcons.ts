@@ -41,8 +41,10 @@ function extFromMime(mime?: string | null): string | null {
  * Accepts either (filename) OR (mime, filename). Both optional.
  * We prefer mime when present, with filename as a fallback.
  */
-export function fileEmoji(mimeOrName?: string, filenameMaybe?: string): string {
-  // If mime provided (e.g., "application/pdf"), it’ll have a slash.
+export function fileEmoji(
+  mimeOrName?: string | null,
+  filenameMaybe?: string | null
+): string {
   const looksLikeMime = !!mimeOrName && mimeOrName.includes("/");
   const mime = looksLikeMime ? mimeOrName : undefined;
   const filename = looksLikeMime ? filenameMaybe : mimeOrName;
