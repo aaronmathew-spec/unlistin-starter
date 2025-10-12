@@ -21,6 +21,7 @@ export interface LLMResponse {
   };
 }
 
+/** Plain chat call (text in → text out) */
 export async function callLLM(request: LLMRequest): Promise<LLMResponse> {
   const {
     systemPrompt,
@@ -41,16 +42,18 @@ export async function callLLM(request: LLMRequest): Promise<LLMResponse> {
       ],
     });
 
-    const choice = completion.choices[0];
-    if (!choice || !choice.message.content) {
+    const choice = completion.choices?.[0];
+    const content = choice?.message?.content ?? "";
+
+    if (!content.trim()) {
       throw new Error("No response from OpenAI");
     }
 
     return {
-      content: choice.message.content,
+      content,
       usage: {
-        inputTokens: completion.usage?.prompt_tokens || 0,
-        outputTokens: completion.usage?.completion_tokens || 0,
+        inputTokens: completion.usage?.prompt_tokens ?? 0,
+        outputTokens: completion.usage?.completion_tokens ?? 0,
       },
     };
   } catch (error) {
@@ -59,6 +62,7 @@ export async function callLLM(request: LLMRequest): Promise<LLMResponse> {
   }
 }
 
+/** Chat call that expects JSON and validates it with Zod */
 export async function callLLMWithStructuredOutput<T>(
   request: LLMRequest,
   schema: z.ZodType<T>
@@ -67,10 +71,17 @@ export async function callLLMWithStructuredOutput<T>(
 
   try {
     let jsonText = response.content.trim();
-    
-    // Remove markdown code fences
+
+    // Strip common ```json fences
     jsonText = jsonText.replace(/^```json\s*\n?/i, "").replace(/\n?```\s*$/i, "");
     jsonText = jsonText.replace(/^```\s*\n?/i, "").replace(/\n?```\s*$/i, "");
+
+    // Try to salvage if the model wrapped JSON in prose
+    const firstBrace = jsonText.indexOf("{");
+    const lastBrace = jsonText.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      jsonText = jsonText.slice(firstBrace, lastBrace + 1);
+    }
 
     const parsed = JSON.parse(jsonText);
     const validated = schema.parse(parsed);
@@ -86,16 +97,29 @@ export async function callLLMWithStructuredOutput<T>(
   }
 }
 
-export function calculateCost(usage: LLMResponse["usage"], model: string): number {
-  const pricing: Record<string, { input: number; output: number }> = {
+/** Cost calculator with strict defaults (avoids TS “possibly undefined”) */
+export function calculateCost(
+  usage: LLMResponse["usage"],
+  model: string
+): number {
+  type Pricing = { input: number; output: number };
+  const pricing: Record<string, Pricing> = {
     "gpt-4o": { input: 2.5, output: 10 },
     "gpt-4o-mini": { input: 0.15, output: 0.6 },
     "gpt-4-turbo": { input: 10, output: 30 },
   };
 
-  const rates = pricing[model] || pricing["gpt-4o-mini"];
-  const inputCost = (usage.inputTokens / 1_000_000) * rates.input;
-  const outputCost = (usage.outputTokens / 1_000_000) * rates.output;
+  const DEFAULT_RATES: Pricing = { input: 0, output: 0 };
+
+  // Hard default: model → gpt-4o-mini → zero
+  const rates: Pricing =
+    pricing[model] ?? pricing["gpt-4o-mini"] ?? DEFAULT_RATES;
+
+  const inTok = usage?.inputTokens ?? 0;
+  const outTok = usage?.outputTokens ?? 0;
+
+  const inputCost = (inTok / 1_000_000) * rates.input;
+  const outputCost = (outTok / 1_000_000) * rates.output;
 
   return inputCost + outputCost;
 }
