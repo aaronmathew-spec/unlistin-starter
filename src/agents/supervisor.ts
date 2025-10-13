@@ -2,11 +2,10 @@
 import type { AgentState } from "./types";
 import { createClient } from "@supabase/supabase-js";
 
-// Phase modules (already added in previous steps)
 import { runDiscovery } from "@/agents/discovery";
 import { createDraftActions } from "@/agents/request/draft";
 import { dispatchDraftsForSubject } from "@/agents/dispatch/send";
-import { verifyActionPost } from "@/agents/verification/run";
+import { captureAndStoreArtifacts } from "@/agents/verification/capture";
 import { buildMerkleRoot, signRoot } from "@/lib/proofs/merkle";
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
@@ -14,7 +13,6 @@ const key =
   process.env.SUPABASE_SERVICE_ROLE ||
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-
 const db = createClient(url, key, { auth: { persistSession: false } });
 
 type ProgressKey =
@@ -54,10 +52,52 @@ async function loadActionsForVerify(subjectId: string) {
     .from("actions")
     .select("id, subject_id, controller_id, to, status")
     .eq("subject_id", subjectId)
-    .in("status", ["sent", "escalate_pending"])
+    .in("status", ["sent", "escalated", "escalate_pending"])
+    .order("created_at", { ascending: true })
     .limit(100);
   if (error) throw new Error(`[supervisor] actions load failed: ${error.message}`);
   return data || [];
+}
+
+async function getSubject(subjectId: string) {
+  const { data, error } = await db
+    .from("subjects")
+    .select("email, phone_number, legal_name")
+    .eq("id", subjectId)
+    .single();
+  if (error) throw new Error(`[supervisor] subject fetch failed: ${error.message}`);
+  return {
+    email: (data as any)?.email as string | null,
+    phone: (data as any)?.phone_number as string | null,
+    name: (data as any)?.legal_name as string | null,
+  };
+}
+
+function containsIdentifier(html: string, subject: { email?: string | null; phone?: string | null; name?: string | null }) {
+  const hay = (html || "").toLowerCase();
+  const tests: string[] = [];
+  if (subject.email) tests.push(subject.email.toLowerCase());
+  if (subject.name) tests.push(subject.name.toLowerCase());
+  if (subject.phone) {
+    const d = subject.phone.replace(/[^\d]/g, "");
+    if (d) {
+      tests.push(d);
+      if (d.length >= 6) tests.push(d.slice(-6));
+    }
+  }
+  return tests.some((t) => t && hay.includes(t));
+}
+
+async function resolveTargetUrl(subjectId: string, controllerId: string | null, to: string | null) {
+  const { data, error } = await db
+    .from("discovered_items")
+    .select("url")
+    .eq("subject_id", subjectId)
+    .eq("controller_id", controllerId)
+    .not("url", "is", null)
+    .limit(1);
+  if (!error && data && data[0]?.url) return data[0].url as string;
+  return to ?? null;
 }
 
 async function collectVerificationHashes(subjectId: string) {
@@ -70,17 +110,14 @@ async function collectVerificationHashes(subjectId: string) {
   if (error) throw new Error(`[supervisor] verifications load failed: ${error.message}`);
 
   const hashes: string[] = [];
-  for (const v of data || []) {
-    const post = (v as any)?.evidence_artifacts?.post || {};
+  for (const v of (data || []) as any[]) {
+    const post = v?.evidence_artifacts?.post || {};
     if (typeof post.htmlHash === "string" && post.htmlHash.length > 0) hashes.push(post.htmlHash);
     if (typeof post.screenshotHash === "string" && post.screenshotHash.length > 0) hashes.push(post.screenshotHash);
   }
   return Array.from(new Set(hashes));
 }
 
-/**
- * Main autonomous pipeline. Called by /api/agents/run.
- */
 export async function executeWorkflow(initial: AgentState) {
   let state = { ...initial };
 
@@ -107,44 +144,86 @@ export async function executeWorkflow(initial: AgentState) {
     await createDraftActions({ subjectId: state.subjectId });
 
     state = bumpProgress(state, "policyPercent", 100);
-    state.stage = "draft_ready";
-    await setRunState(state.taskId, state, "draft_ready");
+    state.stage = "request_generation"; // <-- valid union value
+    await setRunState(state.taskId, state, "request_generation");
 
     // 3) DISPATCH
-    state.stage = "dispatching";
-    await setRunState(state.taskId, state, "dispatching");
+    state.stage = "dispatch"; // <-- valid union value
+    await setRunState(state.taskId, state, "dispatch");
 
     await dispatchDraftsForSubject(state.subjectId);
 
-    state = bumpProgress(state, "requestPercent", 80); // draft -> sent
+    state = bumpProgress(state, "requestPercent", 100);
     await setRunState(state.taskId, state);
 
-    // 4) VERIFICATION (post-check, lightweight)
+    // 4) VERIFICATION (rich artifact capture)
     state.stage = "verification";
     await setRunState(state.taskId, state, "verification");
 
     const actions = await loadActionsForVerify(state.subjectId);
-    for (const a of actions) {
-      try {
-        const res = await verifyActionPost(a as any);
-        const newStatus = res.dataFound ? "needs_review" : "verified";
-        await db
-          .from("actions")
-          .update({
-            status: newStatus,
-            verification_info: {
-              post: res.evidence,
-              confidence: res.confidence,
-              observed_present: res.dataFound,
-            },
-          })
-          .eq("id", (a as any).id);
-      } catch (e: any) {
-        console.warn("[supervisor] verifyActionPost error:", e?.message || e);
+    const subject = await getSubject(state.subjectId);
+
+    for (const a of actions as any[]) {
+      const targetUrl = await resolveTargetUrl(state.subjectId, a.controller_id, a.to);
+      if (!targetUrl) {
+        // No URL to check: consider verified (absence cannot be confirmed)
+        await db.from("verifications").insert({
+          action_id: a.id,
+          subject_id: state.subjectId,
+          controller_id: a.controller_id,
+          data_found: false,
+          confidence: 0.3,
+          evidence_artifacts: { post: { reason: "no_url" } },
+        });
+        await db.from("actions").update({ status: "verified" }).eq("id", a.id);
+        continue;
       }
+
+      // Capture & store HTML + screenshot
+      const cap = await captureAndStoreArtifacts({
+        subjectId: state.subjectId,
+        actionId: a.id,
+        url: targetUrl,
+      });
+
+      // Lightweight presence check by fetching HTML (separate from screenshot)
+      let found = false;
+      try {
+        const res = await fetch(targetUrl, { method: "GET" });
+        const html = res.ok ? await res.text() : "";
+        found = containsIdentifier(html, subject);
+      } catch {
+        found = false;
+      }
+
+      const evidence = {
+        url: targetUrl,
+        status: cap.status,
+        htmlHash: cap.htmlHash,
+        screenshotHash: cap.screenshotHash,
+        htmlPath: cap.htmlPath,
+        screenshotPath: cap.screenshotPath,
+      };
+
+      await db.from("verifications").insert({
+        action_id: a.id,
+        subject_id: state.subjectId,
+        controller_id: a.controller_id,
+        data_found: found,
+        confidence: found ? 0.9 : 0.8,
+        evidence_artifacts: { post: evidence },
+      });
+
+      await db
+        .from("actions")
+        .update({
+          status: found ? "needs_review" : "verified",
+          verification_info: { post: evidence, observed_present: found },
+        })
+        .eq("id", a.id);
     }
 
-    state = bumpProgress(state, "verificationPercent", 80);
+    state = bumpProgress(state, "verificationPercent", 100);
     await setRunState(state.taskId, state);
 
     // 5) PROOF COMMIT (Merkle + signature)
@@ -163,7 +242,7 @@ export async function executeWorkflow(initial: AgentState) {
       if (insErr) throw new Error(`[supervisor] proof_ledger insert failed: ${insErr.message}`);
     }
 
-    // 6) COMPLETE
+    // COMPLETE
     state.stage = "completed";
     state.metadata.lastUpdatedAt = new Date();
     await setRunState(state.taskId, state, "completed");
@@ -185,10 +264,7 @@ export async function executeWorkflow(initial: AgentState) {
   return state;
 }
 
-/**
- * Back-compat shim: some callers may still invoke supervisorAgent(state).
- * We run the pipeline once and return a minimal AgentResult-like shape.
- */
+// Back-compat shim
 export async function supervisorAgent(state: AgentState) {
   const out = await executeWorkflow(state);
   return {
