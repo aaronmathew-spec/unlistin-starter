@@ -1,0 +1,31 @@
+name: Cron Webform Worker
+
+on:
+  schedule:
+    # Every 15 minutes (UTC); adjust as you like
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compute timestamp
+        id: ts
+        run: echo "ts=$(date +%s000)" >> $GITHUB_OUTPUT
+
+      - name: Create signature
+        id: sig
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          node -e "const crypto=require('crypto');const ts='${{ steps.ts.outputs.ts }}';const mac=crypto.createHmac('sha256', process.env.CRON_SECRET).update(`${ts}:webform`).digest('hex');console.log('sig='+mac)" >> $GITHUB_OUTPUT
+
+      - name: Call /api/cron/webform
+        env:
+          SITE: ${{ secrets.NEXT_PUBLIC_SITE_URL }}
+        run: |
+          curl -sS -X POST \
+            -H "x-cron-timestamp: ${{ steps.ts.outputs.ts }}" \
+            -H "x-cron-signature: ${{ steps.sig.outputs.sig }}" \
+            "${SITE}/api/cron/webform"
