@@ -24,8 +24,8 @@ export async function GET(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // RLS ensures ownership via subjects.user_id
-    const { data, error } = await db
+    // Fetch the job (RLS ensures ownership via subjects.user_id)
+    const { data: jobs, error: jobErr } = await db
       .from("webform_jobs")
       .select(
         "id, action_id, subject_id, url, status, attempt, scheduled_at, run_at, completed_at, result, created_at, updated_at"
@@ -33,16 +33,16 @@ export async function GET(
       .eq("id", params.id)
       .limit(1);
 
-    if (error) {
-      throw new Error(`[ops/webforms/:id] fetch failed: ${error.message}`);
+    if (jobErr) {
+      throw new Error(`[ops/webforms/:id] fetch failed: ${jobErr.message}`);
     }
-    if (!data || data.length === 0) {
+    const job = jobs?.[0];
+    if (!job) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
-    // Also fetch action & controller context (nice for debugging)
-    const job = data[0];
-    const { data: actionCtx } = await db
+    // Fetch action context
+    const { data: actionRows, error: actionErr } = await db
       .from("actions")
       .select(
         "id, status, controller_id, to, verification_info, created_at, updated_at"
@@ -50,20 +50,29 @@ export async function GET(
       .eq("id", job.action_id)
       .limit(1);
 
+    if (actionErr) {
+      throw new Error(`[ops/webforms/:id] action fetch failed: ${actionErr.message}`);
+    }
+    const action = actionRows?.[0] || null;
+
+    // Optionally fetch controller context
     let controller: any = null;
-    if (actionCtx && actionCtx[0]?.controller_id) {
-      const { data: c } = await db
+    if (action?.controller_id) {
+      const { data: cRows, error: cErr } = await db
         .from("controllers")
         .select("id, name, domain, metadata")
-        .eq("id", actionCtx[0].controller_id)
+        .eq("id", action.controller_id)
         .limit(1);
-      controller = c?.[0] || null;
+
+      if (!cErr && cRows && cRows[0]) {
+        controller = cRows[0];
+      }
     }
 
     return NextResponse.json({
       ok: true,
       job,
-      action: actionCtx?.[0] || null,
+      action,
       controller,
     });
   } catch (e: any) {
