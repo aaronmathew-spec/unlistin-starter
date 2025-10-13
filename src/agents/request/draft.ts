@@ -35,6 +35,7 @@ type Controller = {
   name: string;
   domain: string | null;
   country: string | null;
+  dsar_url: string | null;                 // <-- added
   metadata: Record<string, any> | null;
 };
 
@@ -69,7 +70,10 @@ async function controllerIdsForSubject(subjectId: string): Promise<string[]> {
 
 async function loadControllers(ids: string[]): Promise<Record<string, Controller>> {
   if (ids.length === 0) return {};
-  const { data, error } = await db.from("controllers").select("id, name, domain, country, metadata").in("id", ids);
+  const { data, error } = await db
+    .from("controllers")
+    .select("id, name, domain, country, dsar_url, metadata")  // <-- include dsar_url
+    .in("id", ids);
   if (error) throw new Error(`[draft] controllers load error: ${error.message}`);
   const map: Record<string, Controller> = {};
   for (const r of data || []) map[(r as any).id] = r as any;
@@ -140,7 +144,12 @@ function buildEmailTemplate(ctrl: Controller, policy: ControllerPolicyRow["polic
 }
 
 function buildWebformPayload(ctrl: Controller, policy: ControllerPolicyRow["policy"], subject: Subject) {
-  const url = policy.contact.url || ctrl.dsar_url || ctrl.metadata?.contact_form || ctrl.metadata?.portal_url || "";
+  const url =
+    policy.contact.url ||
+    ctrl.dsar_url ||
+    (ctrl.metadata?.contact_form as string | undefined) ||
+    (ctrl.metadata?.portal_url as string | undefined) ||
+    "";
   const fields: Record<string, any> = {};
   for (const f of policy.requiredFields || []) {
     switch (f.key) {
