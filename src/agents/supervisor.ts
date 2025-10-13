@@ -21,16 +21,70 @@ type ProgressKey =
   | "requestPercent"
   | "verificationPercent";
 
+/**
+ * Update agent_runs and emit signed webhooks (fire-and-forget).
+ * Events: run.<status> (if provided) or run.updated
+ */
 async function setRunState(taskId: string, patch: Partial<AgentState>, status?: string) {
-  const { error } = await db
+  const { data: run, error } = await db
     .from("agent_runs")
     .update({
       state: patch,
       status: status ?? (patch as any).stage ?? null,
       updated_at: new Date().toISOString(),
     })
-    .eq("id", taskId);
-  if (error) console.warn("[supervisor] agent_runs update failed:", error.message);
+    .eq("id", taskId)
+    .select("id, subject_id, status, updated_at")
+    .single();
+
+  if (error) {
+    console.warn("[supervisor] agent_runs update failed:", error.message);
+    return;
+  }
+
+  // Emit webhook asynchronously (non-blocking)
+  (async () => {
+    try {
+      if (!run?.subject_id) return;
+
+      // Find owning user for the subject
+      const { data: s, error: sErr } = await db
+        .from("subjects")
+        .select("user_id")
+        .eq("id", run.subject_id)
+        .single();
+      if (sErr || !s?.user_id) return;
+
+      const event = status ? `run.${status}` : "run.updated";
+      const payload = {
+        runId: run.id,
+        subjectId: run.subject_id,
+        status: run.status,
+        updatedAt: run.updated_at,
+      };
+
+      // Fire-and-forget webhook
+      try {
+        const mod = await import("@/lib/webhooks");
+        await mod.emitWebhook(s.user_id, event, payload);
+      } catch (wErr: any) {
+        console.warn("[supervisor] webhook emit failed:", wErr?.message || wErr);
+      }
+
+      // Optional: lightweight audit log (best-effort)
+      try {
+        await db.from("audit_log").insert({
+          user_id: s.user_id,
+          action: "run_state_updated",
+          target_type: "agent_run",
+          target_id: run.id,
+          meta: payload,
+        });
+      } catch {}
+    } catch (e: any) {
+      console.warn("[supervisor] webhook/audit sidecar error:", e?.message || e);
+    }
+  })().catch(() => {});
 }
 
 function bumpProgress(state: AgentState, key: ProgressKey, value: number): AgentState {
@@ -73,7 +127,10 @@ async function getSubject(subjectId: string) {
   };
 }
 
-function containsIdentifier(html: string, subject: { email?: string | null; phone?: string | null; name?: string | null }) {
+function containsIdentifier(
+  html: string,
+  subject: { email?: string | null; phone?: string | null; name?: string | null }
+) {
   const hay = (html || "").toLowerCase();
   const tests: string[] = [];
   if (subject.email) tests.push(subject.email.toLowerCase());
@@ -144,11 +201,11 @@ export async function executeWorkflow(initial: AgentState) {
     await createDraftActions({ subjectId: state.subjectId });
 
     state = bumpProgress(state, "policyPercent", 100);
-    state.stage = "request_generation"; // <-- valid union value
+    state.stage = "request_generation"; // valid union value
     await setRunState(state.taskId, state, "request_generation");
 
     // 3) DISPATCH
-    state.stage = "dispatch"; // <-- valid union value
+    state.stage = "dispatch"; // valid union value
     await setRunState(state.taskId, state, "dispatch");
 
     await dispatchDraftsForSubject(state.subjectId);
@@ -166,7 +223,7 @@ export async function executeWorkflow(initial: AgentState) {
     for (const a of actions as any[]) {
       const targetUrl = await resolveTargetUrl(state.subjectId, a.controller_id, a.to);
       if (!targetUrl) {
-        // No URL to check: consider verified (absence cannot be confirmed)
+        // No URL to check -> record minimal verification & mark verified
         await db.from("verifications").insert({
           action_id: a.id,
           subject_id: state.subjectId,
@@ -186,7 +243,7 @@ export async function executeWorkflow(initial: AgentState) {
         url: targetUrl,
       });
 
-      // Lightweight presence check by fetching HTML (separate from screenshot)
+      // Independent presence check via HTML fetch (not from screenshot)
       let found = false;
       try {
         const res = await fetch(targetUrl, { method: "GET" });
@@ -226,7 +283,7 @@ export async function executeWorkflow(initial: AgentState) {
     state = bumpProgress(state, "verificationPercent", 100);
     await setRunState(state.taskId, state);
 
-    // 5) PROOF COMMIT (Merkle + signature)
+    // 5) PROOF COMMIT (Merkle + Ed25519 signature)
     const hashes = await collectVerificationHashes(state.subjectId);
     if (hashes.length > 0) {
       const { rootHex } = buildMerkleRoot(hashes);
