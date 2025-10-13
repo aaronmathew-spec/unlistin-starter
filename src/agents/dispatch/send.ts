@@ -34,7 +34,8 @@ type ActionRow = {
   last_attempt_at: string | null;
   next_attempt_at: string | null;
   throttle_key: string | null;
-  delivery_log: any[];
+  delivery_log: any[] | null;
+  verification_info?: any;
 };
 
 function nowISO() {
@@ -70,8 +71,6 @@ function throttleKeyFor(a: ActionRow) {
 }
 
 function setSLAs(a: ActionRow) {
-  // derive SLA deadlines from policyVersion hints if present
-  const p = a?.meta?.policyVersion ? a.meta.policyVersion : null;
   const svc = a?.meta?.serviceLevels || {};
   const ackH = typeof svc.acknowledgementHours === "number" ? svc.acknowledgementHours : 72;
   const respD = typeof svc.responseDays === "number" ? svc.responseDays : 30;
@@ -81,28 +80,35 @@ function setSLAs(a: ActionRow) {
   const ack = new Date(t + ackH * 60 * 60 * 1000).toISOString();
   const resp = new Date(t + respD * 24 * 60 * 60 * 1000).toISOString();
   const del = new Date(t + delD * 24 * 60 * 60 * 1000).toISOString();
-  return { ack, resp, del, policyVersion: p };
+  return { ack, resp, del };
 }
 
 async function appendDeliveryLog(actionId: string, entry: any) {
+  // Get current log (minimal fields to avoid large payloads)
+  const { data: current, error: readErr } = await db
+    .from("actions")
+    .select("delivery_log")
+    .eq("id", actionId)
+    .single();
+
+  if (readErr) {
+    // Non-fatal: continue attempting to insert row into action_deliveries
+    // eslint-disable-next-line no-console
+    console.warn("[dispatch] delivery_log read failed:", readErr.message);
+  }
+
+  const prev = (current?.delivery_log ?? []) as any[];
+  const next = [...prev, entry];
+
   await db
     .from("actions")
-    .update({
-      delivery_log: db.rpc ? undefined : undefined, // placeholder (no-op for type safety)
-    })
-    .eq("id", actionId);
-
-  // fall back to explicit SQL jsonb append to avoid type inference issues
-  await db.rpc("exec_sql", {
-    sql: `
-      update actions
-      set delivery_log = coalesce(delivery_log, '[]'::jsonb) || $1::jsonb
-      where id = $2
-    `,
-    params: [JSON.stringify([entry]), actionId],
-  }).catch(() => {
-    /* ignore on environments without RPC helper */
-  });
+    .update({ delivery_log: next })
+    .eq("id", actionId)
+    .then(() => {})
+    .catch((e) => {
+      // eslint-disable-next-line no-console
+      console.warn("[dispatch] delivery_log update failed:", e?.message || e);
+    });
 
   // also insert a row to action_deliveries if table exists
   await db
@@ -127,9 +133,9 @@ async function sendEmail(a: ActionRow) {
   const to = a.to || "";
 
   if (!transport || !to) {
-    // No SMTP configured — mark for manual review rather than failing hard.
+    // No SMTP configured — mark for retry with a preview in logs.
     return {
-      ok: false,
+      ok: false as const,
       code: "NO_SMTP",
       message: "SMTP not configured or missing recipient",
       preview: { from, to, subject: a?.payload?.subject, body: a?.payload?.body },
@@ -143,43 +149,34 @@ async function sendEmail(a: ActionRow) {
     text: a?.payload?.body || "",
   });
 
-  return { ok: true, providerId: info.messageId || null };
+  return { ok: true as const, providerId: info.messageId || null };
 }
 
 async function sendWebform(a: ActionRow) {
-  // For production, headless submission with Playwright/puppeteer + human-like pacing.
-  // Here, we only record intent and mark as pending/escalate for a separate worker.
   const url = a?.payload?.url || a.to || "";
   if (!url) {
-    return { ok: false, code: "NO_URL", message: "Missing webform URL" };
+    return { ok: false as const, code: "NO_URL", message: "Missing webform URL" };
   }
   // Enqueue for worker (future): for now, simulate accepted queue.
-  return { ok: true, queued: true };
+  return { ok: true as const, queued: true };
 }
 
 async function sendPortal(a: ActionRow) {
-  // Similar to webform — defer to a dedicated worker.
   const url = a?.payload?.url || a.to || "";
   if (!url) {
-    return { ok: false, code: "NO_URL", message: "Missing portal URL" };
+    return { ok: false as const, code: "NO_URL", message: "Missing portal URL" };
   }
-  return { ok: true, queued: true };
+  return { ok: true as const, queued: true };
 }
 
 // --- Core dispatch ---------------------------------------------------------
 
 async function fetchQueue(limit: number): Promise<ActionRow[]> {
-  // pick drafts and retryable items whose next_attempt_at is due
   const now = new Date().toISOString();
   const { data, error } = await db
     .from("actions")
     .select("*")
-    .or(
-      [
-        "status.eq.draft",
-        `and(status.eq.escalate_pending,next_attempt_at.lte.${now})`,
-      ].join(",")
-    )
+    .or(["status.eq.draft", `and(status.eq.escalate_pending,next_attempt_at.lte.${now})`].join(","))
     .order("created_at", { ascending: true })
     .limit(limit);
 
@@ -188,7 +185,6 @@ async function fetchQueue(limit: number): Promise<ActionRow[]> {
 }
 
 export async function dispatchDraftsForSubject(subjectId: string) {
-  // narrow to the subject when called from supervisor
   const now = new Date().toISOString();
   const { data, error } = await db
     .from("actions")
@@ -205,7 +201,6 @@ export async function dispatchDraftsForSubject(subjectId: string) {
 }
 
 export async function dispatchAllDue() {
-  // generic worker entry point
   const queue = await fetchQueue(CONCURRENCY);
   await processQueue(queue);
 }
@@ -243,9 +238,11 @@ async function processQueue(queue: ActionRow[]) {
     if (result.ok) {
       const { ack, resp, del } = setSLAs(a);
       const status =
-        a.channel === "email" ? "sent" :
-        a.channel === "webform" || a.channel === "portal" ? "escalate_pending" :
-        "sent";
+        a.channel === "email"
+          ? "sent"
+          : a.channel === "webform" || a.channel === "portal"
+          ? "escalate_pending"
+          : "sent";
 
       await db
         .from("actions")
