@@ -2,8 +2,6 @@ import { AgentState, AgentResult, DiscoveredItem, DISCOVERY_TARGETS } from "../t
 import { createClient } from "@supabase/supabase-js";
 import { randomUUID } from "crypto";
 
-// If you created types at "@/agents/discovery/types", we import the shape here.
-// This lets the API route call runDiscovery(input) without needing AgentState.
 type DiscoveryInput = {
   subjectId: string;        // UUID
   orgId?: string;           // optional; not stored in discovered_items
@@ -12,7 +10,6 @@ type DiscoveryInput = {
   name?: string | null;
 };
 
-// Database helper using YOUR pattern
 function db() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -24,7 +21,6 @@ function db() {
 }
 
 function normalizePhone(phone: string) {
-  // keep + and digits only
   return phone.replace(/[^\d+]/g, "");
 }
 
@@ -44,7 +40,7 @@ async function getControllerIdByName(name: string): Promise<string | null> {
   return data?.id ?? null;
 }
 
-// Truecaller crawler (URL synthesis; verification will do the proof)
+// Truecaller crawler (URL synthesis; verification will do proof)
 async function crawlTruecaller(phone: string): Promise<DiscoveredItem[]> {
   const normalizedPhone = normalizePhone(phone);
   console.log(`[Discovery] Crawling Truecaller for ${normalizedPhone}`);
@@ -67,7 +63,6 @@ async function crawlTruecaller(phone: string): Promise<DiscoveredItem[]> {
         method: "web_search",
         timestamp: new Date().toISOString(),
       },
-      controllerId,
     },
     discoveredAt: new Date(),
   };
@@ -98,7 +93,6 @@ async function crawlJustDial(phone: string): Promise<DiscoveredItem[]> {
         method: "web_search",
         timestamp: new Date().toISOString(),
       },
-      controllerId,
     },
     discoveredAt: new Date(),
   };
@@ -107,26 +101,22 @@ async function crawlJustDial(phone: string): Promise<DiscoveredItem[]> {
 }
 
 /**
- * NEW: runDiscovery(input)
- * - Simple, stateless discovery that your API route can call.
- * - Writes directly to discovered_items (controller_id resolved when possible).
- * - Returns count of inserted rows.
+ * Stateless discovery for API route usage.
+ * Writes to discovered_items and returns number inserted.
  */
 export async function runDiscovery(input: DiscoveryInput): Promise<{ inserted: number }> {
   const supabase = db();
 
-  // Gather candidates (extend with email/name providers later)
   const crawlers: Promise<DiscoveredItem[]>[] = [];
   if (input.phone) {
     crawlers.push(crawlTruecaller(input.phone));
     crawlers.push(crawlJustDial(input.phone));
   }
-  // You can add email/name-based providers here later.
 
   const results = await Promise.all(crawlers);
   const items = results.flat();
 
-  // Deduplicate by (source + url)
+  // Dedupe by (source + url)
   const seen = new Set<string>();
   const unique = items.filter((it) => {
     const k = `${it.source}:${it.url}`;
@@ -137,21 +127,15 @@ export async function runDiscovery(input: DiscoveryInput): Promise<{ inserted: n
 
   if (unique.length === 0) return { inserted: 0 };
 
-  // Prepare rows for insert
+  // Prepare rows for insert; resolve controller_id by source name
   const rows = await Promise.all(
     unique.map(async (item) => {
       let controllerId: string | null = null;
-
-      if (item.evidence && (item.evidence as any).controllerId) {
-        controllerId = (item.evidence as any).controllerId as string;
-      } else if (item.source === "Truecaller") {
-        controllerId = await getControllerIdByName("Truecaller");
-      } else if (item.source === "JustDial") {
-        controllerId = await getControllerIdByName("JustDial");
-      }
+      if (item.source === "Truecaller") controllerId = await getControllerIdByName("Truecaller");
+      else if (item.source === "JustDial") controllerId = await getControllerIdByName("JustDial");
 
       return {
-        id: item.id, // uuid is fine if your table defines it
+        id: item.id,
         subject_id: input.subjectId,
         controller_id: controllerId, // may be null if unknown
         source: item.source,
@@ -173,7 +157,7 @@ export async function runDiscovery(input: DiscoveryInput): Promise<{ inserted: n
   return { inserted: rows.length };
 }
 
-// ===== Your existing agent entry remains (supervisor uses this) =====
+// ===== Supervisor-driven agent (kept intact) =====
 export async function discoveryAgent(state: AgentState): Promise<AgentResult> {
   console.log(`[Discovery Agent] Starting for subject ${state.subjectId}`);
 
@@ -199,7 +183,6 @@ export async function discoveryAgent(state: AgentState): Promise<AgentResult> {
       };
     }
 
-    // Run crawlers in parallel (extend with email/name providers later)
     const crawlers = [
       phone ? crawlTruecaller(phone) : Promise.resolve<DiscoveredItem[]>([]),
       phone ? crawlJustDial(phone) : Promise.resolve<DiscoveredItem[]>([]),
@@ -208,7 +191,7 @@ export async function discoveryAgent(state: AgentState): Promise<AgentResult> {
     const results = await Promise.all(crawlers);
     const newItems = results.flat();
 
-    // Deduplicate against state (source + url)
+    // Deduplicate against current state
     const existingKeys = new Set(
       (state.discoveredItems || []).map((item) => `${item.source}:${item.url}`)
     );
@@ -218,21 +201,14 @@ export async function discoveryAgent(state: AgentState): Promise<AgentResult> {
 
     console.log(`[Discovery Agent] Found ${uniqueNewItems.length} new items`);
 
-    // Persist to database
     if (uniqueNewItems.length > 0) {
       const supabase = db();
 
       const rows = await Promise.all(
         uniqueNewItems.map(async (item) => {
           let controllerId: string | null = null;
-
-          if (item.evidence && (item.evidence as any).controllerId) {
-            controllerId = (item.evidence as any).controllerId as string;
-          } else if (item.source === "Truecaller") {
-            controllerId = await getControllerIdByName("Truecaller");
-          } else if (item.source === "JustDial") {
-            controllerId = await getControllerIdByName("JustDial");
-          }
+          if (item.source === "Truecaller") controllerId = await getControllerIdByName("Truecaller");
+          else if (item.source === "JustDial") controllerId = await getControllerIdByName("JustDial");
 
           return {
             id: item.id,
