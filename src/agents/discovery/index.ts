@@ -2,11 +2,23 @@ import { AgentState, AgentResult, DiscoveredItem, DISCOVERY_TARGETS } from "../t
 import { createClient } from "@supabase/supabase-js";
 import { randomUUID } from "crypto";
 
+// If you created types at "@/agents/discovery/types", we import the shape here.
+// This lets the API route call runDiscovery(input) without needing AgentState.
+type DiscoveryInput = {
+  subjectId: string;        // UUID
+  orgId?: string;           // optional; not stored in discovered_items
+  email?: string | null;
+  phone?: string | null;
+  name?: string | null;
+};
+
 // Database helper using YOUR pattern
 function db() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    process.env.SUPABASE_SERVICE_ROLE ||
+      process.env.SUPABASE_SERVICE_ROLE_KEY ||
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     { auth: { persistSession: false } }
   );
 }
@@ -55,14 +67,10 @@ async function crawlTruecaller(phone: string): Promise<DiscoveredItem[]> {
         method: "web_search",
         timestamp: new Date().toISOString(),
       },
+      controllerId,
     },
     discoveredAt: new Date(),
-    // NOTE: DiscoveredItem type likely doesn’t include controllerId;
-    // we’ll attach controller_id at insert time below.
   };
-
-  // Stash controllerId in evidence for now (doesn't hurt; optional)
-  (item.evidence as any).controllerHint = controllerId;
 
   return [item];
 }
@@ -90,16 +98,82 @@ async function crawlJustDial(phone: string): Promise<DiscoveredItem[]> {
         method: "web_search",
         timestamp: new Date().toISOString(),
       },
+      controllerId,
     },
     discoveredAt: new Date(),
   };
 
-  (item.evidence as any).controllerHint = controllerId;
-
   return [item];
 }
 
-// Main discovery agent
+/**
+ * NEW: runDiscovery(input)
+ * - Simple, stateless discovery that your API route can call.
+ * - Writes directly to discovered_items (controller_id resolved when possible).
+ * - Returns count of inserted rows.
+ */
+export async function runDiscovery(input: DiscoveryInput): Promise<{ inserted: number }> {
+  const supabase = db();
+
+  // Gather candidates (extend with email/name providers later)
+  const crawlers: Promise<DiscoveredItem[]>[] = [];
+  if (input.phone) {
+    crawlers.push(crawlTruecaller(input.phone));
+    crawlers.push(crawlJustDial(input.phone));
+  }
+  // You can add email/name-based providers here later.
+
+  const results = await Promise.all(crawlers);
+  const items = results.flat();
+
+  // Deduplicate by (source + url)
+  const seen = new Set<string>();
+  const unique = items.filter((it) => {
+    const k = `${it.source}:${it.url}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+
+  if (unique.length === 0) return { inserted: 0 };
+
+  // Prepare rows for insert
+  const rows = await Promise.all(
+    unique.map(async (item) => {
+      let controllerId: string | null = null;
+
+      if (item.evidence && (item.evidence as any).controllerId) {
+        controllerId = (item.evidence as any).controllerId as string;
+      } else if (item.source === "Truecaller") {
+        controllerId = await getControllerIdByName("Truecaller");
+      } else if (item.source === "JustDial") {
+        controllerId = await getControllerIdByName("JustDial");
+      }
+
+      return {
+        id: item.id, // uuid is fine if your table defines it
+        subject_id: input.subjectId,
+        controller_id: controllerId, // may be null if unknown
+        source: item.source,
+        url: item.url,
+        data_type: item.dataType,
+        confidence: item.confidence,
+        evidence: item.evidence ?? null,
+        status: "pending",
+        created_at: item.discoveredAt?.toISOString?.() ?? new Date().toISOString(),
+      };
+    })
+  );
+
+  const { error } = await supabase.from("discovered_items").insert(rows);
+  if (error) {
+    throw new Error(`[runDiscovery] insert failed: ${error.message}`);
+  }
+
+  return { inserted: rows.length };
+}
+
+// ===== Your existing agent entry remains (supervisor uses this) =====
 export async function discoveryAgent(state: AgentState): Promise<AgentResult> {
   console.log(`[Discovery Agent] Starting for subject ${state.subjectId}`);
 
@@ -127,14 +201,14 @@ export async function discoveryAgent(state: AgentState): Promise<AgentResult> {
 
     // Run crawlers in parallel (extend with email/name providers later)
     const crawlers = [
-      phone ? crawlTruecaller(phone) : Promise.resolve([]),
-      phone ? crawlJustDial(phone) : Promise.resolve([]),
+      phone ? crawlTruecaller(phone) : Promise.resolve<DiscoveredItem[]>([]),
+      phone ? crawlJustDial(phone) : Promise.resolve<DiscoveredItem[]>([]),
     ];
 
     const results = await Promise.all(crawlers);
     const newItems = results.flat();
 
-    // Deduplicate (source + url key)
+    // Deduplicate against state (source + url)
     const existingKeys = new Set(
       (state.discoveredItems || []).map((item) => `${item.source}:${item.url}`)
     );
@@ -148,27 +222,22 @@ export async function discoveryAgent(state: AgentState): Promise<AgentResult> {
     if (uniqueNewItems.length > 0) {
       const supabase = db();
 
-      // Resolve controller_id for each item (if present in evidence.controllerHint)
       const rows = await Promise.all(
         uniqueNewItems.map(async (item) => {
           let controllerId: string | null = null;
 
-          // Prefer explicit lookup when we know the name
-          if (item.source === "Truecaller") {
+          if (item.evidence && (item.evidence as any).controllerId) {
+            controllerId = (item.evidence as any).controllerId as string;
+          } else if (item.source === "Truecaller") {
             controllerId = await getControllerIdByName("Truecaller");
           } else if (item.source === "JustDial") {
             controllerId = await getControllerIdByName("JustDial");
           }
 
-          // fallback: evidence hint (if we ever pre-attached it)
-          if (!controllerId && item.evidence && (item.evidence as any).controllerHint) {
-            controllerId = (item.evidence as any).controllerHint as string;
-          }
-
           return {
-            id: item.id, // uuid, OK
+            id: item.id,
             subject_id: state.subjectId,
-            controller_id: controllerId, // may be null if unknown
+            controller_id: controllerId,
             source: item.source,
             url: item.url,
             data_type: item.dataType,
