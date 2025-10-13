@@ -19,16 +19,19 @@ type JobRow = {
   attempt: number;
 };
 
+type ControllerProfile = {
+  field_selectors?: Record<string, string[]>;
+  submit_selectors?: string[];
+  captcha?: { type?: string | null; sitekey?: string | null; widgetSelector?: string | null };
+  throttle_ms?: number;
+};
+
 function ms(n: number) {
   return new Promise((r) => setTimeout(r, n));
 }
 
-/**
- * Tries to map common fields to best-guess selectors. For world-class coverage,
- * you can expand this registry per domain in controller metadata later.
- */
-const FIELD_MAP: Record<string, string[]> = {
-  // logical field key => candidate CSS selectors (try in order)
+/** Default, conservative selectors. */
+const DEFAULT_FIELDS: Record<string, string[]> = {
   name: ["input[name*=name i]", "input#name", "input[autocomplete='name']"],
   email: ["input[type=email]", "input[name*=email i]", "input#email"],
   phone: ["input[type=tel]", "input[name*=phone i]", "input#phone"],
@@ -38,13 +41,21 @@ const FIELD_MAP: Record<string, string[]> = {
     "textarea",
     "input[name*=message i]",
   ],
-  // GDPR/DSR text areas
   request: [
     "textarea[name*=request i]",
     "textarea[name*=dsr i]",
     "textarea[name*=gdpr i]",
   ],
 };
+
+const DEFAULT_SUBMITS = [
+  "button[type=submit]",
+  "input[type=submit]",
+  "button:has-text('Submit')",
+  "button:has-text('Send')",
+  "button:has-text('Request')",
+  "button:has-text('Continue')",
+];
 
 async function fillIfPresent(page: any, selector: string, value: string) {
   const el = await page.$(selector);
@@ -78,15 +89,50 @@ async function clickFirst(page: any, candidates: string[]) {
   return false;
 }
 
-function buildThrottleDelay(hostname: string, min = 800, max = 1600) {
-  // per-domain human-like jitter
+function buildThrottleDelay(hostname: string, profileMs?: number, min = 800, max = 1600) {
+  if (profileMs && profileMs > 0) return profileMs;
   const base = min + Math.floor(Math.random() * (max - min));
   const bonus = hostname.includes("support") || hostname.includes("help") ? 200 : 0;
   return base + bonus;
 }
 
+async function loadControllerProfile(actionId: string, domain: string): Promise<ControllerProfile> {
+  // Prefer a controller-bound profile; fall back to a domain profile
+  const { data: action, error: aErr } = await db
+    .from("actions")
+    .select("controller_id")
+    .eq("id", actionId)
+    .single();
+
+  if (aErr) {
+    // eslint-disable-next-line no-console
+    console.warn("[webformWorker] action load failed:", aErr.message);
+  }
+
+  const controller_id = (action as any)?.controller_id ?? null;
+
+  if (controller_id) {
+    const { data } = await db
+      .from("controller_profiles")
+      .select("field_selectors, submit_selectors, captcha, throttle_ms")
+      .eq("controller_id", controller_id)
+      .limit(1);
+    if (data && data[0]) return data[0] as ControllerProfile;
+  }
+
+  const { data: dom } = await db
+    .from("controller_profiles")
+    .select("field_selectors, submit_selectors, captcha, throttle_ms")
+    .eq("domain", domain.toLowerCase())
+    .limit(1);
+
+  if (dom && dom[0]) return dom[0] as ControllerProfile;
+
+  return {};
+}
+
 async function submitWebform(job: JobRow) {
-  const { chromium }: any = await import("playwright"); // dynamic import to avoid build-time issues
+  const { chromium }: any = await import("playwright");
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
     userAgent:
@@ -95,42 +141,54 @@ async function submitWebform(job: JobRow) {
   const page = await context.newPage();
 
   const u = new URL(job.url);
-  const delay = buildThrottleDelay(u.hostname);
 
   try {
+    // Load profile & merge with defaults
+    const profile = await loadControllerProfile(job.action_id, u.hostname);
+    const FIELDS: Record<string, string[]> = {
+      ...DEFAULT_FIELDS,
+      ...(profile.field_selectors || {}),
+    };
+    const SUBMITS = (profile.submit_selectors && profile.submit_selectors.length > 0)
+      ? profile.submit_selectors
+      : DEFAULT_SUBMITS;
+    const delay = buildThrottleDelay(u.hostname, profile.throttle_ms);
+
     await page.goto(job.url, { waitUntil: "domcontentloaded", timeout: 60_000 });
     await ms(delay);
 
     const p = job.payload || {};
-    await typeBest(page, FIELD_MAP.name ?? [], p.name || p.legalName || p.fullName);
+    await typeBest(page, FIELDS.name ?? [], p.name || p.legalName || p.fullName);
     await ms(delay);
-    await typeBest(page, FIELD_MAP.email ?? [], p.email);
+    await typeBest(page, FIELDS.email ?? [], p.email);
     await ms(delay);
-    await typeBest(page, FIELD_MAP.phone ?? [], p.phone);
+    await typeBest(page, FIELDS.phone ?? [], p.phone);
     await ms(delay);
 
     const message =
       p.message ||
       p.requestText ||
       "I am exercising my right to request deletion of my personal data associated with the information provided.";
-    await typeBest(page, FIELD_MAP.message ?? [], message);
+    await typeBest(page, FIELDS.message ?? [], message);
     await ms(delay);
 
-    // Look for submit buttons
-    const clicked =
-      (await clickFirst(page, ["button[type=submit]", "button:has-text('Submit')"])) ||
-      (await clickFirst(page, ["input[type=submit]", "button:has-text('Send')"])) ||
-      (await clickFirst(page, ["button:has-text('Request')", "button:has-text('Continue')"]));
+    // Optional: if profile specifies captcha, pause for manual or future solver hook
+    if (profile.captcha?.type) {
+      // Hook point: integrate solver here if you add one later (recaptcha/hcaptcha)
+      // For now, give the page a moment (some sites lazy-load widgets)
+      await ms(1000);
+    }
 
+    // Submit
+    const clicked = await clickFirst(page, SUBMITS);
     if (!clicked) {
       throw new Error("No obvious submit button found");
     }
 
-    // wait for network/idle-ish state
     await page.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => {});
     await ms(delay);
 
-    // Best-effort confirmation capture (text + screenshot)
+    // Capture confirmation
     const html = await page.content();
     const text = (await page.textContent("body")) || "";
     const screenshot = await page.screenshot({ fullPage: true });
@@ -145,15 +203,11 @@ async function submitWebform(job: JobRow) {
     };
   } catch (e: any) {
     await browser.close();
-    return {
-      ok: false,
-      error: e?.message || String(e),
-    };
+    return { ok: false, error: e?.message || String(e) };
   }
 }
 
 export async function processNextWebformJobs(limit = 3) {
-  // 1) Pick a small batch (FIFO)
   const { data: jobs, error } = await db
     .from("webform_jobs")
     .select("*")
@@ -176,13 +230,11 @@ export async function processNextWebformJobs(limit = 3) {
     const res = await submitWebform(job);
 
     if (res.ok) {
-      // Store artifacts via our capture layer so hashes flow into proofs
       try {
         const cap = await captureAndStoreArtifacts({
           subjectId: job.subject_id,
           actionId: job.action_id,
           url: job.url,
-          // If capture layer accepts raw buffers, extend it to store `res.screenshot` & `res.html`.
         });
 
         await db
@@ -200,7 +252,6 @@ export async function processNextWebformJobs(limit = 3) {
           })
           .eq("id", job.id);
 
-        // Move action forward to "sent" (it was queued as escalate_pending)
         await db
           .from("actions")
           .update({
@@ -237,7 +288,6 @@ export async function processNextWebformJobs(limit = 3) {
         })
         .eq("id", job.id);
 
-      // Backoff the action for retry by dispatcher later
       await db
         .from("actions")
         .update({
