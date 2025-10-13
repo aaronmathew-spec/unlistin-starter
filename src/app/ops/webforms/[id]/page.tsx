@@ -6,7 +6,7 @@ type Job = {
   action_id: string;
   subject_id: string;
   url: string;
-  status: string;
+  status: "queued" | "running" | "succeeded" | "failed";
   attempt: number;
   scheduled_at?: string | null;
   run_at?: string | null;
@@ -19,7 +19,7 @@ type Job = {
 export default async function JobDetailPage({ params }: { params: { id: string } }) {
   const res = await fetch(
     `${process.env.NEXT_PUBLIC_SITE_URL || ""}/api/ops/webforms/${params.id}`,
-    { cache: "no-store", credentials: "include" }
+    { cache: "no-store" }
   );
 
   if (!res.ok) {
@@ -64,16 +64,29 @@ export default async function JobDetailPage({ params }: { params: { id: string }
           <KeyVal k="Job ID" v={<Mono>{job.id}</Mono>} />
           <KeyVal k="Action ID" v={<Mono>{job.action_id}</Mono>} />
           <KeyVal k="Subject ID" v={<Mono>{job.subject_id}</Mono>} />
-          <KeyVal k="URL" v={<a href={job.url} target="_blank" className="text-blue-600 hover:underline break-all">{job.url}</a>} />
+          <KeyVal
+            k="URL"
+            v={
+              <a href={job.url} target="_blank" className="text-blue-600 hover:underline break-all" rel="noreferrer">
+                {job.url}
+              </a>
+            }
+          />
         </Card>
 
         <Card>
           <h3 className="text-sm font-medium mb-2">Controller</h3>
           {controller ? (
             <div className="space-y-1 text-sm">
-              <div><span className="text-gray-500">Name:</span> {controller.name || "-"}</div>
-              <div><span className="text-gray-500">Domain:</span> {controller.domain || "-"}</div>
-              <div className="text-xs text-gray-500 mt-2">ID: <Mono>{controller.id}</Mono></div>
+              <div>
+                <span className="text-gray-500">Name:</span> {controller.name || "-"}
+              </div>
+              <div>
+                <span className="text-gray-500">Domain:</span> {controller.domain || "-"}
+              </div>
+              <div className="text-xs text-gray-500 mt-2">
+                ID: <Mono>{controller.id}</Mono>
+              </div>
             </div>
           ) : (
             <div className="text-sm text-gray-500">No controller context.</div>
@@ -83,8 +96,12 @@ export default async function JobDetailPage({ params }: { params: { id: string }
               <div className="h-px bg-gray-200 my-3" />
               <h3 className="text-sm font-medium mb-2">Action</h3>
               <div className="space-y-1 text-sm">
-                <div><span className="text-gray-500">Status:</span> {action.status}</div>
-                <div><span className="text-gray-500">To:</span> {action.to || "-"}</div>
+                <div>
+                  <span className="text-gray-500">Status:</span> {action.status}
+                </div>
+                <div>
+                  <span className="text-gray-500">To:</span> {action.to || "-"}
+                </div>
                 <div className="text-xs text-gray-500 mt-2">Verification Info:</div>
                 <Pre data={action.verification_info || {}} />
               </div>
@@ -97,7 +114,11 @@ export default async function JobDetailPage({ params }: { params: { id: string }
         <Card>
           <h3 className="text-sm font-medium mb-3">Confirmation / Response</h3>
           <div className="text-sm whitespace-pre-wrap">
-            {job.result?.confirmationText ? job.result.confirmationText : <span className="text-gray-500">No confirmation text captured.</span>}
+            {job.result?.confirmationText ? (
+              job.result.confirmationText
+            ) : (
+              <span className="text-gray-500">No confirmation text captured.</span>
+            )}
           </div>
         </Card>
 
@@ -147,5 +168,26 @@ function Pre({ data }: { data: any }) {
     <pre className="bg-gray-50 rounded-lg p-3 text-xs overflow-auto max-h-80">
       {JSON.stringify(data, null, 2)}
     </pre>
+  );
+}
+
+/** Inline status pill with tasteful colors */
+function StatusPill({ status }: { status: Job["status"] }) {
+  const styles: Record<Job["status"], string> = {
+    queued: "bg-amber-50 text-amber-700 ring-1 ring-amber-200",
+    running: "bg-blue-50 text-blue-700 ring-1 ring-blue-200",
+    succeeded: "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200",
+    failed: "bg-rose-50 text-rose-700 ring-1 ring-rose-200",
+  };
+  const labelMap: Record<Job["status"], string> = {
+    queued: "Queued",
+    running: "Running",
+    succeeded: "Succeeded",
+    failed: "Failed",
+  };
+  return (
+    <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${styles[status]}`}>
+      {labelMap[status]}
+    </span>
   );
 }
