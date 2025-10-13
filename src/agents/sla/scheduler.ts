@@ -14,12 +14,12 @@ function db() {
 
 /**
  * Flags actions as escalate_pending if they are older than controller.sla_days
- * and still not resolved (i.e., not 'verified', 'removed', or 'completed').
+ * and still not resolved.
  */
 export async function checkSlaAndFlagOverdues() {
   const supabase = db();
 
-  // 1) Fetch sent actions with controller SLA
+  // Only actions that were successfully sent and haven't already escalated/verified/failed.
   const { data: sent, error } = await supabase
     .from("actions")
     .select(
@@ -28,7 +28,8 @@ export async function checkSlaAndFlagOverdues() {
       controllers:controller_id ( id, name, sla_days )
     `
     )
-    .eq("status", "sent");
+    .in("status", ["sent"]) // keep tight; we won't re-flag escalated/verified/failed
+    .order("created_at", { ascending: true });
 
   if (error) throw new Error(`[sla] cannot read actions: ${error.message}`);
   if (!sent || sent.length === 0) return { scanned: 0, flagged: 0 };
@@ -39,7 +40,6 @@ export async function checkSlaAndFlagOverdues() {
     const dueAt = addDays(new Date(a.created_at), slaDays);
 
     if (new Date() > dueAt) {
-      // Mark for escalation
       const { error: updErr } = await supabase
         .from("actions")
         .update({ status: "escalate_pending" })
