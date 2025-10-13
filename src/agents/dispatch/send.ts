@@ -1,98 +1,308 @@
 // src/agents/dispatch/send.ts
 import { createClient } from "@supabase/supabase-js";
-import { sendEmail } from "./email";
-import { submitForm } from "./form";
-import { callApi } from "./api";
+import nodemailer from "nodemailer";
 
-function db() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE ||
-      process.env.SUPABASE_SERVICE_ROLE_KEY ||
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { auth: { persistSession: false } }
-  );
+const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const key =
+  process.env.SUPABASE_SERVICE_ROLE ||
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+const db = createClient(url, key, { auth: { persistSession: false } });
+
+// Backoff helpers
+const MIN_RETRY_MIN = Number(process.env.DISPATCH_MIN_RETRY_MINUTES || 15);
+const MAX_RETRY_MIN = Number(process.env.DISPATCH_MAX_RETRY_MINUTES || 180);
+const CONCURRENCY = Math.max(1, Number(process.env.DISPATCH_CONCURRENCY || 5));
+
+// Optional mail transport
+function getTransport() {
+  const url = process.env.SMTP_URL;
+  if (!url) return null;
+  return nodemailer.createTransport(url);
 }
 
-/**
- * Picks up actions with status='draft' for a subject and dispatches them.
- * Updates each action to 'sent' or 'failed' with a receipt/error.
- */
-export async function dispatchDraftsForSubject(subjectId: string) {
-  const supabase = db();
+type ActionRow = {
+  id: string;
+  subject_id: string;
+  controller_id: string | null;
+  channel: "email" | "phone" | "webform" | "api" | "legal_letter" | "portal" | "other";
+  to: string | null;
+  status: "draft" | "sent" | "escalate_pending" | "escalated" | "needs_review" | "verified";
+  payload: any;
+  meta: any;
+  retry_count: number;
+  last_attempt_at: string | null;
+  next_attempt_at: string | null;
+  throttle_key: string | null;
+  delivery_log: any[];
+};
 
-  // 1) Load drafts + controller channel data (email/form/api endpoints)
-  const { data: drafts, error } = await supabase
-    .from("actions")
-    .select(
-      `
-      id, subject_id, controller_id, channel, to, content, payload, status, created_at,
-      controllers:controller_id ( id, name, channels, sla_days )
-    `
-    )
-    .eq("subject_id", subjectId)
-    .eq("status", "draft");
+function nowISO() {
+  return new Date().toISOString();
+}
 
-  if (error) throw new Error(`[dispatch] cannot read actions: ${error.message}`);
-  if (!drafts || drafts.length === 0) return { processed: 0, sent: 0, failed: 0 };
+function clamp(min: number, val: number, max: number) {
+  return Math.max(min, Math.min(max, val));
+}
 
-  let sent = 0;
-  let failed = 0;
+function computeBackoff(retryCount: number) {
+  // linear + jitter (minutes)
+  const base = MIN_RETRY_MIN + retryCount * 20;
+  const jitter = Math.floor(Math.random() * 10);
+  const minutes = clamp(MIN_RETRY_MIN, base + jitter, MAX_RETRY_MIN);
+  const next = new Date(Date.now() + minutes * 60_000);
+  return next.toISOString();
+}
 
-  for (const a of drafts) {
-    const channel: string = (a as any).channel;
-    const to: string | null = (a as any).to ?? null;
-    const content: string | null = (a as any).content ?? null;
-    const payload: any = (a as any).payload ?? null;
-
-    try {
-      if (channel === "email") {
-        const subj = payload?.subject || "Data Deletion Request";
-        const dest = to || payload?.to;
-        const body = content || payload?.body || "";
-        const res = await sendEmail({ to: String(dest), subject: String(subj), body });
-        if (!res.ok) throw new Error(res.error);
-        await supabase
-          .from("actions")
-          .update({ status: "sent", dispatch_info: { channel, receipt: res.messageId } })
-          .eq("id", a.id);
-        sent++;
-      } else if (channel === "form") {
-        const formUrl = payload?.formUrl || to;
-        if (!formUrl) throw new Error("Missing formUrl");
-        const res = await submitForm({ formUrl, fields: payload?.fields || {} });
-        if (!res.ok) throw new Error(res.error);
-        await supabase
-          .from("actions")
-          .update({ status: "sent", dispatch_info: { channel, receipt: res.receipt } })
-          .eq("id", a.id);
-        sent++;
-      } else if (channel === "api") {
-        const endpoint = payload?.endpoint || to;
-        if (!endpoint) throw new Error("Missing api endpoint");
-        const res = await callApi({
-          endpoint,
-          method: payload?.method || "POST",
-          headers: payload?.headers || {},
-          body: payload?.body || {},
-        });
-        if (!res.ok) throw new Error(res.error);
-        await supabase
-          .from("actions")
-          .update({ status: "sent", dispatch_info: { channel, receipt: res.receipt } })
-          .eq("id", a.id);
-        sent++;
-      } else {
-        throw new Error(`Unsupported channel: ${channel}`);
-      }
-    } catch (e: any) {
-      await supabase
-        .from("actions")
-        .update({ status: "failed", dispatch_info: { channel, error: String(e?.message || e) } })
-        .eq("id", a.id);
-      failed++;
+function throttleKeyFor(a: ActionRow) {
+  // per-domain throttle for email/webform/portal
+  try {
+    if (a.channel === "email" && a.to) {
+      const m = a.to.split("@")[1] || "";
+      return `domain:${m.toLowerCase()}`;
     }
+    if ((a.channel === "webform" || a.channel === "portal") && a.to) {
+      const u = new URL(a.to);
+      return `domain:${u.hostname.toLowerCase()}`;
+    }
+  } catch {}
+  return "domain:generic";
+}
+
+function setSLAs(a: ActionRow) {
+  // derive SLA deadlines from policyVersion hints if present
+  const p = a?.meta?.policyVersion ? a.meta.policyVersion : null;
+  const svc = a?.meta?.serviceLevels || {};
+  const ackH = typeof svc.acknowledgementHours === "number" ? svc.acknowledgementHours : 72;
+  const respD = typeof svc.responseDays === "number" ? svc.responseDays : 30;
+  const delD = typeof svc.deletionDays === "number" ? svc.deletionDays : 45;
+
+  const t = Date.now();
+  const ack = new Date(t + ackH * 60 * 60 * 1000).toISOString();
+  const resp = new Date(t + respD * 24 * 60 * 60 * 1000).toISOString();
+  const del = new Date(t + delD * 24 * 60 * 60 * 1000).toISOString();
+  return { ack, resp, del, policyVersion: p };
+}
+
+async function appendDeliveryLog(actionId: string, entry: any) {
+  await db
+    .from("actions")
+    .update({
+      delivery_log: db.rpc ? undefined : undefined, // placeholder (no-op for type safety)
+    })
+    .eq("id", actionId);
+
+  // fall back to explicit SQL jsonb append to avoid type inference issues
+  await db.rpc("exec_sql", {
+    sql: `
+      update actions
+      set delivery_log = coalesce(delivery_log, '[]'::jsonb) || $1::jsonb
+      where id = $2
+    `,
+    params: [JSON.stringify([entry]), actionId],
+  }).catch(() => {
+    /* ignore on environments without RPC helper */
+  });
+
+  // also insert a row to action_deliveries if table exists
+  await db
+    .from("action_deliveries")
+    .insert({
+      action_id: actionId,
+      attempt: entry.attempt ?? 0,
+      channel: entry.channel ?? "unknown",
+      status: entry.status ?? "info",
+      info: entry,
+    })
+    .select("*")
+    .maybeSingle()
+    .catch(() => {});
+}
+
+// --- Channel senders -------------------------------------------------------
+
+async function sendEmail(a: ActionRow) {
+  const transport = getTransport();
+  const from = process.env.SENDER_EMAIL || "no-reply@unlistin.app";
+  const to = a.to || "";
+
+  if (!transport || !to) {
+    // No SMTP configured — mark for manual review rather than failing hard.
+    return {
+      ok: false,
+      code: "NO_SMTP",
+      message: "SMTP not configured or missing recipient",
+      preview: { from, to, subject: a?.payload?.subject, body: a?.payload?.body },
+    };
   }
 
-  return { processed: drafts.length, sent, failed };
+  const info = await transport.sendMail({
+    from,
+    to,
+    subject: a?.payload?.subject || `Data Deletion Request`,
+    text: a?.payload?.body || "",
+  });
+
+  return { ok: true, providerId: info.messageId || null };
+}
+
+async function sendWebform(a: ActionRow) {
+  // For production, headless submission with Playwright/puppeteer + human-like pacing.
+  // Here, we only record intent and mark as pending/escalate for a separate worker.
+  const url = a?.payload?.url || a.to || "";
+  if (!url) {
+    return { ok: false, code: "NO_URL", message: "Missing webform URL" };
+  }
+  // Enqueue for worker (future): for now, simulate accepted queue.
+  return { ok: true, queued: true };
+}
+
+async function sendPortal(a: ActionRow) {
+  // Similar to webform — defer to a dedicated worker.
+  const url = a?.payload?.url || a.to || "";
+  if (!url) {
+    return { ok: false, code: "NO_URL", message: "Missing portal URL" };
+  }
+  return { ok: true, queued: true };
+}
+
+// --- Core dispatch ---------------------------------------------------------
+
+async function fetchQueue(limit: number): Promise<ActionRow[]> {
+  // pick drafts and retryable items whose next_attempt_at is due
+  const now = new Date().toISOString();
+  const { data, error } = await db
+    .from("actions")
+    .select("*")
+    .or(
+      [
+        "status.eq.draft",
+        `and(status.eq.escalate_pending,next_attempt_at.lte.${now})`,
+      ].join(",")
+    )
+    .order("created_at", { ascending: true })
+    .limit(limit);
+
+  if (error) throw new Error(`[dispatch] queue load failed: ${error.message}`);
+  return (data || []) as any;
+}
+
+export async function dispatchDraftsForSubject(subjectId: string) {
+  // narrow to the subject when called from supervisor
+  const now = new Date().toISOString();
+  const { data, error } = await db
+    .from("actions")
+    .select("*")
+    .eq("subject_id", subjectId)
+    .in("status", ["draft", "escalate_pending"])
+    .or(`next_attempt_at.is.null,next_attempt_at.lte.${now}`)
+    .order("created_at", { ascending: true })
+    .limit(CONCURRENCY);
+
+  if (error) throw new Error(`[dispatch] actions fetch failed: ${error.message}`);
+  const queue = (data || []) as ActionRow[];
+  await processQueue(queue);
+}
+
+export async function dispatchAllDue() {
+  // generic worker entry point
+  const queue = await fetchQueue(CONCURRENCY);
+  await processQueue(queue);
+}
+
+async function processQueue(queue: ActionRow[]) {
+  for (const a of queue) {
+    const throttle = throttleKeyFor(a);
+    const attempt = (a.retry_count || 0) + 1;
+
+    // optimistic mark attempt timestamp & throttle
+    await db
+      .from("actions")
+      .update({
+        last_attempt_at: nowISO(),
+        throttle_key: throttle,
+      })
+      .eq("id", a.id);
+
+    let result:
+      | { ok: true; providerId?: string | null; queued?: boolean }
+      | { ok: false; code: string; message: string; preview?: any };
+
+    try {
+      if (a.channel === "email") result = await sendEmail(a);
+      else if (a.channel === "webform") result = await sendWebform(a);
+      else if (a.channel === "portal") result = await sendPortal(a);
+      else {
+        result = { ok: false, code: "UNSUPPORTED_CHANNEL", message: a.channel };
+      }
+    } catch (err: any) {
+      result = { ok: false, code: "EXCEPTION", message: err?.message || String(err) };
+    }
+
+    // finalize per result
+    if (result.ok) {
+      const { ack, resp, del } = setSLAs(a);
+      const status =
+        a.channel === "email" ? "sent" :
+        a.channel === "webform" || a.channel === "portal" ? "escalate_pending" :
+        "sent";
+
+      await db
+        .from("actions")
+        .update({
+          status,
+          retry_count: 0,
+          next_attempt_at: null,
+          sla_ack_due_at: ack,
+          sla_response_due_at: resp,
+          sla_deletion_due_at: del,
+          verification_info: {
+            ...(a as any).verification_info,
+            dispatch: {
+              at: nowISO(),
+              channel: a.channel,
+              providerId: (result as any).providerId ?? null,
+              queued: (result as any).queued ?? false,
+            },
+          },
+        })
+        .eq("id", a.id);
+
+      await appendDeliveryLog(a.id, {
+        at: nowISO(),
+        attempt,
+        channel: a.channel,
+        status: "ok",
+        detail: result,
+      });
+    } else {
+      const next = computeBackoff(attempt);
+      await db
+        .from("actions")
+        .update({
+          status: "escalate_pending", // keep in queue for retry/escalation
+          retry_count: attempt,
+          next_attempt_at: next,
+          verification_info: {
+            ...(a as any).verification_info,
+            dispatch_error: {
+              at: nowISO(),
+              code: (result as any).code,
+              message: (result as any).message,
+              preview: (result as any).preview || null,
+            },
+          },
+        })
+        .eq("id", a.id);
+
+      await appendDeliveryLog(a.id, {
+        at: nowISO(),
+        attempt,
+        channel: a.channel,
+        status: "error",
+        error: result,
+        next_attempt_at: next,
+      });
+    }
+  }
 }
