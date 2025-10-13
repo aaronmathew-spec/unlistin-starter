@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Resolve or create subject
-    let subjectId = parsed.subjectId ?? null;
+    let subjectId: string | null = parsed.subjectId ?? null;
     let email: string | null = null;
     let phone: string | null = null;
     let name: string | null = null;
@@ -57,10 +57,7 @@ export async function POST(req: NextRequest) {
         .eq("id", parsed.subjectId)
         .single();
       if (sErr || !s) {
-        return NextResponse.json(
-          { error: "Subject not found" },
-          { status: 404 }
-        );
+        return NextResponse.json({ error: "Subject not found" }, { status: 404 });
       }
       if (s.user_id !== user.id) {
         return NextResponse.json({ error: "Forbidden" }, { status: 403 });
@@ -112,12 +109,13 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // FIX: be explicit; TS doesn't accept `subjectId!` shorthand in object literal
     const input: DiscoveryInput = {
-      subjectId!,
+      subjectId: subjectId as string,
       orgId: orgs.id,
-      email,
-      phone,
-      name,
+      email: email ?? undefined,
+      phone: phone ?? undefined,
+      name: name ?? undefined,
     };
 
     const result = await runDiscovery(input);
