@@ -18,10 +18,20 @@ const InputSchema = z.object({
   subjectId: z.string().uuid(),
 });
 
+async function countByStatus(subjectId: string, status: string) {
+  const { count, error } = await db
+    .from("actions")
+    .select("*", { count: "exact", head: true })
+    .eq("subject_id", subjectId)
+    .eq("status", status);
+  if (error) return null;
+  return typeof count === "number" ? count : null;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const parsed = InputSchema.parse(body);
+    const { subjectId } = InputSchema.parse(body);
 
     // Auth
     const supabase = getServerSupabase();
@@ -37,22 +47,43 @@ export async function POST(req: NextRequest) {
     const { data: s, error: sErr } = await db
       .from("subjects")
       .select("user_id")
-      .eq("id", parsed.subjectId)
+      .eq("id", subjectId)
       .single();
 
     if (sErr || !s) return NextResponse.json({ error: "Subject not found" }, { status: 404 });
     if (s.user_id !== user.id) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
-    const result = await dispatchDraftsForSubject(parsed.subjectId);
+    // Snapshot (before)
+    const before = {
+      draft: await countByStatus(subjectId, "draft"),
+      escalate_pending: await countByStatus(subjectId, "escalate_pending"),
+      sent: await countByStatus(subjectId, "sent"),
+      needs_review: await countByStatus(subjectId, "needs_review"),
+      verified: await countByStatus(subjectId, "verified"),
+    };
+
+    // Execute dispatch (idempotent, throttled, retry-aware)
+    await dispatchDraftsForSubject(subjectId);
+
+    // Snapshot (after)
+    const after = {
+      draft: await countByStatus(subjectId, "draft"),
+      escalate_pending: await countByStatus(subjectId, "escalate_pending"),
+      sent: await countByStatus(subjectId, "sent"),
+      needs_review: await countByStatus(subjectId, "needs_review"),
+      verified: await countByStatus(subjectId, "verified"),
+    };
 
     return NextResponse.json({
-      subjectId: parsed.subjectId,
-      ...result,
-      message: "Dispatch attempted for draft actions.",
+      ok: true,
+      subjectId,
+      message: "Dispatch attempted for due actions.",
+      before,
+      after,
     });
   } catch (err: any) {
     if (err instanceof z.ZodError) {
-      return NextResponse.json({ error: "Invalid request", details: err.errors }, { status: 400 });
+      return NextResponse.json({ error: "Invalid request", details: err.issues }, { status: 400 });
     }
     console.error("[api/agents/dispatch] error:", err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
