@@ -29,7 +29,7 @@ type SynthesizedPolicy = {
   controllerId: string;
   preferredChannel: "email" | "webform" | "portal" | "other";
   requiredFields: Array<{
-    key: string;            // e.g., "full_name", "email", "phone"
+    key: string;
     type: "string" | "email" | "phone" | "file" | "enum";
     required: boolean;
     hints?: string;
@@ -44,8 +44,8 @@ type SynthesizedPolicy = {
     deletionDays?: number;
   };
   contact: {
-    to?: string | null;     // email address if email channel
-    url?: string | null;    // DSAR/contact URL if webform/portal
+    to?: string | null;
+    url?: string | null;
   };
   escalation?: {
     method: "email" | "webform" | "portal" | "none";
@@ -76,9 +76,7 @@ async function discoveredControllers(subjectId: string): Promise<string[]> {
     .eq("subject_id", subjectId)
     .not("controller_id", "is", null);
   if (error) throw new Error(`[policy] discovered_items load failed: ${error.message}`);
-  const ids = (data || [])
-    .map((r: any) => r.controller_id as string)
-    .filter(Boolean);
+  const ids = (data || []).map((r: any) => r.controller_id as string).filter(Boolean);
   return Array.from(new Set(ids));
 }
 
@@ -109,15 +107,25 @@ async function writePolicy(controllerId: string, policy: SynthesizedPolicy, sour
   if (error) throw new Error(`[policy] insert failed: ${error.message}`);
 }
 
-function fallbackPolicy(controller: ControllerRow, subject: { email: string | null; phone: string | null; name: string | null }): SynthesizedPolicy {
+function fallbackPolicy(
+  controller: ControllerRow,
+  subject: { email: string | null; phone: string | null; name: string | null }
+): SynthesizedPolicy {
   const channel: SynthesizedPolicy["preferredChannel"] =
-    controller.channel_types?.includes("email") ? "email" :
-    controller.channel_types?.includes("webform") ? "webform" :
-    controller.channel_types?.includes("portal") ? "portal" : "other";
+    controller.channel_types?.includes("email")
+      ? "email"
+      : controller.channel_types?.includes("webform")
+      ? "webform"
+      : controller.channel_types?.includes("portal")
+      ? "portal"
+      : "other";
 
   const contact = {
     to: channel === "email" ? (controller.metadata?.contact_email || null) : null,
-    url: channel !== "email" ? (controller.dsar_url || controller.contact_urls?.[0] || controller.privacy_url || null) : null,
+    url:
+      channel !== "email"
+        ? controller.dsar_url || controller.contact_urls?.[0] || controller.privacy_url || null
+        : null,
   };
 
   return {
@@ -129,7 +137,9 @@ function fallbackPolicy(controller: ControllerRow, subject: { email: string | nu
       { key: "email", type: "email", required: !!subject.email },
       { key: "phone", type: "phone", required: !!subject.phone },
     ],
-    evidence: { identity: controller.auth_type === "email-verify" ? ["email-otp"] : controller.auth_type === "captcha" ? ["none"] : ["none"] },
+    evidence: {
+      identity: controller.auth_type === "email-verify" ? ["email-otp"] : controller.auth_type === "captcha" ? ["none"] : ["none"],
+    },
     serviceLevels: { responseDays: 30, deletionDays: 45 },
     contact,
     escalation: { method: "none" },
@@ -137,7 +147,10 @@ function fallbackPolicy(controller: ControllerRow, subject: { email: string | nu
   };
 }
 
-async function synthesizePolicy(controller: ControllerRow, subject: { email: string | null; phone: string | null; name: string | null }) {
+async function synthesizePolicy(
+  controller: ControllerRow,
+  subject: { email: string | null; phone: string | null; name: string | null }
+) {
   const system = `You are a compliance orchestration system. Produce a strict JSON policy describing how to submit a Data Deletion (DSAR) request to the given controller.
 - Use keys exactly as in the schema shown to you.
 - Prefer the controller's declared DSAR or privacy contact endpoints.
@@ -167,16 +180,18 @@ async function synthesizePolicy(controller: ControllerRow, subject: { email: str
     fallback,
   });
 
-  // Normalize & ensure required fields
   const normalized: SynthesizedPolicy = {
     version: typeof result.version === "number" ? result.version : 1,
     controllerId: controller.id,
-    preferredChannel: (["email", "webform", "portal", "other"] as const).includes(result.preferredChannel as any)
+    preferredChannel: (["email", "webform", "portal", "other"] as const).includes(
+      result.preferredChannel as any
+    )
       ? (result.preferredChannel as any)
       : fallback.preferredChannel,
-    requiredFields: Array.isArray(result.requiredFields) && result.requiredFields.length
-      ? result.requiredFields
-      : fallback.requiredFields,
+    requiredFields:
+      Array.isArray(result.requiredFields) && result.requiredFields.length
+        ? result.requiredFields
+        : fallback.requiredFields,
     evidence: result.evidence || fallback.evidence,
     serviceLevels: result.serviceLevels || fallback.serviceLevels,
     contact: {
@@ -188,7 +203,7 @@ async function synthesizePolicy(controller: ControllerRow, subject: { email: str
   };
 
   const source = {
-    synthesizedWith: (process.env.OPENAI_MODEL || "gpt-4o-mini"),
+    synthesizedWith: process.env.OPENAI_MODEL || "gpt-4o-mini",
     at: new Date().toISOString(),
   };
 
@@ -201,20 +216,14 @@ export async function policySynthesizerAgent(state: AgentState): Promise<AgentRe
     const subject = await getSubject(state.subjectId);
     const controllerIds = await discoveredControllers(state.subjectId);
 
-    const synthesized: any[] = [];
-
     for (const cid of controllerIds) {
       const ctrl = await loadController(cid);
       if (!ctrl) continue;
 
       const existing = await latestPolicyFor(cid);
-      if (existing) {
-        synthesized.push({ controllerId: cid, policyId: existing.id });
-        continue;
-      }
+      if (existing) continue;
 
-      const policy = await synthesizePolicy(ctrl, subject);
-      synthesized.push({ controllerId: cid, policyVersion: policy.version });
+      await synthesizePolicy(ctrl, subject);
     }
 
     const nextState: Partial<AgentState> = {
@@ -227,15 +236,8 @@ export async function policySynthesizerAgent(state: AgentState): Promise<AgentRe
           policyPercent: 100,
         },
       },
-      policies: [
-        ...state.policies,
-        ...synthesized.map((s) => ({
-          source: "controller_policy",
-          controllerId: s.controllerId,
-          data: s,
-          createdAt: new Date(),
-        })),
-      ],
+      // NOTE: we do not mutate state.policies here to avoid type mismatch.
+      // Draft generation should read from controller_policies table.
     };
 
     return {
