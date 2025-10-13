@@ -27,8 +27,13 @@ export async function POST(req: NextRequest) {
 
     // Auth + ownership of subject
     const supa = getServerSupabase();
-    const { data: session } = await supa.auth.getUser();
-    if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const {
+      data: { user },
+      error: authError,
+    } = await supa.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
     const { data: s, error: sErr } = await db
       .from("subjects")
@@ -36,18 +41,29 @@ export async function POST(req: NextRequest) {
       .eq("id", subjectId)
       .single();
     if (sErr || !s) return NextResponse.json({ error: "Subject not found" }, { status: 404 });
-    if (s.user_id !== session.user.id) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    if (s.user_id !== user.id) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
-    // Idempotent insert (do we already have a queued/succeeded job for this action?)
-    const { data: existing } = await db
+    // Idempotent: check if a recent job already exists for this action
+    const { data: existing, error: exErr } = await db
       .from("webform_jobs")
       .select("id, status")
       .eq("action_id", actionId)
       .order("created_at", { ascending: false })
-      .limit(1);
+      .limit(1)
+      .maybeSingle();
 
-    if (existing && existing.length > 0 && existing[0].status !== "failed") {
-      return NextResponse.json({ ok: true, message: "Job already exists", jobId: existing[0].id });
+    if (exErr) {
+      // Non-fatal; continue to insert—just log
+      // eslint-disable-next-line no-console
+      console.warn("[webform/enqueue] existing check error:", exErr.message);
+    }
+
+    if (existing && existing.status !== "failed") {
+      return NextResponse.json({
+        ok: true,
+        message: "Job already exists",
+        jobId: existing.id,
+      });
     }
 
     const { data: job, error: insErr } = await db
@@ -65,7 +81,7 @@ export async function POST(req: NextRequest) {
 
     if (insErr) throw new Error(insErr.message);
 
-    // Mark action as queued for webform
+    // Mark action as queued for webform (kept in escalate_pending until worker runs)
     await db
       .from("actions")
       .update({
@@ -79,6 +95,7 @@ export async function POST(req: NextRequest) {
     if (err instanceof z.ZodError) {
       return NextResponse.json({ error: "Invalid input", details: err.issues }, { status: 400 });
     }
+    // eslint-disable-next-line no-console
     console.error("[webform/enqueue] error:", err);
     return NextResponse.json({ error: err?.message || "Internal error" }, { status: 500 });
   }
