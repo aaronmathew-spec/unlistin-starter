@@ -52,16 +52,31 @@ export async function GET(_req: NextRequest) {
     if (!statsData) {
       const countsRes = await db
         .from("webform_jobs")
-        .select("status", { count: "exact", head: false }) // we need rows to group client-side
+        .select("status", { count: "exact", head: false })
         .order("status", { ascending: true });
 
-      // Supabase doesn't support GROUP BY with count only via client; compute in JS
       if (!countsRes.error && Array.isArray(countsRes.data)) {
-        const agg = { queued: 0, running: 0, succeeded: 0, failed: 0 } as Record<string, number>;
+        const agg = { queued: 0, running: 0, succeeded: 0, failed: 0 };
         for (const row of countsRes.data as Array<{ status: string }>) {
-          if (row.status in agg) agg[row.status] += 1;
+          switch (row.status) {
+            case "queued":
+              agg.queued++;
+              break;
+            case "running":
+              agg.running++;
+              break;
+            case "succeeded":
+              agg.succeeded++;
+              break;
+            case "failed":
+              agg.failed++;
+              break;
+            default:
+              // ignore any unexpected statuses
+              break;
+          }
         }
-        fallbackCounts = agg as any;
+        fallbackCounts = agg;
       }
     }
 
