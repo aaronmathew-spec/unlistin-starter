@@ -29,7 +29,7 @@ export function parseBearer(req: Request | { headers: Headers }): string | null 
   const headers = (req as any).headers as Headers;
   const a = headers?.get("authorization");
   const b = headers?.get("Authorization");
-  const auth: string | null = a ?? b ?? null; // ensure exact null type
+  const auth: string | null = a ?? b ?? null;
 
   if (!auth) return null;
   const m = auth.match(/^Bearer\s+(.+)$/i);
@@ -37,9 +37,9 @@ export function parseBearer(req: Request | { headers: Headers }): string | null 
   return token ?? null;
 }
 
-/** Public lookup prefix from full token */
+/** Public lookup prefix from full token (always returns a concrete string). */
 export function publicPrefixFrom(token: string): string {
   // Everything through the public segment (uk_live_<12-hex>)
   const m = token.match(/^(uk_live_[0-9a-fA-F]{12})\./);
-  return m ? m[1] : token.slice(0, "uk_live_".length + 12);
+  return (m?.[1] ?? token.slice(0, "uk_live_".length + 12)) as string;
 }
