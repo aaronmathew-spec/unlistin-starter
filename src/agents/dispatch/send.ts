@@ -84,45 +84,45 @@ function setSLAs(a: ActionRow) {
 }
 
 async function appendDeliveryLog(actionId: string, entry: any) {
-  // Get current log (minimal fields to avoid large payloads)
-  const { data: current, error: readErr } = await db
-    .from("actions")
-    .select("delivery_log")
-    .eq("id", actionId)
-    .single();
-
-  if (readErr) {
-    // Non-fatal: continue attempting to insert row into action_deliveries
+  // Read current
+  let currentLog: any[] = [];
+  try {
+    const { data } = await db
+      .from("actions")
+      .select("delivery_log")
+      .eq("id", actionId)
+      .single();
+    currentLog = (data?.delivery_log ?? []) as any[];
+  } catch (e: any) {
     // eslint-disable-next-line no-console
-    console.warn("[dispatch] delivery_log read failed:", readErr.message);
+    console.warn("[dispatch] delivery_log read failed:", e?.message || e);
   }
 
-  const prev = (current?.delivery_log ?? []) as any[];
-  const next = [...prev, entry];
+  const next = [...currentLog, entry];
 
-  await db
-    .from("actions")
-    .update({ delivery_log: next })
-    .eq("id", actionId)
-    .then(() => {})
-    .catch((e) => {
-      // eslint-disable-next-line no-console
-      console.warn("[dispatch] delivery_log update failed:", e?.message || e);
-    });
+  try {
+    await db.from("actions").update({ delivery_log: next }).eq("id", actionId);
+  } catch (e: any) {
+    // eslint-disable-next-line no-console
+    console.warn("[dispatch] delivery_log update failed:", e?.message || e);
+  }
 
-  // also insert a row to action_deliveries if table exists
-  await db
-    .from("action_deliveries")
-    .insert({
-      action_id: actionId,
-      attempt: entry.attempt ?? 0,
-      channel: entry.channel ?? "unknown",
-      status: entry.status ?? "info",
-      info: entry,
-    })
-    .select("*")
-    .maybeSingle()
-    .catch(() => {});
+  // Best-effort mirror row (optional table)
+  try {
+    await db
+      .from("action_deliveries")
+      .insert({
+        action_id: actionId,
+        attempt: entry.attempt ?? 0,
+        channel: entry.channel ?? "unknown",
+        status: entry.status ?? "info",
+        info: entry,
+      })
+      .select("*")
+      .maybeSingle();
+  } catch {
+    // table may not exist; ignore
+  }
 }
 
 // --- Channel senders -------------------------------------------------------
