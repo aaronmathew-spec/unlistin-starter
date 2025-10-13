@@ -7,53 +7,72 @@ import { getServerSupabase } from "@/lib/supabaseServer";
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+
+// Use anon + RLS. Auth session is read via getServerSupabase() below.
 const db = createClient(url, anon, { auth: { persistSession: false } });
 
-export async function GET(req: NextRequest) {
+export async function GET(_req: NextRequest) {
   try {
-    // Require auth (session cookie)
+    // Require a signed-in user (cookie-based session)
     const supa = getServerSupabase();
     const {
       data: { user },
-      error,
+      error: authErr,
     } = await supa.auth.getUser();
-    if (error || !user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (authErr || !user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
-    // RLS ensures we only see the caller's rows
-    const [stats, recent] = await Promise.all([
-      db.rpc("webform_stats_rollup").maybeSingle().catch(() => ({ data: null } as any)),
-      db
-        .from("webform_jobs")
-        .select("id, action_id, subject_id, url, status, attempt, scheduled_at, run_at, completed_at, result")
-        .order("created_at", { ascending: false })
-        .limit(25),
-    ]);
+    // Try DB-side rollup first; if it isn't installed, fall back to client-side counts.
+    let statsData: any = null;
+    try {
+      const statsRes = await db.rpc("webform_stats_rollup").maybeSingle();
+      if (!statsRes.error) {
+        statsData = statsRes.data ?? null;
+      }
+    } catch {
+      // ignore; we'll compute fallback below
+    }
 
-    // If you don't want to create a Postgres function, compute basic counts here:
+    // Recent jobs (scoped by RLS)
+    const recentRes = await db
+      .from("webform_jobs")
+      .select(
+        "id, action_id, subject_id, url, status, attempt, scheduled_at, run_at, completed_at, result"
+      )
+      .order("created_at", { ascending: false })
+      .limit(25);
+
+    if (recentRes.error) {
+      throw new Error(`[ops/webforms/summary] recent query failed: ${recentRes.error.message}`);
+    }
+
+    // Fallback counts if no stats function result
     let fallbackCounts = { queued: 0, running: 0, succeeded: 0, failed: 0 };
-    if (!stats?.data) {
-      const { data: c } = await db
+    if (!statsData) {
+      const countsRes = await db
         .from("webform_jobs")
-        .select("status, count:id", { head: false, count: "exact" })
-        .group("status");
-      if (Array.isArray(c)) {
-        fallbackCounts = {
-          queued: c.find((x: any) => x.status === "queued")?.count || 0,
-          running: c.find((x: any) => x.status === "running")?.count || 0,
-          succeeded: c.find((x: any) => x.status === "succeeded")?.count || 0,
-          failed: c.find((x: any) => x.status === "failed")?.count || 0,
-        };
+        .select("status", { count: "exact", head: false }) // we need rows to group client-side
+        .order("status", { ascending: true });
+
+      // Supabase doesn't support GROUP BY with count only via client; compute in JS
+      if (!countsRes.error && Array.isArray(countsRes.data)) {
+        const agg = { queued: 0, running: 0, succeeded: 0, failed: 0 } as Record<string, number>;
+        for (const row of countsRes.data as Array<{ status: string }>) {
+          if (row.status in agg) agg[row.status] += 1;
+        }
+        fallbackCounts = agg as any;
       }
     }
 
     return NextResponse.json({
       ok: true,
-      stats: stats?.data ?? fallbackCounts,
-      recent: recent.data ?? [],
+      stats: statsData ?? fallbackCounts,
+      recent: recentRes.data ?? [],
     });
   } catch (e: any) {
     // eslint-disable-next-line no-console
-    console.error("[ops/webforms/summary] error:", e);
+    console.error("[ops/webforms/summary] error:", e?.message || e);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
