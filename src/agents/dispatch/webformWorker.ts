@@ -1,6 +1,7 @@
 // src/agents/dispatch/webformWorker.ts
 import { createClient } from "@supabase/supabase-js";
 import { captureAndStoreArtifacts } from "@/agents/verification/capture";
+import { sendAlert } from "@/lib/ops/alerts";
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const key =
@@ -17,6 +18,10 @@ type JobRow = {
   payload: any;
   status: "queued" | "running" | "succeeded" | "failed";
   attempt: number;
+  scheduled_at?: string | null;
+  run_at?: string | null;
+  completed_at?: string | null;
+  result?: any;
 };
 
 type ControllerProfile = {
@@ -30,7 +35,20 @@ function ms(n: number) {
   return new Promise((r) => setTimeout(r, n));
 }
 
-/** Default, conservative selectors. */
+/** Backoff policy with jitter (world-class, RFC-style) */
+function nextBackoffMs(attempt: number) {
+  const base = Number(process.env.WEBFORM_BASE_BACKOFF_MS ?? 60_000);
+  const cap = Number(process.env.WEBFORM_MAX_BACKOFF_MS ?? 1_800_000);
+  // exponential: base * 2^(attempt-1), capped, ±20% jitter
+  const exp = Math.min(base * Math.pow(2, Math.max(0, attempt - 1)), cap);
+  const jitter = exp * (0.8 + Math.random() * 0.4);
+  return Math.floor(jitter);
+}
+function maxAttempts() {
+  return Number(process.env.WEBFORM_MAX_ATTEMPTS ?? 6);
+}
+
+/** Defaults */
 const DEFAULT_FIELDS: Record<string, string[]> = {
   name: ["input[name*=name i]", "input#name", "input[autocomplete='name']"],
   email: ["input[type=email]", "input[name*=email i]", "input#email"],
@@ -47,7 +65,6 @@ const DEFAULT_FIELDS: Record<string, string[]> = {
     "textarea[name*=gdpr i]",
   ],
 };
-
 const DEFAULT_SUBMITS = [
   "button[type=submit]",
   "input[type=submit]",
@@ -67,7 +84,6 @@ async function fillIfPresent(page: any, selector: string, value: string) {
   }
   return false;
 }
-
 async function typeBest(page: any, candidates: string[], value?: string | null) {
   if (!value) return false;
   for (const sel of candidates) {
@@ -77,7 +93,6 @@ async function typeBest(page: any, candidates: string[], value?: string | null) 
   }
   return false;
 }
-
 async function clickFirst(page: any, candidates: string[]) {
   for (const sel of candidates) {
     const el = await page.$(sel);
@@ -88,7 +103,6 @@ async function clickFirst(page: any, candidates: string[]) {
   }
   return false;
 }
-
 function buildThrottleDelay(hostname: string, profileMs?: number, min = 800, max = 1600) {
   if (profileMs && profileMs > 0) return profileMs;
   const base = min + Math.floor(Math.random() * (max - min));
@@ -97,18 +111,11 @@ function buildThrottleDelay(hostname: string, profileMs?: number, min = 800, max
 }
 
 async function loadControllerProfile(actionId: string, domain: string): Promise<ControllerProfile> {
-  // Prefer a controller-bound profile; fall back to a domain profile
-  const { data: action, error: aErr } = await db
+  const { data: action } = await db
     .from("actions")
     .select("controller_id")
     .eq("id", actionId)
     .single();
-
-  if (aErr) {
-    // eslint-disable-next-line no-console
-    console.warn("[webformWorker] action load failed:", aErr.message);
-  }
-
   const controller_id = (action as any)?.controller_id ?? null;
 
   if (controller_id) {
@@ -119,15 +126,12 @@ async function loadControllerProfile(actionId: string, domain: string): Promise<
       .limit(1);
     if (data && data[0]) return data[0] as ControllerProfile;
   }
-
   const { data: dom } = await db
     .from("controller_profiles")
     .select("field_selectors, submit_selectors, captcha, throttle_ms")
     .eq("domain", domain.toLowerCase())
     .limit(1);
-
   if (dom && dom[0]) return dom[0] as ControllerProfile;
-
   return {};
 }
 
@@ -143,15 +147,15 @@ async function submitWebform(job: JobRow) {
   const u = new URL(job.url);
 
   try {
-    // Load profile & merge with defaults
     const profile = await loadControllerProfile(job.action_id, u.hostname);
     const FIELDS: Record<string, string[]> = {
       ...DEFAULT_FIELDS,
       ...(profile.field_selectors || {}),
     };
-    const SUBMITS = (profile.submit_selectors && profile.submit_selectors.length > 0)
-      ? profile.submit_selectors
-      : DEFAULT_SUBMITS;
+    const SUBMITS =
+      profile.submit_selectors && profile.submit_selectors.length > 0
+        ? profile.submit_selectors
+        : DEFAULT_SUBMITS;
     const delay = buildThrottleDelay(u.hostname, profile.throttle_ms);
 
     await page.goto(job.url, { waitUntil: "domcontentloaded", timeout: 60_000 });
@@ -172,23 +176,16 @@ async function submitWebform(job: JobRow) {
     await typeBest(page, FIELDS.message ?? [], message);
     await ms(delay);
 
-    // Optional: if profile specifies captcha, pause for manual or future solver hook
     if (profile.captcha?.type) {
-      // Hook point: integrate solver here if you add one later (recaptcha/hcaptcha)
-      // For now, give the page a moment (some sites lazy-load widgets)
-      await ms(1000);
+      await ms(1000); // hook point for captcha solver
     }
 
-    // Submit
     const clicked = await clickFirst(page, SUBMITS);
-    if (!clicked) {
-      throw new Error("No obvious submit button found");
-    }
+    if (!clicked) throw new Error("No obvious submit button found");
 
     await page.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => {});
     await ms(delay);
 
-    // Capture confirmation
     const html = await page.content();
     const text = (await page.textContent("body")) || "";
     const screenshot = await page.screenshot({ fullPage: true });
@@ -199,7 +196,7 @@ async function submitWebform(job: JobRow) {
       ok: true,
       confirmationText: text.slice(0, 5000),
       html,
-      screenshot, // Buffer
+      screenshot,
     };
   } catch (e: any) {
     await browser.close();
@@ -207,11 +204,57 @@ async function submitWebform(job: JobRow) {
   }
 }
 
+/** Internal: reschedule failed jobs w/ backoff or mark permanently failed */
+async function handleFailure(job: JobRow, errorMsg: string) {
+  const nextAttempt = (job.attempt || 0) + 1;
+  if (nextAttempt < maxAttempts()) {
+    const delayMs = nextBackoffMs(nextAttempt);
+    const nextTime = new Date(Date.now() + delayMs).toISOString();
+
+    await db
+      .from("webform_jobs")
+      .update({
+        status: "queued",
+        attempt: nextAttempt,
+        scheduled_at: nextTime,
+        result: { error: errorMsg, retried_at: new Date().toISOString(), delay_ms: delayMs },
+      })
+      .eq("id", job.id);
+  } else {
+    await db
+      .from("webform_jobs")
+      .update({
+        status: "failed",
+        completed_at: new Date().toISOString(),
+        result: { error: errorMsg, terminal: true },
+      })
+      .eq("id", job.id);
+
+    await db
+      .from("actions")
+      .update({
+        status: "escalate_pending",
+        verification_info: {
+          dispatch_error: {
+            at: new Date().toISOString(),
+            code: "WEBFORM_SUBMIT_FAILED",
+            message: errorMsg,
+            terminal: true,
+          },
+        },
+        next_attempt_at: new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(), // 6h
+      })
+      .eq("id", job.action_id);
+  }
+}
+
 export async function processNextWebformJobs(limit = 3) {
+  // Only pick jobs ready to run
   const { data: jobs, error } = await db
     .from("webform_jobs")
     .select("*")
     .eq("status", "queued")
+    .lte("scheduled_at", new Date().toISOString())
     .order("scheduled_at", { ascending: true })
     .limit(limit);
 
@@ -270,42 +313,52 @@ export async function processNextWebformJobs(limit = 3) {
 
         succeeded++;
       } catch (e: any) {
-        await db
-          .from("webform_jobs")
-          .update({
-            status: "failed",
-            result: { error: `artifact capture failure: ${e?.message || e}` },
-          })
-          .eq("id", job.id);
+        await handleFailure(job, `artifact capture failure: ${e?.message || e}`);
         failed++;
       }
     } else {
-      await db
-        .from("webform_jobs")
-        .update({
-          status: "failed",
-          result: { error: res.error },
-        })
-        .eq("id", job.id);
-
-      await db
-        .from("actions")
-        .update({
-          status: "escalate_pending",
-          verification_info: {
-            dispatch_error: {
-              at: new Date().toISOString(),
-              code: "WEBFORM_SUBMIT_FAILED",
-              message: res.error,
-            },
-          },
-          next_attempt_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-        })
-        .eq("id", job.action_id);
-
+      await handleFailure(job, res.error);
       failed++;
     }
   }
 
+  // After each batch, check for spikes and alert (domain-based)
+  await maybeSendFailureSpikeAlert();
+
   return { picked: jobs.length, succeeded, failed };
+}
+
+/** Look back N minutes; if failures exceed threshold, alert with breakdown by domain */
+async function maybeSendFailureSpikeAlert() {
+  const windowMin = Number(process.env.ALERT_WINDOW_MINUTES ?? 30);
+  const threshold = Number(process.env.ALERT_FAILURE_THRESHOLD ?? 5);
+  if (!process.env.ALERT_WEBHOOK_URL) return;
+
+  const since = new Date(Date.now() - windowMin * 60 * 1000).toISOString();
+  const { data, error } = await db
+    .from("webform_jobs")
+    .select("url")
+    .eq("status", "failed")
+    .gte("updated_at", since)
+    .limit(1000);
+
+  if (error || !data || data.length === 0) return;
+
+  const byDomain: Record<string, number> = {};
+  for (const r of data as Array<{ url: string }>) {
+    try {
+      const d = new URL(r.url).hostname.toLowerCase();
+      byDomain[d] = (byDomain[d] || 0) + 1;
+    } catch {}
+  }
+  const total = Object.values(byDomain).reduce((a, b) => a + b, 0);
+  if (total >= threshold) {
+    await sendAlert({
+      type: "WEBFORM_FAILURE_SPIKE",
+      windowMinutes: windowMin,
+      totalFailed: total,
+      byDomain,
+      at: new Date().toISOString(),
+    });
+  }
 }
