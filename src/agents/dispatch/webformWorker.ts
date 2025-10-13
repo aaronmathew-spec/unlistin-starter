@@ -102,18 +102,18 @@ async function submitWebform(job: JobRow) {
     await ms(delay);
 
     const p = job.payload || {};
-    await typeBest(page, FIELD_MAP.name, p.name || p.legalName || p.fullName);
+    await typeBest(page, FIELD_MAP.name ?? [], p.name || p.legalName || p.fullName);
     await ms(delay);
-    await typeBest(page, FIELD_MAP.email, p.email);
+    await typeBest(page, FIELD_MAP.email ?? [], p.email);
     await ms(delay);
-    await typeBest(page, FIELD_MAP.phone, p.phone);
+    await typeBest(page, FIELD_MAP.phone ?? [], p.phone);
     await ms(delay);
 
     const message =
       p.message ||
       p.requestText ||
       "I am exercising my right to request deletion of my personal data associated with the information provided.";
-    await typeBest(page, FIELD_MAP.message, message);
+    await typeBest(page, FIELD_MAP.message ?? [], message);
     await ms(delay);
 
     // Look for submit buttons
@@ -182,8 +182,7 @@ export async function processNextWebformJobs(limit = 3) {
           subjectId: job.subject_id,
           actionId: job.action_id,
           url: job.url,
-          // We already have a screenshot & html; capture layer may fetch as well, but storing our snapshot is valuable.
-          // If your capture layer accepts raw buffers, you can extend it; otherwise it can refetch for a canonical capture.
+          // If capture layer accepts raw buffers, extend it to store `res.screenshot` & `res.html`.
         });
 
         await db
