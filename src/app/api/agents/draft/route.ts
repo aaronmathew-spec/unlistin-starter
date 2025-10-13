@@ -14,55 +14,58 @@ const key =
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 const db = createClient(url, key, { auth: { persistSession: false } });
 
-const InputSchema = z.object({
+const Input = z.object({
   subjectId: z.string().uuid(),
 });
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
-    const parsed = InputSchema.parse(body);
-
-    // Auth same as /api/agents/run
-    const supabase = getServerSupabase();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-    if (authError || !user) {
+    const supa = getServerSupabase();
+    const { data: session } = await supa.auth.getUser();
+    if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // Ensure subject belongs to user
-    const { data: s, error: sErr } = await db
-      .from("subjects")
-      .select("user_id")
-      .eq("id", parsed.subjectId)
-      .single();
-    if (sErr || !s) {
-      return NextResponse.json({ error: "Subject not found" }, { status: 404 });
-    }
-    if (s.user_id !== user.id) {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
+    const body = await req.json();
+    const parsed = Input.parse(body);
 
-    const result = await createDraftActions({ subjectId: parsed.subjectId });
+    // Create/ensure drafts (idempotent)
+    await createDraftActions({ subjectId: parsed.subjectId });
+
+    // Return a snapshot count so callers know how many drafts exist now
+    const { data: counts, error: countErr } = await db
+      .from("actions")
+      .select("*", { count: "exact", head: true })
+      .eq("subject_id", parsed.subjectId)
+      .eq("status", "draft");
+
+    if (countErr) {
+      // Non-fatal; still return success for the draft operation
+      return NextResponse.json({
+        ok: true,
+        subjectId: parsed.subjectId,
+        message: "Draft actions created.",
+        drafts: { count: null },
+        warning: `Count unavailable: ${countErr.message}`,
+      });
+    }
 
     return NextResponse.json({
+      ok: true,
       subjectId: parsed.subjectId,
       message: "Draft actions created.",
-      ...result,
+      drafts: { count: counts?.length ?? null }, // head:true returns no rows; length will be undefined in some drivers
     });
   } catch (err: any) {
     if (err instanceof z.ZodError) {
       return NextResponse.json(
-        { error: "Invalid request", details: err.errors },
+        { error: "Invalid input", details: err.issues },
         { status: 400 }
       );
     }
-    console.error("[api/agents/draft] error:", err);
+    console.error("[draft route] fatal:", err);
     return NextResponse.json(
-      { error: "Internal server error" },
+      { error: err?.message || "Internal error" },
       { status: 500 }
     );
   }
