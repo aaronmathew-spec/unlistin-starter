@@ -85,8 +85,7 @@ function renderReportHTML(opts: {
     .map((a) => {
       const v = verifications.find((x) => x.action_id === a.id);
       const present = v?.data_found ? "Present" : "Removed/Not Observed";
-      const conf =
-        v?.confidence != null ? Math.round((v.confidence as number) * 100) + "%" : "—";
+      const conf = v?.confidence != null ? Math.round((v.confidence as number) * 100) + "%" : "—";
       const url = v?.evidence_artifacts?.post?.url ?? a.to ?? "—";
       const h = v?.evidence_artifacts?.post?.htmlHash ?? "—";
       const s = v?.evidence_artifacts?.post?.screenshotHash ?? "—";
@@ -292,7 +291,7 @@ export async function GET(req: NextRequest) {
       verifications: (verifications ?? []) as VerificationRow[],
     });
 
-    // build ZIP (use Uint8Array -> ArrayBuffer so BodyInit is valid)
+    // build ZIP -> Uint8Array
     const zip = new JSZip();
     zip.file("manifest.json", JSON.stringify(manifest, null, 2));
     zip.file("report.html", html);
@@ -302,8 +301,9 @@ export async function GET(req: NextRequest) {
       compression: "DEFLATE",
     });
 
-    // Create an exact-sized ArrayBuffer view to satisfy BodyInit typing
-    const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    // SAFE: copy into a fresh ArrayBuffer (avoids SharedArrayBuffer union)
+    const ab = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(ab).set(bytes);
 
     return new NextResponse(ab, {
       status: 200,
