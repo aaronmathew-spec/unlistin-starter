@@ -1,6 +1,8 @@
 // src/app/ops/overview/page.tsx
 import Link from "next/link";
 
+export const dynamic = "force-dynamic"; // always render fresh server-side
+
 type WebformJob = {
   id: string;
   action_id: string | null;
@@ -28,16 +30,23 @@ type SlaItem = {
   needsReview: number;
   sending: number;
   failed: number;
-  okRate: number;
+  okRate: number; // 0..1
 };
 
 type SlaRes = { windowStart: string; controllers: SlaItem[] };
 
 async function fetchJSON<T>(path: string, fallback: T): Promise<T> {
-  const base = process.env.NEXT_PUBLIC_SITE_URL || "";
-  const res = await fetch(`${base}${path}`, { cache: "no-store" });
-  if (!res.ok) return fallback;
-  return (await res.json()) as T;
+  try {
+    // Works in SSR both locally and on Vercel. If NEXT_PUBLIC_SITE_URL is unset,
+    // Next.js will resolve relative /api routes against current host.
+    const base = process.env.NEXT_PUBLIC_SITE_URL || "";
+    const res = await fetch(`${base}${path}`, { cache: "no-store" });
+    if (!res.ok) return fallback;
+    const data = (await res.json()) as T;
+    return data ?? fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 function fmt(dt?: string | null) {
@@ -48,7 +57,9 @@ function fmt(dt?: string | null) {
 }
 
 function pct(n: number) {
-  return `${Math.round(n * 100)}%`;
+  if (!isFinite(n)) return "—";
+  const clamped = Math.max(0, Math.min(1, n));
+  return `${Math.round(clamped * 100)}%`;
 }
 
 export default async function OpsOverviewPage() {
@@ -63,9 +74,9 @@ export default async function OpsOverviewPage() {
     }),
   ]);
 
-  const stats = webforms.stats || { queued: 0, running: 0, succeeded: 0, failed: 0 };
-  const recent = webforms.recent || [];
-  const controllers = sla.controllers || [];
+  const stats = webforms?.stats ?? { queued: 0, running: 0, succeeded: 0, failed: 0 };
+  const recent = Array.isArray(webforms?.recent) ? webforms!.recent : [];
+  const controllers = Array.isArray(sla?.controllers) ? sla!.controllers : [];
 
   return (
     <div className="p-6 space-y-8">
@@ -115,23 +126,31 @@ export default async function OpsOverviewPage() {
               </tr>
             </thead>
             <tbody>
-              {controllers.map((c) => (
-                <tr key={c.controllerId ?? `unknown-${c.name}`} className="border-t">
-                  <td className="px-4 py-3">
-                    <div className="font-medium">{c.name}</div>
-                    <div className="text-xs text-gray-500">{c.controllerId ?? "—"}</div>
-                  </td>
-                  <td className="px-4 py-3">{c.domain ?? "—"}</td>
-                  <td className="px-4 py-3 text-right">{c.total}</td>
-                  <td className="px-4 py-3 text-right"><Badge tone="ok">{c.ok}</Badge></td>
-                  <td className="px-4 py-3 text-right"><Badge tone="warn">{c.needsReview}</Badge></td>
-                  <td className="px-4 py-3 text-right"><Badge tone="info">{c.sending}</Badge></td>
-                  <td className="px-4 py-3 text-right"><Badge tone="bad">{c.failed}</Badge></td>
-                  <td className="px-4 py-3 text-right"><Heat value={c.okRate} label={pct(c.okRate)} /></td>
-                </tr>
-              ))}
+              {controllers.map((c) => {
+                // protect against rogue values from API
+                const okRate = Number.isFinite(c.okRate) ? Math.max(0, Math.min(1, c.okRate)) : 0;
+                return (
+                  <tr key={c.controllerId ?? `unknown-${c.name}`} className="border-t">
+                    <td className="px-4 py-3">
+                      <div className="font-medium">{c.name || "Unknown"}</div>
+                      <div className="text-xs text-gray-500">{c.controllerId ?? "—"}</div>
+                    </td>
+                    <td className="px-4 py-3">{c.domain ?? "—"}</td>
+                    <td className="px-4 py-3 text-right">{c.total ?? 0}</td>
+                    <td className="px-4 py-3 text-right"><Badge tone="ok">{c.ok ?? 0}</Badge></td>
+                    <td className="px-4 py-3 text-right"><Badge tone="warn">{c.needsReview ?? 0}</Badge></td>
+                    <td className="px-4 py-3 text-right"><Badge tone="info">{c.sending ?? 0}</Badge></td>
+                    <td className="px-4 py-3 text-right"><Badge tone="bad">{c.failed ?? 0}</Badge></td>
+                    <td className="px-4 py-3 text-right"><Heat value={okRate} label={pct(okRate)} /></td>
+                  </tr>
+                );
+              })}
               {controllers.length === 0 && (
-                <tr><td colSpan={8} className="px-4 py-10 text-center text-gray-500">No controller activity yet.</td></tr>
+                <tr>
+                  <td colSpan={8} className="px-4 py-10 text-center text-gray-500">
+                    No controller activity yet.
+                  </td>
+                </tr>
               )}
             </tbody>
           </table>
@@ -174,7 +193,9 @@ export default async function OpsOverviewPage() {
                       <a href={j.url} target="_blank" rel="noreferrer" className="text-blue-700 hover:underline">
                         {j.url}
                       </a>
-                    ) : "—"}
+                    ) : (
+                      "—"
+                    )}
                   </td>
                   <td className="px-4 py-3"><StatusPill status={j.status} /></td>
                   <td className="px-4 py-3 text-right">{String(j.attempt ?? 0)}</td>
@@ -184,7 +205,11 @@ export default async function OpsOverviewPage() {
                 </tr>
               ))}
               {recent.length === 0 && (
-                <tr><td colSpan={8} className="px-4 py-10 text-center text-gray-500">Queue is empty.</td></tr>
+                <tr>
+                  <td colSpan={8} className="px-4 py-10 text-center text-gray-500">
+                    Queue is empty.
+                  </td>
+                </tr>
               )}
             </tbody>
           </table>
@@ -221,7 +246,7 @@ function Badge({ children, tone }: { children: React.ReactNode; tone: "ok" | "wa
 }
 
 function Heat({ value, label }: { value: number; label: string }) {
-  const g = Math.round(value * 255);
+  const g = Math.round(Math.max(0, Math.min(1, value)) * 255);
   const r = 255 - g;
   const bg = `rgba(${r}, ${g}, 80, 0.12)`;
   const fg = `rgb(${r}, ${g}, 80)`;
@@ -234,5 +259,5 @@ function StatusPill({ status }: { status: WebformJob["status"] }) {
     : status === "running" ? "info"
     : status === "queued" ? "warn"
     : "bad";
-  return <Badge tone={tone as any}>{status}</Badge>;
+  return <Badge tone={tone}>{status}</Badge>;
 }
