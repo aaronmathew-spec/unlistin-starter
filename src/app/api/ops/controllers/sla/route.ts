@@ -74,10 +74,10 @@ export async function GET(_req: NextRequest) {
 
     const buckets = Array.from(map.values());
 
-    // Enrich metadata
+    // Enrich metadata for known controller IDs
     const ids = buckets
       .map((b) => b.controllerId)
-      .filter((x): x is string => !!x && x !== "unknown");
+      .filter((x): x is string => typeof x === "string" && x.length > 0 && x !== "unknown");
 
     let meta: Record<string, ControllerMeta> = {};
     if (ids.length > 0) {
@@ -90,17 +90,19 @@ export async function GET(_req: NextRequest) {
       meta = Object.fromEntries(
         (ctrls ?? []).map((c: any) => [
           c.id as string,
-          { name: (c.name as string) ?? "Unknown", domain: (c.domain as string) ?? null },
+          {
+            name: (c.name as string) ?? "Unknown",
+            domain: (c.domain as string) ?? null,
+          },
         ])
       );
     }
 
-    // Shape response (with safe default)
+    // Shape response (safe defaulting; no `&&` that can yield "")
     const out = buckets
       .map((b) => {
         const m: ControllerMeta =
-          (b.controllerId && meta[b.controllerId]) ??
-          { name: "Unknown", domain: null };
+          (b.controllerId ? meta[b.controllerId] : undefined) ?? { name: "Unknown", domain: null };
 
         const okRate = b.total > 0 ? b.ok / b.total : 0;
         return {
