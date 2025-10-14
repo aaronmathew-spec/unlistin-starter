@@ -292,17 +292,20 @@ export async function GET(req: NextRequest) {
       verifications: (verifications ?? []) as VerificationRow[],
     });
 
-    // build ZIP (use Uint8Array so NextResponse BodyInit is valid)
+    // build ZIP (use Uint8Array -> ArrayBuffer so BodyInit is valid)
     const zip = new JSZip();
     zip.file("manifest.json", JSON.stringify(manifest, null, 2));
     zip.file("report.html", html);
 
     const bytes: Uint8Array = await zip.generateAsync({
-      type: "uint8array", // <-- critical change from "nodebuffer"
+      type: "uint8array",
       compression: "DEFLATE",
     });
 
-    return new NextResponse(bytes, {
+    // Create an exact-sized ArrayBuffer view to satisfy BodyInit typing
+    const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+
+    return new NextResponse(ab, {
       status: 200,
       headers: {
         "Content-Type": "application/zip",
