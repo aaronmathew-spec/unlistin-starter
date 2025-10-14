@@ -291,7 +291,7 @@ export async function GET(req: NextRequest) {
       verifications: (verifications ?? []) as VerificationRow[],
     });
 
-    // build ZIP -> Uint8Array
+    // build ZIP as Uint8Array
     const zip = new JSZip();
     zip.file("manifest.json", JSON.stringify(manifest, null, 2));
     zip.file("report.html", html);
@@ -301,11 +301,10 @@ export async function GET(req: NextRequest) {
       compression: "DEFLATE",
     });
 
-    // SAFE: copy into a fresh ArrayBuffer (avoids SharedArrayBuffer union)
-    const ab = new ArrayBuffer(bytes.byteLength);
-    new Uint8Array(ab).set(bytes);
+    // Return as a Blob stream to avoid SharedArrayBuffer typing issues
+    const blob = new Blob([bytes], { type: "application/zip" });
 
-    return new NextResponse(ab, {
+    return new NextResponse(blob.stream(), {
       status: 200,
       headers: {
         "Content-Type": "application/zip",
