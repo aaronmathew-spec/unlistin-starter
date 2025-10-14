@@ -19,37 +19,51 @@ function hmacOk(req: NextRequest) {
   return hdr === secret;
 }
 
+type ActionRow = {
+  id: string;
+  subject_id: string;
+  controller_id: string | null;
+  to: string | null;
+  status?: string | null; // may come back from RPC but not required by verifyActionPost
+  verification_info?: any;
+};
+
 export async function POST(req: NextRequest) {
   try {
     if (!hmacOk(req)) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    // Candidates: actions recently "sent" or "needs_review"
-    // that have not been verified in the last 6 hours.
+    // Anything not re-verified in the last 6h is eligible
     const sixHoursAgo = new Date(Date.now() - 6 * 3600 * 1000).toISOString();
 
-    // Get last verification timestamp per action
+    // Uses the RPC we created in SQL: select_actions_for_recheck(p_cutoff timestamptz)
     const { data: candidates, error } = await db
-      .rpc("select_actions_for_recheck", { p_cutoff: sixHoursAgo }) // see SQL below
+      .rpc("select_actions_for_recheck", { p_cutoff: sixHoursAgo })
       .limit(25);
 
-    if (error) throw new Error(error.message);
+    if (error) throw new Error(`[recheck] rpc failed: ${error.message}`);
+
+    const rows = (candidates || []) as ActionRow[];
+    if (rows.length === 0) {
+      return NextResponse.json({ ok: true, rechecked: 0, message: "No candidates" });
+    }
 
     let rechecked = 0;
-    for (const a of (candidates || []) as any[]) {
+
+    for (const a of rows) {
+      // Minimal payload expected by verifyActionPost
       const res = await verifyActionPost({
         id: a.id,
         subject_id: a.subject_id,
         controller_id: a.controller_id,
         to: a.to,
-        status: a.status,
       });
 
       const newStatus = res.dataFound ? "needs_review" : "verified";
-      const confidence = res.dataFound ? 0.5 : 0.9; // multi-pass will raise this further
+      const confidence = res.dataFound ? 0.5 : 0.9;
 
-      // store verification
+      // Persist verification record
       await db.from("verifications").insert({
         action_id: a.id,
         subject_id: a.subject_id,
@@ -59,16 +73,19 @@ export async function POST(req: NextRequest) {
         evidence_artifacts: { post: res.evidence },
       });
 
-      // update action
+      // Update action with status & last recheck
+      const mergedInfo = {
+        ...(a.verification_info ?? {}),
+        last_recheck_at: new Date().toISOString(),
+        observed_present: res.dataFound,
+        confidence,
+      };
+
       await db
         .from("actions")
         .update({
           status: newStatus,
-          verification_info: {
-            ...a.verification_info,
-            last_recheck_at: new Date().toISOString(),
-            observed_present: res.dataFound,
-          },
+          verification_info: mergedInfo,
         })
         .eq("id", a.id);
 
