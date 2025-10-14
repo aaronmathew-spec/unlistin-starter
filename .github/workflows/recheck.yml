@@ -1,0 +1,19 @@
+name: Verification Recheck
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"   # every 6 hours
+  workflow_dispatch:        # allow manual run from Actions tab
+
+jobs:
+  call-recheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST recheck endpoint
+        env:
+          PROD_URL: ${{ secrets.PROD_URL }}
+          SECURE_CRON_SECRET: ${{ secrets.SECURE_CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          curl -sS -X POST "$PROD_URL/api/cron/verification/recheck" \
+            -H "x-cron-secret: $SECURE_CRON_SECRET"
