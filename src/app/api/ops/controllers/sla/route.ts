@@ -12,10 +12,21 @@ const svc =
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 const db = createClient(url, svc, { auth: { persistSession: false } });
 
-// Statuses we’ll consider “success” vs “problem”
+// Status classification
 const OK_STATUSES = new Set(["verified"]);
 const REVIEW_STATUSES = new Set(["needs_review"]);
 const SENDING_STATUSES = new Set(["sent", "escalated", "escalate_pending", "dispatching"]);
+
+type Bucket = {
+  controllerId: string | null;
+  total: number;
+  ok: number;
+  review: number;
+  sending: number;
+  failed: number;
+};
+
+type ControllerMeta = { name: string; domain: string | null };
 
 export async function GET(_req: NextRequest) {
   try {
@@ -28,11 +39,9 @@ export async function GET(_req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // last 30 days window
     const cutoff = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
 
-    // Pull actions RLS-scoped via join on subjects (user owns subjects)
-    // We only fetch the minimal fields we need for aggregation
+    // RLS-scoped via join to subjects (user owns subjects)
     const { data: rows, error } = await db
       .from("actions")
       .select("controller_id,status,created_at,subject_id,subjects!inner(user_id)")
@@ -42,15 +51,7 @@ export async function GET(_req: NextRequest) {
 
     if (error) throw new Error(error.message);
 
-    // Aggregate by controller_id
-    type Bucket = {
-      controllerId: string | null;
-      total: number;
-      ok: number;
-      review: number;
-      sending: number;
-      failed: number;
-    };
+    // Aggregate
     const map = new Map<string, Bucket>();
     for (const r of rows ?? []) {
       const cid = (r as any).controller_id ?? "unknown";
@@ -62,7 +63,7 @@ export async function GET(_req: NextRequest) {
 
       const st = (r as any).status as string | null;
       if (!st) {
-        b.failed += 1; // unknown = problem
+        b.failed += 1;
         continue;
       }
       if (OK_STATUSES.has(st)) b.ok += 1;
@@ -73,12 +74,12 @@ export async function GET(_req: NextRequest) {
 
     const buckets = Array.from(map.values());
 
-    // Enrich with controller details (name/domain) for the ones we have IDs for
+    // Enrich metadata
     const ids = buckets
       .map((b) => b.controllerId)
       .filter((x): x is string => !!x && x !== "unknown");
 
-    let meta: Record<string, { name: string; domain: string | null }> = {};
+    let meta: Record<string, ControllerMeta> = {};
     if (ids.length > 0) {
       const { data: ctrls, error: ctrlErr } = await db
         .from("controllers")
@@ -87,14 +88,20 @@ export async function GET(_req: NextRequest) {
 
       if (ctrlErr) throw new Error(ctrlErr.message);
       meta = Object.fromEntries(
-        (ctrls ?? []).map((c: any) => [c.id as string, { name: c.name as string, domain: (c.domain as string) ?? null }])
+        (ctrls ?? []).map((c: any) => [
+          c.id as string,
+          { name: (c.name as string) ?? "Unknown", domain: (c.domain as string) ?? null },
+        ])
       );
     }
 
-    // Shape response for the UI
+    // Shape response (with safe default)
     const out = buckets
       .map((b) => {
-        const m = b.controllerId && meta[b.controllerId] ? meta[b.controllerId] : { name: "Unknown", domain: null };
+        const m: ControllerMeta =
+          (b.controllerId && meta[b.controllerId]) ??
+          { name: "Unknown", domain: null };
+
         const okRate = b.total > 0 ? b.ok / b.total : 0;
         return {
           controllerId: b.controllerId,
@@ -108,7 +115,6 @@ export async function GET(_req: NextRequest) {
           okRate,
         };
       })
-      // sort by worst → best to bubble problems up
       .sort((a, b) => a.okRate - b.okRate);
 
     return NextResponse.json({ windowStart: cutoff, controllers: out });
