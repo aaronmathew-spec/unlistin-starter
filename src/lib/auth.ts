@@ -11,7 +11,7 @@ export type SessionUser = {
 };
 
 /**
- * Reads the current session user (server-side) using @supabase/ssr.
+ * Server-side: get current session user via @supabase/ssr.
  * Returns null if unauthenticated.
  */
 export async function getSessionUser(): Promise<SessionUser | null> {
@@ -23,7 +23,6 @@ export async function getSessionUser(): Promise<SessionUser | null> {
         return cookieStore.get(name)?.value;
       },
       set(name: string, value: string, options: any) {
-        // Next.js server components require revalidation to set cookies
         cookieStore.set({ name, value, ...options });
       },
       remove(name: string, options: any) {
@@ -39,9 +38,8 @@ export async function getSessionUser(): Promise<SessionUser | null> {
 }
 
 /**
- * Returns the list of admin emails from env (lowercased & trimmed).
- * Example env:
- *   ADMIN_EMAILS=you@company.com, admin2@company.com
+ * Admin list from env (lowercased & trimmed).
+ * Example: ADMIN_EMAILS=you@company.com, admin2@company.com
  */
 export function getAdminEmails(): string[] {
   const raw = process.env.ADMIN_EMAILS || "";
@@ -51,19 +49,24 @@ export function getAdminEmails(): string[] {
     .filter(Boolean);
 }
 
-/**
- * True if the provided email is in ADMIN_EMAILS.
- */
+/** Is this email an admin? */
 export function isAdminEmail(email: string | null | undefined): boolean {
   if (!email) return false;
-  const adminList = getAdminEmails();
-  return adminList.includes(email.toLowerCase());
+  return getAdminEmails().includes(email.toLowerCase());
 }
 
 /**
- * Ensures the current session user is an admin.
- * Throws on Unauthorized / Forbidden so API routes can catch and return 401/403.
- * Returns the SessionUser on success.
+ * Async convenience used in pages/routes:
+ * returns true if the current session user is an admin.
+ */
+export async function isAdmin(): Promise<boolean> {
+  const user = await getSessionUser();
+  return !!(user && isAdminEmail(user.email));
+}
+
+/**
+ * Throwing guard for API routes: ensures current user is admin.
+ * Throws "Unauthorized" or "Forbidden" (caller should map to 401/403).
  */
 export async function assertAdmin(): Promise<SessionUser> {
   const user = await getSessionUser();
