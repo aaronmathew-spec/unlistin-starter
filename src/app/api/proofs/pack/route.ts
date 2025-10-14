@@ -78,19 +78,20 @@ function renderReportHTML(opts: {
 
   const lastProof = proofs[0];
   const idLine =
-    [subject.legal_name, subject.email, subject.phone_number]
-      .filter(Boolean)
-      .join(" • ") || subject.id;
+    [subject.legal_name, subject.email, subject.phone_number].filter(Boolean).join(" • ") ||
+    subject.id;
 
-  const rows = actions.map((a) => {
-    const v = verifications.find((x) => x.action_id === a.id);
-    const present = v?.data_found ? "Present" : "Removed/Not Observed";
-    const conf = v?.confidence != null ? Math.round((v.confidence as number) * 100) + "%" : "—";
-    const url = v?.evidence_artifacts?.post?.url ?? a.to ?? "—";
-    const h = v?.evidence_artifacts?.post?.htmlHash ?? "—";
-    const s = v?.evidence_artifacts?.post?.screenshotHash ?? "—";
-    const st = a.status ?? "—";
-    return `
+  const rows = actions
+    .map((a) => {
+      const v = verifications.find((x) => x.action_id === a.id);
+      const present = v?.data_found ? "Present" : "Removed/Not Observed";
+      const conf =
+        v?.confidence != null ? Math.round((v.confidence as number) * 100) + "%" : "—";
+      const url = v?.evidence_artifacts?.post?.url ?? a.to ?? "—";
+      const h = v?.evidence_artifacts?.post?.htmlHash ?? "—";
+      const s = v?.evidence_artifacts?.post?.screenshotHash ?? "—";
+      const st = a.status ?? "—";
+      return `
       <tr>
         <td class="mono">${htmlEscape(a.id)}</td>
         <td>${htmlEscape(st)}</td>
@@ -100,10 +101,12 @@ function renderReportHTML(opts: {
         <td class="mono">${htmlEscape(h)}</td>
         <td class="mono">${htmlEscape(s)}</td>
       </tr>`;
-  }).join("");
+    })
+    .join("");
 
-  const proofsBlock = proofs.map((p) => {
-    return `
+  const proofsBlock = proofs
+    .map((p) => {
+      return `
       <div class="proof">
         <div><b>Merkle Root:</b> <span class="mono">${htmlEscape(p.merkle_root)}</span></div>
         <div><b>Signature:</b> <span class="mono">${htmlEscape(p.hsm_signature ?? "—")}</span></div>
@@ -112,7 +115,8 @@ function renderReportHTML(opts: {
         <div><b>Committed at:</b> ${htmlEscape(p.created_at)}</div>
       </div>
     `;
-  }).join("");
+    })
+    .join("");
 
   return `<!doctype html>
 <html>
@@ -164,7 +168,13 @@ function renderReportHTML(opts: {
   </div>
 
   <div class="sub" style="margin-top:24px;">
-    ${lastProof ? `Signed root ${htmlEscape(lastProof.merkle_root)} with signature ${htmlEscape(lastProof.hsm_signature ?? "—")}` : "No signature present yet."}
+    ${
+      lastProof
+        ? `Signed root ${htmlEscape(lastProof.merkle_root)} with signature ${htmlEscape(
+            lastProof.hsm_signature ?? "—"
+          )}`
+        : "No signature present yet."
+    }
   </div>
 </body>
 </html>`;
@@ -197,7 +207,8 @@ export async function GET(req: NextRequest) {
       .eq("id", subjectId)
       .single();
     if (sErr || !subject) return NextResponse.json({ error: "Subject not found" }, { status: 404 });
-    if (subject.user_id !== user.id) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    if (subject.user_id !== user.id)
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
     // load proofs
     const { data: proofs } = await db
@@ -210,7 +221,9 @@ export async function GET(req: NextRequest) {
     // load actions
     const { data: actions } = await db
       .from("actions")
-      .select("id,subject_id,controller_id,to,status,created_at,updated_at,verification_info")
+      .select(
+        "id,subject_id,controller_id,to,status,created_at,updated_at,verification_info"
+      )
       .eq("subject_id", subjectId)
       .order("created_at", { ascending: true })
       .limit(500);
@@ -218,7 +231,9 @@ export async function GET(req: NextRequest) {
     // load verifications (latest 500)
     const { data: verifications } = await db
       .from("verifications")
-      .select("id,action_id,subject_id,controller_id,data_found,confidence,evidence_artifacts,created_at")
+      .select(
+        "id,action_id,subject_id,controller_id,data_found,confidence,evidence_artifacts,created_at"
+      )
       .eq("subject_id", subjectId)
       .order("created_at", { ascending: false })
       .limit(500);
@@ -259,12 +274,13 @@ export async function GET(req: NextRequest) {
         createdAt: (v as VerificationRow).created_at,
         artifacts: (v as VerificationRow).evidence_artifacts ?? null,
       })),
-      signing: proofs && proofs[0]
-        ? {
-            latestRoot: (proofs[0] as ProofRow).merkle_root,
-            latestSignature: (proofs[0] as ProofRow).hsm_signature,
-          }
-        : null,
+      signing:
+        proofs && proofs[0]
+          ? {
+              latestRoot: (proofs[0] as ProofRow).merkle_root,
+              latestSignature: (proofs[0] as ProofRow).hsm_signature,
+            }
+          : null,
       schema: "https://unlistin.io/schemas/proof-pack/v1",
     };
 
@@ -276,14 +292,17 @@ export async function GET(req: NextRequest) {
       verifications: (verifications ?? []) as VerificationRow[],
     });
 
-    // build ZIP
+    // build ZIP (use Uint8Array so NextResponse BodyInit is valid)
     const zip = new JSZip();
     zip.file("manifest.json", JSON.stringify(manifest, null, 2));
     zip.file("report.html", html);
 
-    const blob = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+    const bytes: Uint8Array = await zip.generateAsync({
+      type: "uint8array", // <-- critical change from "nodebuffer"
+      compression: "DEFLATE",
+    });
 
-    return new NextResponse(blob, {
+    return new NextResponse(bytes, {
       status: 200,
       headers: {
         "Content-Type": "application/zip",
@@ -292,6 +311,7 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch (err: any) {
+    // eslint-disable-next-line no-console
     console.error("[api/proofs/pack] error:", err?.message || err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
