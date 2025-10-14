@@ -301,8 +301,12 @@ export async function GET(req: NextRequest) {
       compression: "DEFLATE",
     });
 
-    // Return as a Blob stream to avoid SharedArrayBuffer typing issues
-    const blob = new Blob([bytes], { type: "application/zip" });
+    // --- FIX: copy into a plain ArrayBuffer (not SharedArrayBuffer-like) ---
+    const ab = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(ab).set(bytes);
+
+    // stream Blob to client (compatible BodyInit)
+    const blob = new Blob([ab], { type: "application/zip" });
 
     return new NextResponse(blob.stream(), {
       status: 200,
