@@ -6,13 +6,9 @@ import { loadControllerMeta } from "@/lib/controllers/store";
 export type Channel = "email" | "webform" | "api";
 
 export type VerificationArtifacts = {
-  /** Include rendered HTML report (normalized evidence + result) */
   htmlReport: boolean;
-  /** Capture screenshots from webform/verification steps */
   screenshots: boolean;
-  /** Store a copy of the outbound email (text/html) in artifacts */
   emailCopy: boolean;
-  /** Produce signed manifest + Merkle proof in the Proof Pack */
   signedManifest: boolean;
 };
 
@@ -25,6 +21,8 @@ export type ControllerPolicy = {
   slas: { targetMin: number };
   /** What to include in verification/proof artifacts */
   verificationArtifacts: VerificationArtifacts;
+  /** Identity / KYC expectations to surface in drafts */
+  identity: { hints: string[] };
 };
 
 /** Per-controller artifact defaults (safe & rich by default) */
@@ -41,9 +39,25 @@ function artifactsFor(key: string): VerificationArtifacts {
     case "olx":
       return { htmlReport: true, screenshots: true, emailCopy: false, signedManifest: true };
     default:
-      // Conservative rich defaults
       return { htmlReport: true, screenshots: true, emailCopy: true, signedManifest: true };
   }
+}
+
+/** Build human-readable KYC/identity hints from meta.identity */
+function identityHintsFor(key: string, meta?: { wantsName?: boolean; wantsEmail?: boolean; wantsPhone?: boolean; wantsIdDoc?: boolean }): string[] {
+  const k = (key || "").toLowerCase();
+  const wantsName = meta?.wantsName ?? true;
+  const wantsEmail = meta?.wantsEmail ?? true;
+  const wantsPhone = meta?.wantsPhone ?? (k === "truecaller"); // likely for phone-centric controllers
+  const wantsIdDoc = meta?.wantsIdDoc ?? false;
+
+  const hints: string[] = [];
+  if (wantsName) hints.push("full name");
+  if (wantsEmail) hints.push("account email");
+  if (wantsPhone) hints.push("phone number (last 4 or full)");
+  if (wantsIdDoc) hints.push("identity proof (Govt-issued ID)");
+  if (hints.length === 0) hints.push("basic identity");
+  return hints;
 }
 
 /**
@@ -70,6 +84,7 @@ export async function getRuntimePolicy(controllerKey: string): Promise<Controlle
     allowedChannels: allowed,
     slas: { targetMin },
     verificationArtifacts: artifactsFor(key),
+    identity: { hints: identityHintsFor(key, (meta as any)?.identity) },
   };
 }
 
@@ -92,5 +107,6 @@ export function getControllerPolicy(controllerKey: string): ControllerPolicy {
     allowedChannels: allowed,
     slas: { targetMin },
     verificationArtifacts: artifactsFor(key),
+    identity: { hints: identityHintsFor(key, (meta as any)?.identity) },
   };
 }
