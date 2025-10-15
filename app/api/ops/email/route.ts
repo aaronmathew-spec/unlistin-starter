@@ -6,38 +6,42 @@ import { NextResponse } from "next/server";
 import { sendEmailResend } from "@/lib/email/resend";
 
 const OPS_SECRET = process.env.SECURE_CRON_SECRET || "";
-const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || "")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
 
-function forbidden(msg: string) {
-  return NextResponse.json({ ok: false, error: msg }, { status: 403 });
-}
-
+/**
+ * POST /api/ops/email
+ * Body: { to: string|string[], subject: string, text?: string, html?: string, cc?: string|string[], bcc?: string|string[], replyTo?: string, tags?: Record<string,string|number|boolean> }
+ * Auth: header `x-secure-cron: <SECURE_CRON_SECRET>`
+ */
 export async function POST(req: Request) {
-  if (!OPS_SECRET) return forbidden("SECURE_CRON_SECRET not configured");
-  const header = req.headers.get("x-secure-cron") || "";
-  if (header !== OPS_SECRET) return forbidden("Invalid secret");
+  const hdr = req.headers.get("x-secure-cron") || "";
+  if (!OPS_SECRET || hdr !== OPS_SECRET) {
+    return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+  }
 
-  const to = ADMIN_EMAILS[0];
-  if (!to) return NextResponse.json({ ok: false, error: "No ADMIN_EMAILS set" }, { status: 400 });
-
-  const body = await req.json().catch(() => ({} as any));
-  const subject = body?.subject || "Unlistin: Email ops check";
-  const text =
-    body?.text ||
-    `This is a test message from Unlistin ops.\n\nTime: ${new Date().toISOString()}\n`;
+  const body = (await req.json().catch(() => ({}))) as {
+    to?: string | string[];
+    subject?: string;
+    text?: string;
+    html?: string;
+    cc?: string | string[];
+    bcc?: string | string[];
+    replyTo?: string;
+    tags?: Record<string, string | number | boolean>;
+  };
 
   const res = await sendEmailResend({
-    to,
-    subject,
-    text,
-    tags: { channel: "ops-test", env: process.env.VERCEL_ENV || "unknown" },
+    to: body.to || "",
+    subject: body.subject || "",
+    text: body.text,
+    html: body.html,
+    cc: body.cc,
+    bcc: body.bcc,
+    replyTo: body.replyTo,
+    tags: body.tags,
   });
 
   if (!("ok" in res) || res.ok !== true) {
-    return NextResponse.json({ ok: false, error: res.error, code: res.code ?? undefined }, { status: 500 });
+    return NextResponse.json({ ok: false, error: res.error }, { status: 500 });
   }
 
   return NextResponse.json({ ok: true, id: res.id });
