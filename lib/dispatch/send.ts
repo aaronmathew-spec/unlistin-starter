@@ -1,7 +1,7 @@
 // lib/dispatch/send.ts
 import type { ControllerRequestInput, DispatchResult } from "./types";
 import { generateDraft } from "@/src/agents/request/generator";
-import { getControllerPolicy } from "@/src/agents/policy";
+import { getRuntimePolicy } from "@/src/agents/policy"; // ⬅️ use DB-aware runtime policy
 import { sendEmailResend } from "@/lib/email/resend";
 import { retry } from "@/lib/retry/backoff";
 import { redactForLogs } from "@/lib/pii/redact";
@@ -10,7 +10,7 @@ import { enqueueWebformJob } from "@/lib/webform/queue";
 /**
  * Primary entry to send a controller request.
  * - Builds a draft from templates (EN/HI).
- * - Respects policy preferred channel.
+ * - Reads preferred channel & SLA from DB overrides (controllers_meta) via getRuntimePolicy().
  * - Email path is production-ready (Resend + retry/backoff).
  * - Webform path enqueues a job (worker processes asynchronously).
  * - Seeds well-known form URLs when available via getDefaultFormUrl(), but
@@ -32,7 +32,9 @@ export async function sendControllerRequest(input: ControllerRequestInput): Prom
   } as { name?: string; email?: string; phone?: string; city?: string };
 
   const draft = generateDraft(input.controllerKey, input.controllerName, normSubject, locale);
-  const policy = getControllerPolicy(input.controllerKey);
+
+  // ⬇️ DB-aware policy (preferred channel + allowed list + SLA)
+  const policy = await getRuntimePolicy(input.controllerKey);
 
   // Safe structured log
   // eslint-disable-next-line no-console
@@ -41,12 +43,7 @@ export async function sendControllerRequest(input: ControllerRequestInput): Prom
     redactForLogs(
       {
         input: { ...input, subject: normSubject, formUrl: explicitFormUrl || undefined },
-        policy: {
-          controllerKey: policy.controllerKey,
-          preferredChannel: policy.preferredChannel,
-          allowedChannels: policy.allowedChannels,
-          slas: policy.slas,
-        },
+        policy,
         draftMeta: {
           preferredChannel: draft.preferredChannel,
           allowedChannels: draft.allowedChannels,
@@ -59,7 +56,15 @@ export async function sendControllerRequest(input: ControllerRequestInput): Prom
   // Helper to resolve form URL with precedence: explicit -> known default -> undefined
   const formUrl = explicitFormUrl || getDefaultFormUrl(input.controllerKey) || undefined;
 
-  switch (draft.preferredChannel) {
+  // Effective preferred channel: prioritize draft preference, but ensure it’s allowed.
+  const preferred = draft.preferredChannel;
+  const isAllowed = policy.allowedChannels.includes(preferred as any);
+
+  const channel: "email" | "webform" | "api" = isAllowed
+    ? (preferred as any)
+    : (policy.preferredChannel as any);
+
+  switch (channel) {
     case "email": {
       const res = await sendEmailWithRetry({
         to: inferControllerEmailTo(input.controllerKey) ?? adminFallbackTo(),
@@ -125,7 +130,7 @@ export async function sendControllerRequest(input: ControllerRequestInput): Prom
     }
 
     default:
-      return { ok: false, error: `Unsupported channel: ${draft.preferredChannel}` };
+      return { ok: false, error: `Unsupported channel: ${channel}` };
   }
 }
 
