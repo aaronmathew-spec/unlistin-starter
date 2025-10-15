@@ -10,9 +10,10 @@ import type { Page } from "@playwright/test";
  * NOTE: This does not attempt OTP or login. It is safe and deterministic.
  */
 
-const CANDIDATE_URLS = [
-  // These may redirect; that's fine—we only need a stable page for capture.
-  "https://www.truecaller.com/privacy-center/request/unlist",
+const DEFAULT_TRUECALLER_URL = "https://www.truecaller.com/privacy-center/request/unlist";
+
+const CANDIDATE_URLS: string[] = [
+  DEFAULT_TRUECALLER_URL,
   "https://www.truecaller.com/unlisting",
   "https://support.truecaller.com/hc/en-us/articles/115004177305",
 ];
@@ -24,9 +25,13 @@ function extractTicketId(s: string): string | null {
 }
 
 async function bestUrl(job: WebformJobInput): Promise<string> {
-  // Normalize nullable/undefined formUrl -> string, then fallback to candidate[0]
+  // Normalize nullable/undefined formUrl -> string, then fallback to DEFAULT_TRUECALLER_URL
   const explicit = (job.formUrl ?? "").trim();
-  return explicit.length > 0 ? explicit : CANDIDATE_URLS[0];
+  if (explicit.length > 0) return explicit;
+
+  // If candidates changed, still guarantee a string via DEFAULT_TRUECALLER_URL
+  const first = CANDIDATE_URLS[0] || DEFAULT_TRUECALLER_URL;
+  return first;
 }
 
 async function run(page: Page, job: WebformJobInput): Promise<WebformResult> {
