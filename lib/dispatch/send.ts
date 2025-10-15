@@ -13,12 +13,25 @@ import { enqueueWebformJob } from "@/lib/webform/queue";
  * - Respects policy preferred channel.
  * - Email path is production-ready (Resend + retry/backoff).
  * - Webform path enqueues a job (worker processes asynchronously).
- * - Seeds well-known form URLs when available via getDefaultFormUrl().
+ * - Seeds well-known form URLs when available via getDefaultFormUrl(), but
+ *   will honor an explicit input.formUrl if provided.
  */
 export async function sendControllerRequest(input: ControllerRequestInput): Promise<DispatchResult> {
   const locale = input.locale ?? "en";
 
-  const draft = generateDraft(input.controllerKey, input.controllerName, input.subject, locale);
+  // Accept an optional explicit formUrl even if not in the .d.ts (safe cast)
+  const explicitFormUrl =
+    typeof (input as any)?.formUrl === "string" ? ((input as any).formUrl as string).trim() : "";
+
+  // Normalize subject so downstream never sees `null`
+  const normSubject = {
+    name: input.subject?.name ?? undefined,
+    email: input.subject?.email ?? undefined,
+    phone: input.subject?.phone ?? undefined,
+    city: (input.subject as any)?.city ?? undefined,
+  } as { name?: string; email?: string; phone?: string; city?: string };
+
+  const draft = generateDraft(input.controllerKey, input.controllerName, normSubject, locale);
   const policy = getControllerPolicy(input.controllerKey);
 
   // Safe structured log
@@ -27,7 +40,7 @@ export async function sendControllerRequest(input: ControllerRequestInput): Prom
     "[dispatch.init]",
     redactForLogs(
       {
-        input,
+        input: { ...input, subject: normSubject, formUrl: explicitFormUrl || undefined },
         policy: {
           controllerKey: policy.controllerKey,
           preferredChannel: policy.preferredChannel,
@@ -42,6 +55,9 @@ export async function sendControllerRequest(input: ControllerRequestInput): Prom
       { keys: ["email", "phone"] }
     )
   );
+
+  // Helper to resolve form URL with precedence: explicit -> known default -> undefined
+  const formUrl = explicitFormUrl || getDefaultFormUrl(input.controllerKey) || undefined;
 
   switch (draft.preferredChannel) {
     case "email": {
@@ -65,10 +81,10 @@ export async function sendControllerRequest(input: ControllerRequestInput): Prom
         const wf = await enqueueWebformJob({
           controllerKey: input.controllerKey,
           controllerName: input.controllerName,
-          subject: input.subject,
+          subject: normSubject,
           locale,
           draft: { subject: draft.subject, bodyText: draft.bodyText },
-          formUrl: getDefaultFormUrl(input.controllerKey) ?? undefined,
+          formUrl, // may be undefined; worker tolerates
         });
         return wf
           ? { ok: true, channel: "webform", note: `enqueued:${wf.id}` }
@@ -82,10 +98,10 @@ export async function sendControllerRequest(input: ControllerRequestInput): Prom
       const wf = await enqueueWebformJob({
         controllerKey: input.controllerKey,
         controllerName: input.controllerName,
-        subject: input.subject,
+        subject: normSubject,
         locale,
         draft: { subject: draft.subject, bodyText: draft.bodyText },
-        formUrl: getDefaultFormUrl(input.controllerKey) ?? undefined,
+        formUrl, // explicit (if present) or default
       });
       if (wf) return { ok: true, channel: "webform", note: `enqueued:${wf.id}` };
 
@@ -181,7 +197,6 @@ function getDefaultFormUrl(controllerKey: string): string | null {
       // Public unlisting/privacy request page (may redirect; handler tolerates)
       return "https://www.truecaller.com/privacy-center/request/unlist";
     case "naukri":
-      // Placeholder: replace when validated
       return null;
     case "olx":
       return null;
