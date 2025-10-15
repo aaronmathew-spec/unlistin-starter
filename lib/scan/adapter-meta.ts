@@ -16,6 +16,7 @@ export type AdapterMeta = {
 
 /** Reasonable, conservative defaults; tweak freely. */
 export const ADAPTER_META: Record<string, AdapterMeta> = {
+  // v1 sites
   justdial: {
     baseWeight: 1.10,
     stateWeight: { MH: 1.05, KA: 1.04, DL: 1.03, TN: 1.03, GJ: 1.03 },
@@ -32,36 +33,36 @@ export const ADAPTER_META: Record<string, AdapterMeta> = {
     maxAfterBoost: 1.28,
   },
 
-  // Phase 1 expansion
+  // Phase-1 India-first expansion
   truecaller: {
-    baseWeight: 1.08,
-    stateWeight: { MH: 1.03, KA: 1.03, DL: 1.03, TN: 1.02, GJ: 1.02 },
-    maxAfterBoost: 1.30,
+    baseWeight: 1.12, // strong signal for phone-led identity
+    stateWeight: { MH: 1.03, KA: 1.02, DL: 1.02 },
+    maxAfterBoost: 1.36,
   },
   naukri: {
-    baseWeight: 1.05,
-    stateWeight: { KA: 1.04, MH: 1.03, DL: 1.03, TN: 1.02 },
-    maxAfterBoost: 1.28,
+    baseWeight: 1.08,
+    stateWeight: { DL: 1.04, MH: 1.03, KA: 1.03, TN: 1.02 },
+    maxAfterBoost: 1.32,
   },
   olx: {
-    baseWeight: 1.03,
-    stateWeight: { MH: 1.03, DL: 1.03, KA: 1.02, TN: 1.02 },
-    maxAfterBoost: 1.25,
+    baseWeight: 1.05,
+    stateWeight: { MH: 1.03, DL: 1.03, KA: 1.02 },
+    maxAfterBoost: 1.30,
   },
   foundit: {
-    baseWeight: 1.02,
-    stateWeight: { KA: 1.03, MH: 1.02, DL: 1.02 },
-    maxAfterBoost: 1.24,
+    baseWeight: 1.06,
+    stateWeight: { TN: 1.03, KA: 1.03, MH: 1.02 },
+    maxAfterBoost: 1.30,
   },
   shine: {
-    baseWeight: 1.02,
-    stateWeight: { DL: 1.03, KA: 1.02, MH: 1.02 },
-    maxAfterBoost: 1.24,
+    baseWeight: 1.05,
+    stateWeight: { DL: 1.03, MH: 1.02, KA: 1.02 },
+    maxAfterBoost: 1.28,
   },
   timesjobs: {
-    baseWeight: 1.02,
-    stateWeight: { DL: 1.03, MH: 1.02, KA: 1.02 },
-    maxAfterBoost: 1.24,
+    baseWeight: 1.05,
+    stateWeight: { DL: 1.03, MH: 1.02 },
+    maxAfterBoost: 1.28,
   },
 
   /** Fallback for unknown adapters / generic directories */
