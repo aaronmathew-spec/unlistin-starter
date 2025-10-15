@@ -68,7 +68,9 @@ export async function GET(
   };
 
   zip.file("meta.json", JSON.stringify(meta, null, 2));
-  if (data.artifact_html) zip.file("artifact.html", data.artifact_html as string);
+  if (typeof data.artifact_html === "string" && data.artifact_html.length) {
+    zip.file("artifact.html", data.artifact_html);
+  }
 
   if (data.artifact_screenshot) {
     const buf = Buffer.isBuffer(data.artifact_screenshot)
@@ -77,20 +79,17 @@ export async function GET(
     zip.file("screenshot.png", buf);
   }
 
-  // Build the ZIP as Node Buffer…
+  // Build the ZIP as a Node Buffer…
   const nodeBuf: Buffer = await zip.generateAsync({
     type: "nodebuffer",
     compression: "DEFLATE",
     compressionOptions: { level: 6 },
   });
 
-  // …convert to ArrayBuffer for Web Response BodyInit
-  const ab: ArrayBuffer = nodeBuf.buffer.slice(
-    nodeBuf.byteOffset,
-    nodeBuf.byteOffset + nodeBuf.byteLength
-  );
+  // …and convert it to a plain Uint8Array (BodyInit-compatible)
+  const body = Uint8Array.from(nodeBuf);
 
-  return new Response(ab, {
+  return new Response(body, {
     status: 200,
     headers: {
       "content-type": "application/zip",
