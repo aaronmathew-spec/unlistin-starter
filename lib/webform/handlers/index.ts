@@ -1,10 +1,12 @@
 // lib/webform/handlers/index.ts
 import type { WebformHandler, WebformJobInput } from "./types";
 import { TruecallerHandler } from "./truecaller";
+import { NaukriHandler } from "./naukri";
 
 const REGISTRY: WebformHandler[] = [
   TruecallerHandler,
-  // Add more handlers here as you implement them (naukri, olx, etc.)
+  NaukriHandler,
+  // Add more handlers here (olx, foundit, shine, timesjobs) as you iterate
 ];
 
 export function pickHandler(job: WebformJobInput): WebformHandler | null {
