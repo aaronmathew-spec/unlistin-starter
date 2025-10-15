@@ -8,7 +8,7 @@ import { redactForLogs } from "@/lib/pii/redact";
 
 /**
  * Optional placeholder for webform enqueue.
- * If you already have a worker enqueue function, wire it here instead.
+ * TODO: Replace with your real Playwright worker enqueue.
  */
 async function enqueueWebformJob(_args: {
   controllerKey: string;
@@ -17,8 +17,6 @@ async function enqueueWebformJob(_args: {
   locale: "en" | "hi";
   draft: { subject: string; bodyText: string };
 }) {
-  // TODO: integrate with your existing Playwright worker enqueue.
-  // For now, return a no-op result so email fallback takes over if needed.
   return { ok: false as const, error: "webform_not_wired" };
 }
 
@@ -26,24 +24,37 @@ async function enqueueWebformJob(_args: {
  * Primary entry to send a controller request.
  * - Builds a draft from templates (EN/HI).
  * - Respects policy preferred channel.
- * - Email path is production-ready (Resend + retry).
+ * - Email path is production-ready (Resend + retry/backoff).
  * - Webform path is a safe placeholder (replace when you wire your worker).
  */
 export async function sendControllerRequest(input: ControllerRequestInput): Promise<DispatchResult> {
   const locale = input.locale ?? "en";
 
-  // Build draft (subject/body) using templates + policy hints footer
   const draft = generateDraft(input.controllerKey, input.controllerName, input.subject, locale);
   const policy = getControllerPolicy(input.controllerKey);
 
-  // Safe structured log
+  // Safe structured log for observability
   // eslint-disable-next-line no-console
-  console.info("[dispatch.init]", redactForLogs({ input, policy, draftMeta: {
-    preferredChannel: draft.preferredChannel,
-    allowedChannels: draft.allowedChannels
-  }}));
+  console.info(
+    "[dispatch.init]",
+    redactForLogs(
+      {
+        input,
+        policy: {
+          controllerKey: policy.controllerKey,
+          preferredChannel: policy.preferredChannel,
+          allowedChannels: policy.allowedChannels,
+          slas: policy.slas,
+        },
+        draftMeta: {
+          preferredChannel: draft.preferredChannel,
+          allowedChannels: draft.allowedChannels,
+        },
+      },
+      { keys: ["email", "phone"] }
+    )
+  );
 
-  // Try preferred channel first
   switch (draft.preferredChannel) {
     case "email": {
       const res = await sendEmailWithRetry({
@@ -60,7 +71,7 @@ export async function sendControllerRequest(input: ControllerRequestInput): Prom
       if (res.ok) {
         return { ok: true, channel: "email", providerId: res.id };
       }
-      // fall through to alternatives if policy allows
+
       if (policy.allowedChannels.includes("webform")) {
         const wf = await enqueueWebformJob({
           controllerKey: input.controllerKey,
@@ -71,11 +82,11 @@ export async function sendControllerRequest(input: ControllerRequestInput): Prom
         });
         if (wf.ok) return { ok: true, channel: "webform", note: "Enqueued webform worker" };
       }
+
       return { ok: false, error: res.error, hint: "email_and_webform_attempted" };
     }
 
     case "webform": {
-      // If webform not wired, try email as fallback (policy-defined)
       const wf = await enqueueWebformJob({
         controllerKey: input.controllerKey,
         controllerName: input.controllerName,
@@ -99,13 +110,12 @@ export async function sendControllerRequest(input: ControllerRequestInput): Prom
         if (res.ok) return { ok: true, channel: "email", providerId: res.id };
         return { ok: false, error: res.error, hint: "webform_failed_email_failed" };
       }
+
       return { ok: false, error: "webform_not_wired", hint: "no_email_fallback_allowed" };
     }
 
-    default: {
-      // App/phone channels aren’t automated here; log and fail safe.
+    default:
       return { ok: false, error: `Unsupported channel: ${draft.preferredChannel}` };
-    }
   }
 }
 
@@ -127,39 +137,52 @@ async function sendEmailWithRetry(payload: {
           html: payload.html,
           tags: payload.tags,
         }),
-      { tries: 4, baseMs: 600, onRetry: (n, e) => console.warn("[email.retry]", n, e) }
+      {
+        tries: 4,
+        baseMs: 600,
+        retryOn: (err) => {
+          // sendEmailResend returns {ok:false,error,code} on HTTP errors
+          const code = (err as any)?.code ?? (err as any)?.status;
+          if (typeof code === "number") {
+            // retry on 429, 5xx
+            return code === 429 || (code >= 500 && code < 600);
+          }
+          // network/unknown -> retry
+          return true;
+        },
+        onRetry: (n, e, delay) =>
+          console.warn("[email.retry]", n, delay, redactForLogs({ err: String((e as any)?.message || e) })),
+      }
     );
+
     if (!out.ok) {
       // eslint-disable-next-line no-console
-      console.error("[email.failed]", redactForLogs({ payload, error: out.error }));
+      console.error("[email.failed]", redactForLogs({ payload, error: out.error }, { keys: ["text", "html"] }));
     }
     return out;
   } catch (err: any) {
     // eslint-disable-next-line no-console
-    console.error("[email.exception]", redactForLogs({ payload, error: String(err?.message || err) }));
+    console.error(
+      "[email.exception]",
+      redactForLogs({ payload, error: String(err?.message || err) }, { keys: ["text", "html"] })
+    );
     return { ok: false as const, error: "exception_sending_email" };
   }
 }
 
 /**
- * Map controller → default email desk (if known).
- * You can improve this with real addresses or load from a controller table.
+ * Controller -> default email desk mapping via env overrides.
+ * Set env like:
+ *   CONTROLLER_TRUECALLER_EMAIL, CONTROLLER_NAUKRI_EMAIL, ...
+ * If not set, returns undefined and we fall back to ADMIN_EMAILS[0].
  */
 function inferControllerEmailTo(controllerKey: string): string | undefined {
+  const envKey = `CONTROLLER_${controllerKey.toUpperCase()}_EMAIL`;
+  const value = process.env[envKey];
+  if (value && value.trim()) return value.trim();
   switch (controllerKey) {
-    case "naukri":
-      // Example: return "privacy@naukri.com";
-      return undefined;
-    case "olx":
-      return undefined;
-    case "foundit":
-      return undefined;
-    case "shine":
-      return undefined;
-    case "timesjobs":
-      return undefined;
-    case "truecaller":
-      return undefined;
+    // You can hardcode known desks here if/when you validate them:
+    // case "naukri": return "privacy@naukri.com";
     default:
       return undefined;
   }
@@ -171,6 +194,5 @@ function adminFallbackTo(): string {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  // In production you may prefer to throw if missing:
   return list[0] || "admin@example.com";
 }
