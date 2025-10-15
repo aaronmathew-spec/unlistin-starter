@@ -1,7 +1,6 @@
 // lib/dispatch/log.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { createClient } from "@supabase/supabase-js";
-import { sha256Hex } from "@/lib/crypto/hash";
 
 function adminSupabase() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
@@ -9,66 +8,102 @@ function adminSupabase() {
   return createClient(url, key, { auth: { persistSession: false } });
 }
 
-export type DedupeWindow = { minutes?: number; hours?: number };
-
-export function makeDedupeKey(input: {
-  controllerKey: string;
-  name?: string | null;
-  email?: string | null;
-  phone?: string | null;
-  locale?: "en" | "hi";
-}): string {
-  const key = (input.controllerKey || "").toLowerCase();
-  // normalize email/phone/name to reduce accidental misses
-  const email = (input.email || "").trim().toLowerCase();
-  const phone = (input.phone || "").replace(/[^\d+]/g, "");
-  const name = (input.name || "").trim().replace(/\s+/g, " ").toLowerCase();
-  const locale = input.locale || "en";
-  return sha256Hex([key, email, phone, name, locale].join("|"));
-}
-
-export async function wasRecentlyDispatched(dedupeKey: string, window: DedupeWindow = { hours: 24 }) {
-  const supa = adminSupabase();
-  const mins = (window.minutes ?? 0) + (window.hours ?? 0) * 60;
-  const since = new Date(Date.now() - mins * 60_000).toISOString();
-  const { data, error } = await supa
-    .from("dispatch_log")
-    .select("id")
-    .eq("dedupe_key", dedupeKey)
-    .gte("created_at", since)
-    .limit(1);
-  if (error) {
-    console.warn("[dispatch_log.recent.error]", error.message);
-    return false;
-  }
-  return (data?.length ?? 0) > 0;
-}
-
-export async function recordDispatch(result: {
+export type DispatchAudit = {
   dedupeKey: string;
   controllerKey: string;
   subject: { name?: string | null; email?: string | null; phone?: string | null };
   locale: "en" | "hi";
+  channel?: "email" | "webform" | "api" | null;
   ok: boolean;
-  channel?: string | null;
+  error?: string | null;
   providerId?: string | null;
   note?: string | null;
-  error?: string | null;
-}) {
-  const supa = adminSupabase();
-  const payload = {
-    dedupe_key: result.dedupeKey,
-    controller_key: result.controllerKey,
-    subject_email: result.subject.email ?? null,
-    subject_phone: result.subject.phone ?? null,
-    subject_name: result.subject.name ?? null,
-    locale: result.locale,
-    channel: result.channel ?? null,
-    provider_id: result.providerId ?? null,
-    note: result.note ?? null,
-    ok: !!result.ok,
-    error: result.error ?? null,
-  };
-  const { error } = await supa.from("dispatch_log").insert(payload);
-  if (error) console.warn("[dispatch_log.insert.error]", error.message);
+};
+
+export async function ensureDispatchTables(): Promise<void> {
+  // Best-effort: if table/policy already exist, this no-ops (thanks to IF NOT EXISTS)
+  // Runs only under service role.
+  const ddl = `
+  create table if not exists public.dispatch_log (
+    id bigserial primary key,
+    dedupe_key text not null,
+    controller_key text not null,
+    subject_email text,
+    subject_phone text,
+    subject_name text,
+    locale text not null,
+    channel text,
+    provider_id text,
+    note text,
+    ok boolean not null default false,
+    error text,
+    created_at timestamp with time zone not null default now()
+  );
+
+  create index if not exists idx_dispatch_log_dedupe on public.dispatch_log (dedupe_key);
+  create index if not exists idx_dispatch_log_created on public.dispatch_log (created_at desc);
+  `;
+  try {
+    const supa = adminSupabase();
+    await supa.rpc("exec_sql", { sql: ddl } as any);
+  } catch {
+    // If no "exec_sql" function exists in your instance, ignore silently;
+    // we rely on earlier migrations having created the table.
+  }
+}
+
+export async function insertDispatch(a: DispatchAudit) {
+  try {
+    const supa = adminSupabase();
+    const { error } = await supa.from("dispatch_log").insert({
+      dedupe_key: a.dedupeKey,
+      controller_key: a.controllerKey,
+      subject_email: a.subject.email || null,
+      subject_phone: a.subject.phone || null,
+      subject_name: a.subject.name || null,
+      locale: a.locale,
+      channel: a.channel || null,
+      provider_id: a.providerId || null,
+      note: a.note || null,
+      ok: a.ok,
+      error: a.error || null,
+    });
+    if (error) {
+      // eslint-disable-next-line no-console
+      console.warn("[dispatch_log.insert.error]", error.message);
+    }
+  } catch (e: any) {
+    // eslint-disable-next-line no-console
+    console.warn("[dispatch_log.insert.exception]", e?.message || e);
+  }
+}
+
+/** Returns the most recent success that matches dedupeKey within lookback minutes. */
+export async function findRecentSuccess(
+  dedupeKey: string,
+  lookbackMinutes = 24 * 60,
+): Promise<{ id: number; created_at: string } | null> {
+  try {
+    const since = new Date(Date.now() - lookbackMinutes * 60_000).toISOString();
+    const supa = adminSupabase();
+    const { data, error } = await supa
+      .from("dispatch_log")
+      .select("id, created_at, ok")
+      .eq("dedupe_key", dedupeKey)
+      .gte("created_at", since)
+      .order("created_at", { ascending: false })
+      .limit(1);
+    if (error) {
+      // eslint-disable-next-line no-console
+      console.warn("[dispatch_log.query.error]", error.message);
+      return null;
+    }
+    const row = (data ?? [])[0] as { id: number; created_at: string; ok: boolean } | undefined;
+    if (row && row.ok === true) return { id: row.id, created_at: row.created_at };
+    return null;
+  } catch (e: any) {
+    // eslint-disable-next-line no-console
+    console.warn("[dispatch_log.query.exception]", e?.message || e);
+    return null;
+  }
 }
