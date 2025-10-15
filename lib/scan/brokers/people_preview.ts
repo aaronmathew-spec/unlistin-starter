@@ -41,6 +41,22 @@ function labelForDomain(domain: string): string {
       return "UrbanPro";
     case "shiksha.com":
       return "Shiksha";
+
+    // Phase 1 additions
+    case "truecaller.com":
+      return "Truecaller";
+    case "naukri.com":
+      return "Naukri";
+    case "olx.in":
+    case "olx.com":
+      return "OLX";
+    case "foundit.in":
+      return "Foundit";
+    case "shine.com":
+      return "Shine";
+    case "timesjobs.com":
+      return "TimesJobs";
+
     default:
       return domain;
   }
@@ -49,7 +65,22 @@ function labelForDomain(domain: string): string {
 // Deterministically pick a few allowlisted domains to propose as likely surfaces.
 // This is a placeholder for real adapters that will use curated dossiers & search.
 function pickCandidateDomains(seed: string): string[] {
-  const domains = ["justdial.com", "sulekha.com", "indiamart.com", "urbanpro.com", "shiksha.com"];
+  const domains = [
+    "justdial.com",
+    "sulekha.com",
+    "indiamart.com",
+    "urbanpro.com",
+    "shiksha.com",
+
+    // Phase 1 additions
+    "truecaller.com",
+    "naukri.com",
+    "olx.in",
+    "foundit.in",
+    "shine.com",
+    "timesjobs.com",
+  ];
+
   // simple hash to spread selection
   let h = 0;
   for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
