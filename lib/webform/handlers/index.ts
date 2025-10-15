@@ -2,11 +2,18 @@
 import type { WebformHandler, WebformJobInput } from "./types";
 import { TruecallerHandler } from "./truecaller";
 import { NaukriHandler } from "./naukri";
+import { OlxHandler } from "./olx";
+import { FounditHandler } from "./foundit";
+import { ShineHandler } from "./shine";
+import { TimesJobsHandler } from "./timesjobs";
 
 const REGISTRY: WebformHandler[] = [
   TruecallerHandler,
   NaukriHandler,
-  // Add more handlers here (olx, foundit, shine, timesjobs) as you iterate
+  OlxHandler,
+  FounditHandler,
+  ShineHandler,
+  TimesJobsHandler,
 ];
 
 export function pickHandler(job: WebformJobInput): WebformHandler | null {
