@@ -9,8 +9,7 @@ import { sendEmailResend } from "@/lib/email/resend";
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE!;
 const OPS_SECRET = process.env.SECURE_CRON_SECRET || "";
-const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || "")
-  .split(",").map(s => s.trim()).filter(Boolean);
+const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || "").split(",").map((s) => s.trim()).filter(Boolean);
 
 const TARGET_MINUTES: Record<string, number> = {
   truecaller: 60,
@@ -22,8 +21,9 @@ const TARGET_MINUTES: Record<string, number> = {
   "*": 240,
 };
 
-function targetFor(key: string) {
-  return TARGET_MINUTES[key] ?? TARGET_MINUTES["*"];
+function targetFor(key: string): number {
+  const v = TARGET_MINUTES[key];
+  return typeof v === "number" ? v : TARGET_MINUTES["*"];
 }
 
 function forbidden(msg: string) {
@@ -58,25 +58,23 @@ export async function POST(req: Request) {
   const breaches: Record<string, { id: string; ageMin: number; status: string }[]> = {};
   for (const j of data || []) {
     const key = (j.controller_key || "*") as string;
-    const targetMs = targetFor(key) * 60 * 1000;
-    const ageMs = now - new Date(j.created_at).getTime();
+    const targetMs = targetFor(key) * 60 * 1000; // <- now guaranteed number
+    const ageMs = now - new Date(j.created_at as string).getTime();
     if (ageMs > targetMs) {
       if (!breaches[key]) breaches[key] = [];
       breaches[key].push({
-        id: j.id,
+        id: j.id as string,
         ageMin: Math.floor(ageMs / 60000),
-        status: j.status,
+        status: j.status as string,
       });
     }
   }
 
-  // If nothing breached, exit quietly
   const totalBreaches = Object.values(breaches).reduce((n, arr) => n + arr.length, 0);
   if (!totalBreaches) {
     return NextResponse.json({ ok: true, breached: 0 });
   }
 
-  // Compose email
   const lines: string[] = [];
   lines.push(`SLA Breach Report – ${new Date().toLocaleString()}`);
   lines.push("");
@@ -91,7 +89,6 @@ export async function POST(req: Request) {
   }
   const body = lines.join("\n");
 
-  // Send one email to admins
   if (ADMIN_EMAILS.length) {
     await sendEmailResend({
       to: ADMIN_EMAILS,
