@@ -1,40 +1,51 @@
 // lib/dispatch/send.ts
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import type { ControllerRequestInput, DispatchResult } from "./types";
 import { generateDraft } from "@/src/agents/request/generator";
-import { getRuntimePolicy } from "@/src/agents/policy"; // ⬅️ use DB-aware runtime policy
+import { getControllerPolicy } from "@/src/agents/policy";
 import { sendEmailResend } from "@/lib/email/resend";
 import { retry } from "@/lib/retry/backoff";
 import { redactForLogs } from "@/lib/pii/redact";
 import { enqueueWebformJob } from "@/lib/webform/queue";
+import { findRecentSuccess, insertDispatch } from "@/lib/dispatch/log";
 
 /**
  * Primary entry to send a controller request.
  * - Builds a draft from templates (EN/HI).
- * - Reads preferred channel & SLA from DB overrides (controllers_meta) via getRuntimePolicy().
+ * - Respects policy preferred channel.
  * - Email path is production-ready (Resend + retry/backoff).
  * - Webform path enqueues a job (worker processes asynchronously).
- * - Seeds well-known form URLs when available via getDefaultFormUrl(), but
- *   will honor an explicit input.formUrl if provided.
+ * - Seeds well-known form URLs when available via getDefaultFormUrl().
+ * - NEW: Hard idempotency via dispatch_log (24h look-back; configurable via env).
  */
 export async function sendControllerRequest(input: ControllerRequestInput): Promise<DispatchResult> {
   const locale = input.locale ?? "en";
 
-  // Accept an optional explicit formUrl even if not in the .d.ts (safe cast)
-  const explicitFormUrl =
-    typeof (input as any)?.formUrl === "string" ? ((input as any).formUrl as string).trim() : "";
+  // Idempotency key: stable across retries for same controller+subject+locale
+  const dedupeKey = toDedupeKey(input);
 
-  // Normalize subject so downstream never sees `null`
-  const normSubject = {
-    name: input.subject?.name ?? undefined,
-    email: input.subject?.email ?? undefined,
-    phone: input.subject?.phone ?? undefined,
-    city: (input.subject as any)?.city ?? undefined,
-  } as { name?: string; email?: string; phone?: string; city?: string };
+  // Optional: configure look-back window (minutes), default 24h
+  const lookbackMin = clampInt(process.env.DISPATCH_IDEMPOTENCY_LOOKBACK_MIN ?? "", 24 * 60, 10, 7 * 24 * 60);
 
-  const draft = generateDraft(input.controllerKey, input.controllerName, normSubject, locale);
+  // Short-circuit if a successful dispatch exists within lookback
+  const recent = await findRecentSuccess(dedupeKey, lookbackMin);
+  if (recent) {
+    const note = `idempotent_skip:existing:${recent.id}`;
+    await insertDispatch({
+      dedupeKey,
+      controllerKey: input.controllerKey,
+      subject: input.subject,
+      locale,
+      channel: null,
+      ok: true,
+      providerId: null,
+      note,
+    });
+    return { ok: true, channel: "email", note }; // channel isn't meaningful on skip; keep consistent type
+  }
 
-  // ⬇️ DB-aware policy (preferred channel + allowed list + SLA)
-  const policy = await getRuntimePolicy(input.controllerKey);
+  const draft = generateDraft(input.controllerKey, input.controllerName, input.subject, locale);
+  const policy = getControllerPolicy(input.controllerKey);
 
   // Safe structured log
   // eslint-disable-next-line no-console
@@ -42,8 +53,14 @@ export async function sendControllerRequest(input: ControllerRequestInput): Prom
     "[dispatch.init]",
     redactForLogs(
       {
-        input: { ...input, subject: normSubject, formUrl: explicitFormUrl || undefined },
-        policy,
+        dedupeKey,
+        input,
+        policy: {
+          controllerKey: policy.controllerKey,
+          preferredChannel: policy.preferredChannel,
+          allowedChannels: policy.allowedChannels,
+          slas: policy.slas,
+        },
         draftMeta: {
           preferredChannel: draft.preferredChannel,
           allowedChannels: draft.allowedChannels,
@@ -53,18 +70,7 @@ export async function sendControllerRequest(input: ControllerRequestInput): Prom
     )
   );
 
-  // Helper to resolve form URL with precedence: explicit -> known default -> undefined
-  const formUrl = explicitFormUrl || getDefaultFormUrl(input.controllerKey) || undefined;
-
-  // Effective preferred channel: prioritize draft preference, but ensure it’s allowed.
-  const preferred = draft.preferredChannel;
-  const isAllowed = policy.allowedChannels.includes(preferred as any);
-
-  const channel: "email" | "webform" | "api" = isAllowed
-    ? (preferred as any)
-    : (policy.preferredChannel as any);
-
-  switch (channel) {
+  switch (draft.preferredChannel) {
     case "email": {
       const res = await sendEmailWithRetry({
         to: inferControllerEmailTo(input.controllerKey) ?? adminFallbackTo(),
@@ -77,6 +83,19 @@ export async function sendControllerRequest(input: ControllerRequestInput): Prom
         },
       });
 
+      // Audit
+      await insertDispatch({
+        dedupeKey,
+        controllerKey: input.controllerKey,
+        subject: input.subject,
+        locale,
+        channel: "email",
+        ok: res.ok,
+        providerId: res.ok ? res.id ?? null : null,
+        error: res.ok ? null : res.error ?? "unknown_error",
+        note: res.ok ? null : "email_failed",
+      });
+
       if (res.ok) {
         return { ok: true, channel: "email", providerId: res.id };
       }
@@ -86,11 +105,24 @@ export async function sendControllerRequest(input: ControllerRequestInput): Prom
         const wf = await enqueueWebformJob({
           controllerKey: input.controllerKey,
           controllerName: input.controllerName,
-          subject: normSubject,
+          subject: input.subject,
           locale,
           draft: { subject: draft.subject, bodyText: draft.bodyText },
-          formUrl, // may be undefined; worker tolerates
+          formUrl: getDefaultFormUrl(input.controllerKey) ?? undefined,
         });
+
+        await insertDispatch({
+          dedupeKey,
+          controllerKey: input.controllerKey,
+          subject: input.subject,
+          locale,
+          channel: "webform",
+          ok: !!wf,
+          providerId: null,
+          error: wf ? null : "webform_enqueue_failed",
+          note: wf ? `enqueued:${wf.id}` : null,
+        });
+
         return wf
           ? { ok: true, channel: "webform", note: `enqueued:${wf.id}` }
           : { ok: false, error: "webform_enqueue_failed" };
@@ -103,11 +135,24 @@ export async function sendControllerRequest(input: ControllerRequestInput): Prom
       const wf = await enqueueWebformJob({
         controllerKey: input.controllerKey,
         controllerName: input.controllerName,
-        subject: normSubject,
+        subject: input.subject,
         locale,
         draft: { subject: draft.subject, bodyText: draft.bodyText },
-        formUrl, // explicit (if present) or default
+        formUrl: getDefaultFormUrl(input.controllerKey) ?? undefined,
       });
+
+      await insertDispatch({
+        dedupeKey,
+        controllerKey: input.controllerKey,
+        subject: input.subject,
+        locale,
+        channel: "webform",
+        ok: !!wf,
+        providerId: null,
+        error: wf ? null : "webform_enqueue_failed",
+        note: wf ? `enqueued:${wf.id}` : null,
+      });
+
       if (wf) return { ok: true, channel: "webform", note: `enqueued:${wf.id}` };
 
       // Fallback to email if allowed
@@ -122,6 +167,19 @@ export async function sendControllerRequest(input: ControllerRequestInput): Prom
             locale,
           },
         });
+
+        await insertDispatch({
+          dedupeKey,
+          controllerKey: input.controllerKey,
+          subject: input.subject,
+          locale,
+          channel: "email",
+          ok: res.ok,
+          providerId: res.ok ? res.id ?? null : null,
+          error: res.ok ? null : res.error ?? "unknown_error",
+          note: res.ok ? null : "email_failed_after_webform_failed",
+        });
+
         if (res.ok) return { ok: true, channel: "email", providerId: res.id };
         return { ok: false, error: res.error, hint: "webform_failed_email_failed" };
       }
@@ -130,7 +188,16 @@ export async function sendControllerRequest(input: ControllerRequestInput): Prom
     }
 
     default:
-      return { ok: false, error: `Unsupported channel: ${channel}` };
+      await insertDispatch({
+        dedupeKey,
+        controllerKey: input.controllerKey,
+        subject: input.subject,
+        locale,
+        channel: null,
+        ok: false,
+        error: `unsupported_channel:${String(draft.preferredChannel)}`,
+      });
+      return { ok: false, error: `Unsupported channel: ${draft.preferredChannel}` };
   }
 }
 
@@ -160,7 +227,7 @@ async function sendEmailWithRetry(payload: {
           if (typeof code === "number") {
             return code === 429 || (code >= 500 && code < 600);
           }
-          return true;
+          return true; // unknown -> retry once
         },
         onRetry: (n, e, delay) =>
           console.warn("[email.retry]", n, delay, redactForLogs({ err: String((e as any)?.message || e) })),
@@ -199,18 +266,12 @@ function inferControllerEmailTo(controllerKey: string): string | undefined {
 function getDefaultFormUrl(controllerKey: string): string | null {
   switch (controllerKey.toLowerCase()) {
     case "truecaller":
-      // Public unlisting/privacy request page (may redirect; handler tolerates)
       return "https://www.truecaller.com/privacy-center/request/unlist";
     case "naukri":
-      return null;
     case "olx":
-      return null;
     case "foundit":
-      return null;
     case "shine":
-      return null;
     case "timesjobs":
-      return null;
     default:
       return null;
   }
@@ -223,4 +284,30 @@ function adminFallbackTo(): string {
     .map((s) => s.trim())
     .filter(Boolean);
   return list[0] || "admin@example.com";
+}
+
+/* ------------------- helpers ------------------- */
+
+function toDedupeKey(input: ControllerRequestInput): string {
+  const parts = [
+    "v1", // version in case we ever change keying logic
+    (input.controllerKey || "").toLowerCase(),
+    norm(input.subject?.email) || "-",
+    norm(input.subject?.phone) || "-",
+    norm(input.subject?.name) || "-",
+    input.locale || "en",
+  ];
+  return parts.join("|");
+}
+
+function norm(v: string | null | undefined): string | null {
+  if (!v) return null;
+  const s = v.trim().toLowerCase();
+  return s || null;
+}
+
+function clampInt(raw: string, def: number, min: number, max: number): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return def;
+  return Math.min(max, Math.max(min, Math.round(n)));
 }
