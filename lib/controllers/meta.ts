@@ -1,22 +1,24 @@
 // lib/controllers/meta.ts
+
 export type PreferredChannel = "webform" | "email" | "api";
 
 export type ControllerMeta = {
-  key: string;                 // "truecaller"
-  name: string;                // "Truecaller"
-  preferred: PreferredChannel; // default channel
-  formUrl?: string;            // known public webform (if stable)
-  slaTargetMin?: number;       // target minutes for Phase 7/9 SLA/alerts
+  key: string;
+  name: string;
+  preferred: PreferredChannel; // default channel (can be overridden in DB)
+  formUrl?: string;
+  slaTargetMin?: number;
   identity?: {
     wantsName?: boolean;
     wantsEmail?: boolean;
     wantsPhone?: boolean;
-    wantsIdDoc?: boolean;      // PAN/Aadhaar/passport style flows
+    wantsIdDoc?: boolean;
   };
   locales?: Array<"en" | "hi">;
 };
 
-export const CONTROLLERS: Record<string, ControllerMeta> = {
+/** Authoritative defaults (code). DB overrides merge on top at runtime. */
+export const CONTROLLER_DEFAULTS: Record<string, ControllerMeta> = {
   truecaller: {
     key: "truecaller",
     name: "Truecaller",
@@ -68,8 +70,7 @@ export const CONTROLLERS: Record<string, ControllerMeta> = {
   },
 };
 
-// Safe read helper
-export function getControllerMeta(key: string): ControllerMeta | null {
+export function getDefaultControllerMeta(key: string): ControllerMeta | null {
   const k = (key || "").toLowerCase();
-  return CONTROLLERS[k] ?? null;
+  return CONTROLLER_DEFAULTS[k] ?? null;
 }
