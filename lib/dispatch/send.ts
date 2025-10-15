@@ -5,27 +5,14 @@ import { getControllerPolicy } from "@/src/agents/policy";
 import { sendEmailResend } from "@/lib/email/resend";
 import { retry } from "@/lib/retry/backoff";
 import { redactForLogs } from "@/lib/pii/redact";
-
-/**
- * Optional placeholder for webform enqueue.
- * TODO: Replace with your real Playwright worker enqueue.
- */
-async function enqueueWebformJob(_args: {
-  controllerKey: string;
-  controllerName: string;
-  subject: { name?: string | null; email?: string | null; phone?: string | null };
-  locale: "en" | "hi";
-  draft: { subject: string; bodyText: string };
-}) {
-  return { ok: false as const, error: "webform_not_wired" };
-}
+import { enqueueWebformJob } from "@/lib/webform/queue";
 
 /**
  * Primary entry to send a controller request.
  * - Builds a draft from templates (EN/HI).
  * - Respects policy preferred channel.
  * - Email path is production-ready (Resend + retry/backoff).
- * - Webform path is a safe placeholder (replace when you wire your worker).
+ * - Webform path enqueues a job (worker processes asynchronously).
  */
 export async function sendControllerRequest(input: ControllerRequestInput): Promise<DispatchResult> {
   const locale = input.locale ?? "en";
@@ -33,7 +20,7 @@ export async function sendControllerRequest(input: ControllerRequestInput): Prom
   const draft = generateDraft(input.controllerKey, input.controllerName, input.subject, locale);
   const policy = getControllerPolicy(input.controllerKey);
 
-  // Safe structured log for observability
+  // Safe structured log
   // eslint-disable-next-line no-console
   console.info(
     "[dispatch.init]",
@@ -72,6 +59,7 @@ export async function sendControllerRequest(input: ControllerRequestInput): Prom
         return { ok: true, channel: "email", providerId: res.id };
       }
 
+      // Fallback: enqueue webform if allowed
       if (policy.allowedChannels.includes("webform")) {
         const wf = await enqueueWebformJob({
           controllerKey: input.controllerKey,
@@ -79,8 +67,11 @@ export async function sendControllerRequest(input: ControllerRequestInput): Prom
           subject: input.subject,
           locale,
           draft: { subject: draft.subject, bodyText: draft.bodyText },
+          formUrl: undefined, // you can pass known per-site URLs here later
         });
-        if (wf.ok) return { ok: true, channel: "webform", note: "Enqueued webform worker" };
+        return wf
+          ? { ok: true, channel: "webform", note: `enqueued:${wf.id}` }
+          : { ok: false, error: "webform_enqueue_failed" };
       }
 
       return { ok: false, error: res.error, hint: "email_and_webform_attempted" };
@@ -93,9 +84,11 @@ export async function sendControllerRequest(input: ControllerRequestInput): Prom
         subject: input.subject,
         locale,
         draft: { subject: draft.subject, bodyText: draft.bodyText },
+        formUrl: undefined,
       });
-      if (wf.ok) return { ok: true, channel: "webform", note: "Enqueued webform worker" };
+      if (wf) return { ok: true, channel: "webform", note: `enqueued:${wf.id}` };
 
+      // Fallback to email if allowed
       if (policy.allowedChannels.includes("email")) {
         const res = await sendEmailWithRetry({
           to: inferControllerEmailTo(input.controllerKey) ?? adminFallbackTo(),
@@ -111,7 +104,7 @@ export async function sendControllerRequest(input: ControllerRequestInput): Prom
         return { ok: false, error: res.error, hint: "webform_failed_email_failed" };
       }
 
-      return { ok: false, error: "webform_not_wired", hint: "no_email_fallback_allowed" };
+      return { ok: false, error: "webform_enqueue_failed", hint: "no_email_fallback_allowed" };
     }
 
     default:
@@ -177,10 +170,7 @@ function inferControllerEmailTo(controllerKey: string): string | undefined {
   const envKey = `CONTROLLER_${controllerKey.toUpperCase()}_EMAIL`;
   const value = process.env[envKey];
   if (value && value.trim()) return value.trim();
-  switch (controllerKey) {
-    default:
-      return undefined;
-  }
+  return undefined;
 }
 
 /** Last-resort admin sink so tests don’t vanish if a desk email isn’t set yet */
