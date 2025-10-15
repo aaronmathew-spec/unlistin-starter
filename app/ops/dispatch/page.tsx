@@ -2,7 +2,7 @@
 "use client";
 
 import * as React from "react";
-import { sendOpsDispatchAction } from "./actions";
+import { SendControllerButton } from "@/components/dispatch/SendControllerButton";
 import { Button } from "@/components/ui/Button";
 import { Card, CardBody, CardTitle, CardSubtitle } from "@/components/ui/Card";
 import EmptyState from "@/components/ui/EmptyState";
@@ -18,28 +18,7 @@ export default function OpsDispatchPage() {
   const [phone, setPhone] = React.useState("+91 98xxxx1234");
   const [locale, setLocale] = React.useState<"en" | "hi">("en");
 
-  const [pending, startTransition] = React.useTransition();
   const [result, setResult] = React.useState<null | { ok: boolean; message: string }>(null);
-
-  function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setResult(null);
-
-    startTransition(async () => {
-      const res = await sendOpsDispatchAction({
-        controllerKey,
-        controllerName,
-        subject: { name, email, phone },
-        locale,
-      });
-
-      if (res.ok) {
-        setResult({ ok: true, message: `Sent via ${res.channel}${res.providerId ? ` (id ${res.providerId})` : ""}` });
-      } else {
-        setResult({ ok: false, message: `Failed: ${res.error}${res.hint ? ` [${res.hint}]` : ""}` });
-      }
-    });
-  }
 
   return (
     <div className="container" style={{ paddingTop: 24, paddingBottom: 24 }}>
@@ -48,7 +27,7 @@ export default function OpsDispatchPage() {
           <CardTitle>Ops · Dispatch Test</CardTitle>
           <CardSubtitle>Send a site-specific request using the unified dispatcher.</CardSubtitle>
 
-          <form onSubmit={onSubmit} style={{ marginTop: 16, display: "grid", gap: 12 }}>
+          <div style={{ marginTop: 16, display: "grid", gap: 12 }}>
             <div className="row">
               <div className="col">
                 <FormField label="Controller (key)">
@@ -58,7 +37,6 @@ export default function OpsDispatchPage() {
                     onChange={(e) => {
                       const k = e.target.value as ControllerKey;
                       setControllerKey(k);
-                      // Friendly auto-name
                       const nameMap: Record<ControllerKey, string> = {
                         truecaller: "Truecaller",
                         naukri: "Naukri",
@@ -115,13 +93,25 @@ export default function OpsDispatchPage() {
             </div>
 
             <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-              <Button type="submit" disabled={pending}>
-                {pending ? "Sending…" : "Send request"}
-              </Button>
+              <SendControllerButton
+                controllerKey={controllerKey}
+                controllerName={controllerName}
+                subject={{ name, email, phone }}
+                locale={locale}
+                onSuccess={(info) =>
+                  setResult({
+                    ok: true,
+                    message: `Sent via ${info.channel}${info.providerId ? ` (id ${info.providerId})` : ""}`,
+                  })
+                }
+                onError={(e) => setResult({ ok: false, message: `Failed: ${e.error}${e.hint ? ` [${e.hint}]` : ""}` })}
+              >
+                Send request
+              </SendControllerButton>
+
               <Button
                 type="button"
                 variant="outline"
-                disabled={pending}
                 onClick={() => {
                   setName("Rahul Sharma");
                   setEmail("rahul@example.com");
@@ -131,23 +121,23 @@ export default function OpsDispatchPage() {
                 Reset sample
               </Button>
             </div>
-          </form>
 
-          <div style={{ marginTop: 16 }}>
-            {!result ? (
-              <EmptyState
-                title="No dispatch result yet"
-                subtitle="Submit the form to test the dispatcher. Admin-only, server-signed."
-              />
-            ) : result.ok ? (
-              <div className="empty" style={{ borderStyle: "solid", color: "var(--success)" }}>
-                ✅ {result.message}
-              </div>
-            ) : (
-              <div className="empty" style={{ borderStyle: "solid", color: "var(--danger)" }}>
-                ❌ {result.message}
-              </div>
-            )}
+            <div style={{ marginTop: 16 }}>
+              {!result ? (
+                <EmptyState
+                  title="No dispatch result yet"
+                  subtitle="Submit to test the dispatcher. Admin-only, server-signed."
+                />
+              ) : result.ok ? (
+                <div className="empty" style={{ borderStyle: "solid", color: "var(--success)" }}>
+                  ✅ {result.message}
+                </div>
+              ) : (
+                <div className="empty" style={{ borderStyle: "solid", color: "var(--danger)" }}>
+                  ❌ {result.message}
+                </div>
+              )}
+            </div>
           </div>
         </CardBody>
       </Card>
