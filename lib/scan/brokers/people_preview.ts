@@ -19,7 +19,7 @@ export type PeoplePreviewHit = {
   domain: string;
   label: string;
   url: string;
-  kind: "directory" | "business" | "people";
+  kind: "directory" | "business" | "people" | "jobs";
   fields?: {
     email?: string;
     name?: string;
@@ -42,7 +42,6 @@ function labelForDomain(domain: string): string {
     case "shiksha.com":
       return "Shiksha";
 
-    // Phase 1 additions
     case "truecaller.com":
       return "Truecaller";
     case "naukri.com":
@@ -66,13 +65,13 @@ function labelForDomain(domain: string): string {
 // This is a placeholder for real adapters that will use curated dossiers & search.
 function pickCandidateDomains(seed: string): string[] {
   const domains = [
+    // v1
     "justdial.com",
     "sulekha.com",
     "indiamart.com",
     "urbanpro.com",
     "shiksha.com",
-
-    // Phase 1 additions
+    // Phase-1
     "truecaller.com",
     "naukri.com",
     "olx.in",
@@ -89,9 +88,7 @@ function pickCandidateDomains(seed: string): string[] {
   for (let i = 0; i < domains.length; i++) {
     const idx = (h + i * 97) % domains.length;
     const candidate = domains[idx];
-    if (typeof candidate === "string") {
-      out.add(candidate);
-    }
+    if (typeof candidate === "string") out.add(candidate);
     if (out.size >= 3) break; // cap v1 to 3 suggestions
   }
   return Array.from(out);
@@ -117,11 +114,17 @@ export async function queryPeoplePreview(input: PeoplePreviewInput): Promise<Peo
 
     if (!isAllowed(url)) continue;
 
+    // crude kind inference
+    const kind: PeoplePreviewHit["kind"] =
+      domain.includes("naukri") || domain.includes("foundit") || domain.includes("shine") || domain.includes("timesjobs")
+        ? "jobs"
+        : "directory";
+
     results.push({
       domain,
       label: labelForDomain(domain),
       url,
-      kind: "directory",
+      kind,
       fields: {
         email, // will be REDACTED by normalize.ts before returning to client
         name,
