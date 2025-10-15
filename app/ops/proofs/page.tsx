@@ -19,10 +19,9 @@ async function fetchLatest() {
 }
 
 export default async function OpsProofsPage() {
-  // TODO: add your admin guard (e.g., middleware or layout gate)
+  // TODO: add your admin guard (middleware or layout)
   const rows = await fetchLatest();
 
-  // Verify server-side (KMS public key cached; ed25519 derived if needed)
   const enriched = await Promise.all(
     rows.map(async (r) => {
       let verified: boolean | "error" = "error";
@@ -43,8 +42,24 @@ export default async function OpsProofsPage() {
 
   return (
     <div className="container" style={{ padding: 24 }}>
-      <h1 className="h1">Ops · Proof Ledger</h1>
-      <p className="muted">Latest signed Merkle roots and verification status.</p>
+      <div style={{ display: "flex", alignItems: "center", gap: 16, justifyContent: "space-between" }}>
+        <div>
+          <h1 className="h1">Ops · Proof Ledger</h1>
+          <p className="muted">Latest signed Merkle roots with live verification.</p>
+        </div>
+        <a
+          href="/ops/proofs/export"
+          style={{
+            padding: "8px 12px",
+            borderRadius: 8,
+            border: "1px solid #ddd",
+            textDecoration: "none",
+            fontWeight: 600,
+          }}
+        >
+          ⬇️ Download CSV
+        </a>
+      </div>
 
       <div style={{ overflowX: "auto", marginTop: 16 }}>
         <table className="table" style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -59,6 +74,7 @@ export default async function OpsProofsPage() {
               <th>Pack</th>
               <th>Subject</th>
               <th>Controller</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -77,11 +93,19 @@ export default async function OpsProofsPage() {
                 <td>{r.pack_id || "—"}</td>
                 <td>{r.subject_id || "—"}</td>
                 <td>{r.controller_key || "—"}</td>
+                <td>
+                  <a
+                    href={`/api/ops/proofs/${encodeURIComponent(r.id)}/download`}
+                    style={{ textDecoration: "none" }}
+                  >
+                    Download JSON
+                  </a>
+                </td>
               </tr>
             ))}
             {!enriched.length && (
               <tr>
-                <td colSpan={9} style={{ padding: 24, textAlign: "center", color: "#666" }}>
+                <td colSpan={10} style={{ padding: 24, textAlign: "center", color: "#666" }}>
                   No proofs yet.
                 </td>
               </tr>
