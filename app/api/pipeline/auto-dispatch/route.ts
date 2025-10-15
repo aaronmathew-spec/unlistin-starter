@@ -52,7 +52,7 @@ export async function POST(req: Request) {
 
   const locale: "en" | "hi" = (body.locale === "hi" ? "hi" : "en");
 
-  // ✅ Correct shape for makeDedupeKey: subject goes under `subject`
+  // Build idempotency key using correct shape
   const dedupeKey = makeDedupeKey({
     controllerKey: body.controllerKey,
     subject,
@@ -84,13 +84,19 @@ export async function POST(req: Request) {
 
   const res = await sendControllerRequest(input);
 
+  // Normalize channel to the audit-allowed set: "email" | "webform" | "api"
+  const channel: "email" | "webform" | "api" =
+    res.ok && (res.channel === "email" || res.channel === "webform")
+      ? res.channel
+      : "api";
+
   // Structured audit
   await recordDispatch({
     dedupeKey,
     controllerKey: body.controllerKey,
     subject,
     locale,
-    channel: res.ok ? res.channel : "api",
+    channel,
     ok: res.ok,
     providerId: res.providerId ?? null,
     error: res.ok ? null : res.error ?? "unknown_error",
