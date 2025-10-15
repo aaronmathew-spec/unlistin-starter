@@ -31,6 +31,24 @@ export const ADAPTER_META: Record<string, AdapterMeta> = {
     stateWeight: { MH: 1.04, KA: 1.03, DL: 1.03, GJ: 1.03, TN: 1.02 },
     maxAfterBoost: 1.28,
   },
+
+  // Phase 1 expansion
+  truecaller: {
+    baseWeight: 1.08,
+    stateWeight: { MH: 1.03, KA: 1.03, DL: 1.03, TN: 1.02, GJ: 1.02 },
+    maxAfterBoost: 1.30,
+  },
+  naukri: {
+    baseWeight: 1.05,
+    stateWeight: { KA: 1.04, MH: 1.03, DL: 1.03, TN: 1.02 },
+    maxAfterBoost: 1.28,
+  },
+  olx: {
+    baseWeight: 1.03,
+    stateWeight: { MH: 1.03, DL: 1.03, KA: 1.02, TN: 1.02 },
+    maxAfterBoost: 1.25,
+  },
+
   /** Fallback for unknown adapters / generic directories */
   generic: {
     baseWeight: 1.00,
