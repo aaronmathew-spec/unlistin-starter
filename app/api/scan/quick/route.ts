@@ -38,20 +38,6 @@ async function maybeImport<T = any>(path: string): Promise<T | null> {
 /**
  * POST /api/scan/quick
  * Body: { fullName?: string; email?: string; city?: string }
- *
- * Returns: { ok: true, results: Array<{
- *   broker: string;
- *   category: string;
- *   url: string;
- *   confidence: number; // 0..1
- *   matchedFields: string[];
- *   evidence: string[]; // redacted bullets for UI
- * }>, tookMs: number }
- *
- * Guardrails:
- * - No PII is persisted. Inputs are processed transiently.
- * - Only allowlisted URLs are returned.
- * - Friendly 429s via ensureSearchLimit().
  */
 export async function POST(req: Request) {
   const rl = await ensureSearchLimit(req);
@@ -99,6 +85,9 @@ export async function POST(req: Request) {
   const tcMod = await maybeImport<{ queryTruecaller: (i: any) => Promise<RawHit[]> }>("@/lib/scan/brokers/truecaller");
   const nkMod = await maybeImport<{ queryNaukri: (i: any) => Promise<RawHit[]> }>("@/lib/scan/brokers/naukri");
   const oxMod = await maybeImport<{ queryOlx: (i: any) => Promise<RawHit[]> }>("@/lib/scan/brokers/olx");
+  const fdMod = await maybeImport<{ queryFoundit: (i: any) => Promise<RawHit[]> }>("@/lib/scan/brokers/foundit");
+  const shMod = await maybeImport<{ queryShine: (i: any) => Promise<RawHit[]> }>("@/lib/scan/brokers/shine");
+  const tjMod = await maybeImport<{ queryTimesJobs: (i: any) => Promise<RawHit[]> }>("@/lib/scan/brokers/timesjobs");
 
   const tc = tcMod?.queryTruecaller
     ? await tcMod.queryTruecaller({ name: fullName, email, city }).catch(() => [] as RawHit[])
@@ -109,24 +98,26 @@ export async function POST(req: Request) {
   const ox = oxMod?.queryOlx
     ? await oxMod.queryOlx({ name: fullName, email, city }).catch(() => [] as RawHit[])
     : ([] as RawHit[]);
+  const fd = fdMod?.queryFoundit
+    ? await fdMod.queryFoundit({ name: fullName, email, city }).catch(() => [] as RawHit[])
+    : ([] as RawHit[]);
+  const sh = shMod?.queryShine
+    ? await shMod.queryShine({ name: fullName, email, city }).catch(() => [] as RawHit[])
+    : ([] as RawHit[]);
+  const tj = tjMod?.queryTimesJobs
+    ? await tjMod.queryTimesJobs({ name: fullName, email, city }).catch(() => [] as RawHit[])
+    : ([] as RawHit[]);
 
   // Allowlist enforcement (defense in depth)
-  const raw = [...jd, ...sl, ...im, ...tc, ...nk, ...ox].filter((h) => isAllowed(h.url));
+  const raw = [...jd, ...sl, ...im, ...tc, ...nk, ...ox, ...fd, ...sh, ...tj].filter((h) => isAllowed(h.url));
 
   // Normalize & rank (server-side region-aware boost via adapter metadata)
   const normalized = normalizeHits(input, raw);
 
   // Shape the quick-scan result for the UI
   const results = normalized.map((n) => {
-    // Build the evidence array using safe, redacted data only.
     const evidence: string[] = [];
-
-    // Start with “why” bullets provided by the normalizer (already redacted)
-    if (Array.isArray(n.why) && n.why.length) {
-      evidence.push(...n.why);
-    }
-
-    // Add friendly “match” bullets from redacted preview tokens
+    if (Array.isArray(n.why) && n.why.length) evidence.push(...n.why);
     if (email && n.preview.email) evidence.push(`Email match ~ ${n.preview.email}`);
     if (fullName && n.preview.name) evidence.push(`Name match ~ ${n.preview.name}`);
     if (city && n.preview.city) evidence.push(`City match ~ ${n.preview.city}`);
