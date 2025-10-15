@@ -4,91 +4,110 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { sendControllerRequest } from "@/lib/dispatch/send";
-import { makeDedupeKey, wasRecentlyDispatched, recordDispatch } from "@/lib/dispatch/log";
+import {
+  makeDedupeKey,
+  wasRecentlyDispatched,
+  recordDispatch,
+} from "@/lib/dispatch/log";
+import type { ControllerRequestInput } from "@/lib/dispatch/types";
 
 const OPS_SECRET = process.env.SECURE_CRON_SECRET || "";
-
-type Body = {
-  controllerKey: string;
-  controllerName?: string;
-  subject: { name?: string | null; email?: string | null; phone?: string | null };
-  locale?: "en" | "hi";
-  force?: boolean;           // bypass dedupe if true
-  formUrl?: string | null;   // optional override for known webforms
-};
 
 function forbidden(msg: string) {
   return NextResponse.json({ ok: false, error: msg }, { status: 403 });
 }
 
+/**
+ * POST /api/pipeline/auto-dispatch
+ * Secured by x-secure-cron. Runs an idempotent controller dispatch for a subject.
+ *
+ * Body:
+ * {
+ *   "controllerKey": "truecaller",
+ *   "controllerName": "Truecaller",
+ *   "subject": { "name": "Rahul", "email": "rahul@example.com", "phone": "+91..." },
+ *   "locale": "en"
+ * }
+ */
 export async function POST(req: Request) {
   if (!OPS_SECRET) return forbidden("SECURE_CRON_SECRET not configured");
   const header = req.headers.get("x-secure-cron") || "";
   if (header !== OPS_SECRET) return forbidden("Invalid secret");
 
-  const body = (await req.json().catch(() => ({}))) as Body;
+  const body = (await req.json().catch(() => ({}))) as Partial<ControllerRequestInput>;
 
-  if (!body.controllerKey || !body.subject) {
-    return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });
+  // Minimal validation
+  if (!body.controllerKey || !body.controllerName) {
+    return NextResponse.json(
+      { ok: false, error: "controllerKey and controllerName are required" },
+      { status: 400 }
+    );
   }
 
-  const locale = body.locale ?? "en";
+  const subject = {
+    name: body.subject?.name ?? null,
+    email: body.subject?.email ?? null,
+    phone: body.subject?.phone ?? null,
+  };
+
+  const locale: "en" | "hi" = (body.locale === "hi" ? "hi" : "en");
+
+  // ✅ Correct shape for makeDedupeKey: subject goes under `subject`
   const dedupeKey = makeDedupeKey({
     controllerKey: body.controllerKey,
-    name: body.subject.name ?? null,
-    email: body.subject.email ?? null,
-    phone: body.subject.phone ?? null,
+    subject,
     locale,
   });
 
-  if (!body.force) {
-    const recent = await wasRecentlyDispatched(dedupeKey, { hours: 24 });
-    if (recent) {
-      await recordDispatch({
-        dedupeKey,
-        controllerKey: body.controllerKey,
-        subject: body.subject,
-        locale,
-        ok: true,
-        channel: null,
-        providerId: null,
-        note: "skipped:dedupe_recent",
-        error: null,
-      });
-      return NextResponse.json({ ok: true, skipped: true, reason: "recent_dispatch_exists" });
-    }
+  // Idempotency short-circuit (24h look-back by default)
+  const already = await wasRecentlyDispatched(dedupeKey);
+  if (already) {
+    await recordDispatch({
+      dedupeKey,
+      controllerKey: body.controllerKey,
+      subject,
+      locale,
+      channel: "api",
+      ok: true,
+      note: "idempotent_skip:existing",
+    });
+    return NextResponse.json({ ok: true, note: "idempotent_skip:existing" });
   }
 
-  // Call your main dispatcher (honors policy + templates + webform/email paths)
-  const res = await sendControllerRequest({
+  // Run the dispatch
+  const input: ControllerRequestInput = {
     controllerKey: body.controllerKey,
-    controllerName: body.controllerName || body.controllerKey,
-    subject: body.subject,
+    controllerName: body.controllerName!,
+    subject,
     locale,
-    // safe pass-through; your dispatcher tolerates undefined
-    ...(body.formUrl ? { formUrl: body.formUrl } : {}),
-  } as any);
+  };
 
+  const res = await sendControllerRequest(input);
+
+  // Structured audit
   await recordDispatch({
     dedupeKey,
     controllerKey: body.controllerKey,
-    subject: body.subject,
+    subject,
     locale,
+    channel: res.ok ? res.channel : "api",
     ok: res.ok,
-    channel: res.ok ? res.channel : null,
-    providerId: (res as any).providerId ?? null,
-    note: (res as any).note ?? null,
-    error: res.ok ? null : (res as any).error ?? "unknown_error",
+    providerId: res.providerId ?? null,
+    error: res.ok ? null : res.error ?? "unknown_error",
+    note: res.note ?? null,
   });
 
   if (!res.ok) {
-    return NextResponse.json({ ok: false, error: (res as any).error, hint: (res as any).hint }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: res.error, hint: res.hint ?? null },
+      { status: 500 }
+    );
   }
 
   return NextResponse.json({
     ok: true,
     channel: res.channel,
-    providerId: (res as any).providerId ?? null,
-    note: (res as any).note ?? null,
+    providerId: res.providerId ?? null,
+    note: res.note ?? null,
   });
 }
