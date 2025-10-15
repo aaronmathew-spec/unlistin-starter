@@ -16,6 +16,8 @@ export type ControllerRow = {
   preferred_channel: PreferredChannel;
   sla_target_min: number;
   form_url: string | null;
+  auto_dispatch_enabled: boolean;
+  auto_dispatch_min_conf: number;
   updated_at: string;
 };
 
@@ -26,6 +28,10 @@ function mergeOverride(base: ControllerMeta, row?: ControllerRow | null): Contro
     preferred: (row.preferred_channel || base.preferred) as PreferredChannel,
     slaTargetMin: typeof row.sla_target_min === "number" ? row.sla_target_min : base.slaTargetMin,
     formUrl: row.form_url || base.formUrl,
+    autoDispatchEnabled:
+      typeof row.auto_dispatch_enabled === "boolean" ? row.auto_dispatch_enabled : base.autoDispatchEnabled,
+    autoDispatchMinConf:
+      typeof row.auto_dispatch_min_conf === "number" ? row.auto_dispatch_min_conf : base.autoDispatchMinConf,
   };
 }
 
@@ -36,7 +42,9 @@ export async function loadControllerMeta(key: string): Promise<ControllerMeta | 
     const supa = adminSupabase();
     const { data, error } = await supa
       .from("controllers_meta")
-      .select("key, preferred_channel, sla_target_min, form_url, updated_at")
+      .select(
+        "key, preferred_channel, sla_target_min, form_url, auto_dispatch_enabled, auto_dispatch_min_conf, updated_at",
+      )
       .eq("key", base.key)
       .maybeSingle();
     if (error) {
@@ -55,7 +63,9 @@ export async function listControllerMetas(): Promise<ControllerMeta[]> {
   const supa = adminSupabase();
   const { data, error } = await supa
     .from("controllers_meta")
-    .select("key, preferred_channel, sla_target_min, form_url, updated_at");
+    .select(
+      "key, preferred_channel, sla_target_min, form_url, auto_dispatch_enabled, auto_dispatch_min_conf, updated_at",
+    );
   const rows = error ? [] : ((data ?? []) as ControllerRow[]);
   const rowMap = new Map(rows.map((r) => [r.key.toLowerCase(), r]));
 
@@ -66,7 +76,6 @@ export async function listControllerMetas(): Promise<ControllerMeta[]> {
 }
 
 function getDefaultIndex() {
-  // lazy import to avoid circular
   const { CONTROLLER_DEFAULTS } = require("./meta") as typeof import("./meta");
   return CONTROLLER_DEFAULTS as Record<string, ControllerMeta>;
 }
@@ -76,6 +85,8 @@ export async function upsertControllerMeta(input: {
   preferred: PreferredChannel;
   slaTargetMin: number;
   formUrl?: string;
+  autoDispatchEnabled?: boolean;
+  autoDispatchMinConf?: number;
 }) {
   const supa = adminSupabase();
   const payload = {
@@ -83,6 +94,9 @@ export async function upsertControllerMeta(input: {
     preferred_channel: input.preferred,
     sla_target_min: input.slaTargetMin,
     form_url: input.formUrl || null,
+    auto_dispatch_enabled: typeof input.autoDispatchEnabled === "boolean" ? input.autoDispatchEnabled : false,
+    auto_dispatch_min_conf:
+      typeof input.autoDispatchMinConf === "number" ? input.autoDispatchMinConf : 0.92,
     updated_at: new Date().toISOString(),
   };
   const { error } = await supa.from("controllers_meta").upsert(payload, { onConflict: "key" });
