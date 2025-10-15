@@ -141,13 +141,10 @@ async function sendEmailWithRetry(payload: {
         tries: 4,
         baseMs: 600,
         retryOn: (err) => {
-          // sendEmailResend returns {ok:false,error,code} on HTTP errors
           const code = (err as any)?.code ?? (err as any)?.status;
           if (typeof code === "number") {
-            // retry on 429, 5xx
             return code === 429 || (code >= 500 && code < 600);
           }
-          // network/unknown -> retry
           return true;
         },
         onRetry: (n, e, delay) =>
@@ -181,8 +178,6 @@ function inferControllerEmailTo(controllerKey: string): string | undefined {
   const value = process.env[envKey];
   if (value && value.trim()) return value.trim();
   switch (controllerKey) {
-    // You can hardcode known desks here if/when you validate them:
-    // case "naukri": return "privacy@naukri.com";
     default:
       return undefined;
   }
