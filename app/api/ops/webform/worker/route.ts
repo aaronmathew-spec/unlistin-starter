@@ -10,6 +10,8 @@ import {
   completeJobSuccess,
 } from "@/lib/webform/queue";
 import { redactForLogs } from "@/lib/pii/redact";
+import { pickHandler } from "@/lib/webform/handlers";
+import type { WebformJobInput } from "@/lib/webform/handlers";
 
 const OPS_SECRET = process.env.SECURE_CRON_SECRET || "";
 
@@ -25,37 +27,58 @@ export async function POST(req: Request) {
   const job = await claimNextJob();
   if (!job) return NextResponse.json({ ok: true, message: "no_jobs" });
 
+  const payload: WebformJobInput = {
+    controllerKey: job.controller_key,
+    controllerName: job.controller_name,
+    subject: { name: job.subject_name, email: job.subject_email, phone: job.subject_phone },
+    locale: (job.locale as "en" | "hi") || "en",
+    draft: { subject: job.draft_subject, bodyText: job.draft_body },
+    formUrl: job.form_url,
+  };
+
+  const handler = pickHandler(payload);
+
   // eslint-disable-next-line no-console
-  console.info("[worker.claimed]", redactForLogs({ id: job.id, controller: job.controller_key }));
+  console.info("[worker.claimed]", redactForLogs({ id: job.id, controller: job.controller_key, handler: handler?.key ?? "generic" }));
 
   const browser = await chromium.launch({ headless: true });
   const ctx = await browser.newContext();
   const page = await ctx.newPage();
 
   try {
-    const url = job.form_url || inferControllerHomepage(job.controller_key);
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+    let html: string | undefined;
+    let screenshotBase64: string | undefined;
+    let ticket: string | null | undefined;
 
-    // Simple wait for network to settle
-    await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
-
-    // TODO: per-site flows (OTP, form fill) go here in future iterations.
-
-    // Capture artifacts
-    const html = await page.content();
-    const buf = await page.screenshot({ fullPage: true });
-    const b64 = buf.toString("base64");
-
-    // Naive ticket scrape
-    const ticket = extractTicketId(html);
-
-    await completeJobSuccess(job.id, {
-      html: html.slice(0, 250_000), // cap to 250KB to keep row sane
-      screenshotBytesBase64: b64,
-      controllerTicketId: ticket || undefined,
-    });
+    if (handler) {
+      const res = await handler.run(page, payload);
+      if (res.ok) {
+        html = res.html;
+        screenshotBase64 = res.screenshotBase64;
+        ticket = res.controllerTicketId ?? null;
+      } else {
+        await browser.close();
+        await completeJobFailure(job.id, res.error);
+        return NextResponse.json({ ok: false, id: job.id, error: res.error }, { status: 500 });
+      }
+    } else {
+      // Fallback: open provided URL or a neutral landing and capture
+      const url = payload.formUrl || "https://google.com/";
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {});
+      html = (await page.content()).slice(0, 250_000);
+      const buf = await page.screenshot({ fullPage: true });
+      screenshotBase64 = buf.toString("base64");
+      ticket = null;
+    }
 
     await browser.close();
+
+    await completeJobSuccess(job.id, {
+      html,
+      screenshotBytesBase64: screenshotBase64,
+      controllerTicketId: ticket || undefined,
+    });
 
     return NextResponse.json({ ok: true, id: job.id, ticket: ticket || null });
   } catch (err: any) {
@@ -65,23 +88,4 @@ export async function POST(req: Request) {
     console.error("[worker.error]", redactForLogs({ id: job.id, error: String(err?.message || err) }));
     return NextResponse.json({ ok: false, id: job.id, error: String(err?.message || err) }, { status: 500 });
   }
-}
-
-function inferControllerHomepage(key: string): string {
-  switch (key) {
-    case "truecaller": return "https://www.truecaller.com/";
-    case "naukri": return "https://www.naukri.com/";
-    case "olx": return "https://www.olx.in/";
-    case "foundit": return "https://www.foundit.in/";
-    case "shine": return "https://www.shine.com/";
-    case "timesjobs": return "https://www.timesjobs.com/";
-    default: return "https://google.com/";
-  }
-}
-
-function extractTicketId(html: string): string | null {
-  // Very conservative: look for 'ticket' or 'reference' patterns
-  const re = /(ticket|reference)[\s#:]*([A-Z0-9\-\_]{6,30})/i;
-  const m = html.match(re);
-  return m?.[2] || null;
 }
