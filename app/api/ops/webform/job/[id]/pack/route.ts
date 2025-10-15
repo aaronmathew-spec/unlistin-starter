@@ -33,7 +33,9 @@ export async function GET(
   const sb = srv();
   const { data, error } = await sb
     .from("webform_jobs")
-    .select("id, created_at, controller_key, controller_name, subject_name, subject_email, subject_phone, draft_subject, draft_body, artifact_html, artifact_screenshot, controller_ticket_id, status, attempts, last_error, form_url")
+    .select(
+      "id, created_at, controller_key, controller_name, subject_name, subject_email, subject_phone, draft_subject, draft_body, artifact_html, artifact_screenshot, controller_ticket_id, status, attempts, last_error, form_url"
+    )
     .eq("id", id)
     .single();
 
@@ -44,7 +46,7 @@ export async function GET(
   const JSZip = await getZip();
   const zip = new JSZip();
 
-  // Metadata (no PII logs; but pack itself contains subject fields by design)
+  // Metadata (the pack is intended for evidence—PII is expected inside)
   const meta = {
     id: data.id,
     created_at: data.created_at,
@@ -69,18 +71,28 @@ export async function GET(
   zip.file("meta.json", JSON.stringify(meta, null, 2));
 
   if (data.artifact_html) {
-    zip.file("artifact.html", data.artifact_html);
+    zip.file("artifact.html", data.artifact_html as string);
   }
+
   if (data.artifact_screenshot) {
-    // Supabase returns bytea as base64? We stored raw bytea; fetch comes as base64-ish via JS driver.
-    // The client returns ArrayBuffer-ish binary; coerce safely:
-    const buf = Buffer.from(data.artifact_screenshot as any);
+    // Coerce to Buffer; Supabase may return base64 or bytea-like
+    const buf = Buffer.isBuffer(data.artifact_screenshot)
+      ? (data.artifact_screenshot as Buffer)
+      : Buffer.from(data.artifact_screenshot as any);
     zip.file("screenshot.png", buf);
   }
 
-  const pkg = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE", compressionOptions: { level: 6 } });
+  // Build the ZIP as a Node Buffer…
+  const nodeBuf = await zip.generateAsync({
+    type: "nodebuffer",
+    compression: "DEFLATE",
+    compressionOptions: { level: 6 },
+  });
 
-  return new NextResponse(pkg, {
+  // …then convert to a Web BodyInit (Uint8Array) for NextResponse
+  const body: Uint8Array = new Uint8Array(nodeBuf);
+
+  return new NextResponse(body, {
     status: 200,
     headers: {
       "content-type": "application/zip",
