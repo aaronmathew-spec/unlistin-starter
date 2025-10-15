@@ -22,10 +22,15 @@ export async function sendControllerRequestAction(input: ControllerRequestInput)
   if (!res.ok) {
     // eslint-disable-next-line no-console
     console.error("[actions.sendControllerRequestAction.out]", redactForLogs(res));
-    return { ok: false as const, error: res.error, hint: res.hint ?? null };
+    return { ok: false as const, error: res.error, hint: (res as any).hint ?? null };
   }
 
   // eslint-disable-next-line no-console
   console.info("[actions.sendControllerRequestAction.out]", redactForLogs(res));
-  return { ok: true as const, channel: res.channel, providerId: res.providerId ?? null, note: res.note ?? null };
+  return {
+    ok: true as const,
+    channel: res.channel,
+    providerId: (res as any).providerId ?? null,
+    note: (res as any).note ?? null,
+  };
 }
