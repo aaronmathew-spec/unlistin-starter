@@ -1,48 +1,54 @@
 // app/ops/dispatch/actions.ts
 "use server";
 
-import { headers } from "next/headers";
+import "server-only";
+import { redirect } from "next/navigation";
+import { sendControllerRequest } from "@/lib/dispatch/send";
 
-/**
- * Server Action that posts to /api/ops/dispatch/send with x-secure-cron header.
- * We construct the absolute URL using the current request headers so this works
- * in local dev and on Vercel (https + correct host).
- */
+// Server action called by the /ops/dispatch form.
+// It reads FormData, invokes your dispatcher, and redirects with a status.
+export async function actionSendController(fd: FormData) {
+  const controllerKey = String(fd.get("controllerKey") || "").trim();
+  const controllerName = String(fd.get("controllerName") || controllerKey).trim();
+  const name = String(fd.get("name") || "").trim();
+  const email = String(fd.get("email") || "").trim();
+  const phone = String(fd.get("phone") || "").trim();
+  const locale = (String(fd.get("locale") || "en").trim() === "hi" ? "hi" : "en") as "en" | "hi";
+  const preferred = String(fd.get("preferred") || "").trim(); // "webform" | "email" | "api" | ""
+  const formUrl = String(fd.get("formUrl") || "").trim();
 
-type SendPayload = {
-  controllerKey: "truecaller" | "naukri" | "olx" | "foundit" | "shine" | "timesjobs" | "generic";
-  controllerName: string;
-  subject: { name?: string | null; email?: string | null; phone?: string | null };
-  locale: "en" | "hi";
-};
-
-export async function sendOpsDispatchAction(payload: SendPayload) {
-  const secret = process.env.SECURE_CRON_SECRET;
-  if (!secret) {
-    return { ok: false, error: "SECURE_CRON_SECRET not configured" };
+  if (!controllerKey) {
+    redirect(`/ops/dispatch?err=${encodeURIComponent("controllerKey_required")}`);
   }
 
-  const h = headers();
-  const proto = h.get("x-forwarded-proto") || "http";
-  const host = h.get("host") || "localhost:3000";
-  const base = `${proto}://${host}`;
-  const url = `${base}/api/ops/dispatch/send`;
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-secure-cron": secret,
+  const input: any = {
+    controllerKey,
+    controllerName,
+    subject: {
+      name: name || undefined,
+      email: email || undefined,
+      phone: phone || undefined,
     },
-    body: JSON.stringify(payload),
-    // Tell Next this is a server-side internal call
-    cache: "no-store",
-  });
+    locale,
+  };
 
-  const json = await res.json().catch(() => ({} as any));
-
-  if (!res.ok || json?.ok !== true) {
-    return { ok: false, error: json?.error || `HTTP ${res.status}`, hint: json?.hint };
+  if (preferred === "webform" || preferred === "email" || preferred === "api") {
+    input.preferredChannelOverride = preferred;
   }
-  return { ok: true, channel: json.channel, providerId: json.providerId || null, note: json.note || null };
+  if (formUrl) {
+    // Supported by sendControllerRequest (read safely even if not in .d.ts)
+    input.formUrl = formUrl;
+  }
+
+  const res = await sendControllerRequest(input);
+
+  if (!res.ok) {
+    const err = encodeURIComponent(res.error || "dispatch_failed");
+    const hint = encodeURIComponent((res as any).hint || "");
+    redirect(`/ops/dispatch?err=${err}&hint=${hint}`);
+  }
+
+  const chan = encodeURIComponent(res.channel);
+  const id = encodeURIComponent((res as any).providerId || (res as any).note || "");
+  redirect(`/ops/dispatch?ok=1&channel=${chan}&id=${id}`);
 }
