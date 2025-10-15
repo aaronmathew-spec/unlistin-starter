@@ -4,12 +4,36 @@ import { actionUpsert } from "./actions";
 
 export const dynamic = "force-dynamic";
 
-function Row({ c }: { c: { key: string; name?: string; preferred: string; slaTargetMin?: number; formUrl?: string } }) {
+function Row({
+  c,
+}: {
+  c: {
+    key: string;
+    name?: string;
+    preferred: string;
+    slaTargetMin?: number;
+    formUrl?: string;
+    autoDispatchEnabled?: boolean;
+    autoDispatchMinConf?: number;
+  };
+}) {
   return (
-    <form action={actionUpsert} style={{ display: "grid", gridTemplateColumns: "140px 140px 160px 1fr 120px", gap: 8, alignItems: "center" }}>
+    <form
+      action={actionUpsert}
+      style={{
+        display: "grid",
+        gridTemplateColumns: "120px 120px 120px 1fr 90px 120px 110px",
+        gap: 8,
+        alignItems: "center",
+      }}
+    >
       <input type="hidden" name="key" value={c.key} />
       <div style={{ fontWeight: 600 }}>{c.key}</div>
-      <select name="preferred" defaultValue={c.preferred} style={{ padding: 8, borderRadius: 8, border: "1px solid #e5e7eb" }}>
+      <select
+        name="preferred"
+        defaultValue={c.preferred}
+        style={{ padding: 8, borderRadius: 8, border: "1px solid #e5e7eb" }}
+      >
         <option value="email">email</option>
         <option value="webform">webform</option>
         <option value="api">api</option>
@@ -27,6 +51,19 @@ function Row({ c }: { c: { key: string; name?: string; preferred: string; slaTar
         defaultValue={c.formUrl || ""}
         style={{ padding: 8, borderRadius: 8, border: "1px solid #e5e7eb" }}
       />
+      <label style={{ display: "flex", alignItems: "center", gap: 6, color: "#111827" }}>
+        <input type="checkbox" name="autoDispatchEnabled" defaultChecked={!!c.autoDispatchEnabled} />
+        <span style={{ fontSize: 12 }}>auto</span>
+      </label>
+      <input
+        name="autoDispatchMinConf"
+        type="number"
+        step="0.01"
+        min={0}
+        max={1}
+        defaultValue={c.autoDispatchMinConf ?? 0.92}
+        style={{ padding: 8, borderRadius: 8, border: "1px solid #e5e7eb" }}
+      />
       <button
         type="submit"
         style={{
@@ -37,6 +74,7 @@ function Row({ c }: { c: { key: string; name?: string; preferred: string; slaTar
           color: "white",
           fontWeight: 700,
           cursor: "pointer",
+          marginLeft: 8,
         }}
       >
         Save
@@ -49,18 +87,34 @@ export default async function ControllersPage() {
   const items = await listControllerMetas();
 
   return (
-    <div style={{ padding: 24, maxWidth: 1000, margin: "0 auto" }}>
+    <div style={{ padding: 24, maxWidth: 1100, margin: "0 auto" }}>
       <h1 style={{ margin: 0 }}>Ops · Controllers</h1>
       <p style={{ color: "#6b7280" }}>
-        Live controller overrides. Edits apply without redeploy. Defaults come from code; stored overrides merge on top.
+        Runtime overrides. <b>Auto</b> enables confidence-thresholded auto-dispatch straight from discovery.
       </p>
 
-      <div style={{ marginTop: 16, display: "grid", gap: 10 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "140px 140px 160px 1fr 120px", gap: 8, fontSize: 12, color: "#6b7280" }}>
+      <div
+        style={{
+          marginTop: 16,
+          display: "grid",
+          gap: 10,
+        }}
+      >
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "120px 120px 120px 1fr 90px 120px 110px",
+            gap: 8,
+            fontSize: 12,
+            color: "#6b7280",
+          }}
+        >
           <div>key</div>
           <div>preferred</div>
           <div>slaTargetMin</div>
           <div>formUrl</div>
+          <div>auto</div>
+          <div>minConf</div>
           <div></div>
         </div>
 
@@ -73,13 +127,15 @@ export default async function ControllersPage() {
               preferred: c.preferred,
               slaTargetMin: c.slaTargetMin,
               formUrl: c.formUrl,
+              autoDispatchEnabled: c.autoDispatchEnabled,
+              autoDispatchMinConf: c.autoDispatchMinConf,
             }}
           />
         ))}
       </div>
 
       <div style={{ marginTop: 18, color: "#6b7280", fontSize: 13 }}>
-        Tip: Dispatcher will honor <b>preferred</b> and <b>formUrl</b> when provided (e.g., Truecaller webform). SLA targets feed your alerts.
+        Tip: start with higher thresholds (e.g., 0.94+) and reduce once you observe stable matches.
       </div>
     </div>
   );
