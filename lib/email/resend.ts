@@ -1,63 +1,82 @@
 // lib/email/resend.ts
-/**
- * Minimal, safe Resend client. No PII persistence. Built for server-only use.
- */
-import type { SendEmailInput, SendEmailResult } from "./types";
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { Resend } from "resend";
 
-const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
-const EMAIL_FROM = process.env.EMAIL_FROM || "";
-const EMAIL_REPLY_TO = process.env.EMAIL_REPLY_TO || "";
+type SendEmailInput = {
+  to: string | string[];
+  subject: string;
+  text?: string;         // plain text body (recommended to always include)
+  html?: string;         // optional HTML body
+  cc?: string | string[];
+  bcc?: string | string[];
+  replyTo?: string;
+  tags?: Record<string, string | number | boolean>;
+};
 
-function assertEnv() {
-  if (!RESEND_API_KEY) throw new Error("RESEND_API_KEY is not configured");
-  if (!EMAIL_FROM) throw new Error("EMAIL_FROM is not configured");
-}
+export type SendEmailResult = { ok: true; id: string } | { ok: false; error: string };
 
-function toArray(x?: string | string[]): string[] | undefined {
-  if (!x) return undefined;
+const KEY = process.env.RESEND_API_KEY || "";
+const FROM = process.env.EMAIL_FROM || "";     // e.g. "UnlistIN <noreply@yourdomain.com>"
+const DRY_RUN = (process.env.EMAIL_DRY_RUN || "").toLowerCase() === "true"; // set to "true" to log-only
+
+function asArray(x?: string | string[]): string[] {
+  if (!x) return [];
   return Array.isArray(x) ? x : [x];
 }
 
-/** Primary send helper used by dispatch pipeline */
 export async function sendEmailResend(input: SendEmailInput): Promise<SendEmailResult> {
-  assertEnv();
+  // Defensive parsing
+  const to = asArray(input.to).map((s) => s.trim()).filter(Boolean);
+  const cc = asArray(input.cc).map((s) => s.trim()).filter(Boolean);
+  const bcc = asArray(input.bcc).map((s) => s.trim()).filter(Boolean);
 
-  const payload: Record<string, any> = {
-    from: EMAIL_FROM,
-    to: toArray(input.to),
-    subject: input.subject,
-    text: input.text,
-    html: input.html,
-  };
+  if (!FROM) return { ok: false, error: "EMAIL_FROM is not set" };
+  if (!to.length) return { ok: false, error: "No recipients" };
+  if (!input.subject) return { ok: false, error: "Missing subject" };
+  if (!input.text && !input.html) return { ok: false, error: "Provide text or html" };
 
-  const cc = toArray(input.cc);
-  const bcc = toArray(input.bcc);
-  if (cc && cc.length) payload.cc = cc;
-  if (bcc && bcc.length) payload.bcc = bcc;
-  if (EMAIL_REPLY_TO) payload.reply_to = EMAIL_REPLY_TO;
-
-  // Optional: pass-through headers/tags (Resend supports tags for analytics)
-  if (input.headers) payload.headers = input.headers;
-  if (input.tags) payload.tags = input.tags;
-
-  const res = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${RESEND_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
-
-  if (!res.ok) {
-    let err = `Resend error ${res.status}`;
-    try {
-      const j = await res.json();
-      if (j?.message) err = `Resend error ${res.status}: ${j.message}`;
-    } catch {}
-    return { ok: false, error: err, code: res.status };
+  // DRY RUN path for safety in dev/staging
+  if (DRY_RUN || !KEY) {
+    // Do not throw—act successful to let pipeline proceed in staging
+    console.log("[email.dryrun] from=%s, to=%j, subject=%s, tags=%j", FROM, to, input.subject, input.tags || {});
+    if (input.replyTo) console.log("[email.dryrun] replyTo=%s", input.replyTo);
+    if (cc.length) console.log("[email.dryrun] cc=%j", cc);
+    if (bcc.length) console.log("[email.dryrun] bcc=%j", bcc);
+    if (input.text) console.log("[email.dryrun.text]\n%s", input.text.slice(0, 2000));
+    if (input.html) console.log("[email.dryrun.html]\n%s", input.html.slice(0, 2000));
+    return { ok: true, id: "dryrun-" + Date.now() };
   }
 
-  const data = (await res.json()) as { id?: string };
-  return { ok: true, id: data?.id || "" };
+  try {
+    const resend = new Resend(KEY);
+
+    // Resend supports "tags" as array of { name, value }
+    const tags =
+      input.tags
+        ? Object.entries(input.tags).map(([name, value]) => ({
+            name,
+            value: String(value),
+          }))
+        : undefined;
+
+    const res = await resend.emails.send({
+      from: FROM,
+      to,
+      subject: input.subject,
+      text: input.text,
+      html: input.html,
+      cc: cc.length ? cc : undefined,
+      bcc: bcc.length ? bcc : undefined,
+      reply_to: input.replyTo,
+      tags,
+    });
+
+    if ((res as any)?.error) {
+      return { ok: false, error: (res as any).error.message || "send_failed" };
+    }
+    const id = (res as any)?.id || "";
+    return id ? { ok: true, id } : { ok: false, error: "no_message_id" };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || "exception" };
+  }
 }
