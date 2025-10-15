@@ -1,9 +1,15 @@
 // app/ops/pipeline/auto/page.tsx
 import "server-only";
+import { revalidatePath } from "next/cache";
+import { headers } from "next/headers";
 
 export const dynamic = "force-dynamic";
 
-async function submit(formData: FormData) {
+/**
+ * Server Action for the form. IMPORTANT: Form actions must return void | Promise<void>.
+ * We fire the secured API and then revalidate this page so the user sees fresh state.
+ */
+async function submit(formData: FormData): Promise<void> {
   "use server";
 
   const fullName = String(formData.get("fullName") || "").trim();
@@ -14,7 +20,8 @@ async function submit(formData: FormData) {
 
   const payload = { fullName, email, city, locale, limit };
 
-  const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || ""}/api/pipeline/auto-from-scan`, {
+  // call internal secured API
+  await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || ""}/api/pipeline/auto-from-scan`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -22,13 +29,17 @@ async function submit(formData: FormData) {
     },
     body: JSON.stringify(payload),
     cache: "no-store",
-  });
+  }).catch(() => { /* swallow network error for UI; audit is in dispatch_log */ });
 
-  const json = await res.json().catch(() => ({}));
-  return { ok: res.ok && json?.ok === true, data: json };
+  // revalidate this page so any downstream UI/state can reflect changes
+  revalidatePath("/ops/pipeline/auto");
 }
 
 export default async function AutoScanPage() {
+  // simple, static page; any UI state is derived from logs/ops pages
+  // (you could also show a "last-run" banner using cookies/headers if desired)
+  headers(); // keep this a dynamic route
+
   return (
     <div style={{ padding: 24, maxWidth: 800, margin: "0 auto" }}>
       <h1 style={{ marginTop: 0 }}>Ops · Auto-Scan & Dispatch</h1>
@@ -74,6 +85,7 @@ export default async function AutoScanPage() {
 
       <div style={{ marginTop: 18, color: "#6b7280", fontSize: 13 }}>
         Tip: tune thresholds in <b>/ops/controllers</b>. Results and idempotency are written to <b>dispatch_log</b>.
+        Review at <b>/ops/dispatch/logs</b>.
       </div>
     </div>
   );
