@@ -15,12 +15,12 @@ const RAW = [
   "urbanpro.com",
   "shiksha.com",
 
-  // Phase 1 expansion (safe, public-facing surfaces only)
+  // India-first brokers / people-finder / job portals
   "truecaller.com",
   "naukri.com",
   "olx.in",
-  "olx.com",
-  "foundit.in", // ex-Monster India
+  "olx.com",        // keep both; some markets redirect
+  "foundit.in",     // (ex-Monster India)
   "shine.com",
   "timesjobs.com",
 
