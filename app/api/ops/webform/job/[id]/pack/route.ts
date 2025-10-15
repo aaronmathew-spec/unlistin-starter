@@ -2,7 +2,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export const runtime = "nodejs";
 
-import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
 // Lazy-load JSZip at runtime so build stays lean
@@ -25,10 +24,10 @@ export async function GET(
   { params }: { params: { id: string } }
 ) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
-    return new NextResponse("env_missing", { status: 500 });
+    return new Response("env_missing", { status: 500 });
   }
   const id = (params?.id || "").trim();
-  if (!id) return new NextResponse("missing_id", { status: 400 });
+  if (!id) return new Response("missing_id", { status: 400 });
 
   const sb = srv();
   const { data, error } = await sb
@@ -40,7 +39,7 @@ export async function GET(
     .single();
 
   if (error || !data) {
-    return new NextResponse("not_found", { status: 404 });
+    return new Response("not_found", { status: 404 });
   }
 
   const JSZip = await getZip();
@@ -69,30 +68,29 @@ export async function GET(
   };
 
   zip.file("meta.json", JSON.stringify(meta, null, 2));
-
-  if (data.artifact_html) {
-    zip.file("artifact.html", data.artifact_html as string);
-  }
+  if (data.artifact_html) zip.file("artifact.html", data.artifact_html as string);
 
   if (data.artifact_screenshot) {
-    // Coerce to Buffer; Supabase may return base64 or bytea-like
     const buf = Buffer.isBuffer(data.artifact_screenshot)
       ? (data.artifact_screenshot as Buffer)
       : Buffer.from(data.artifact_screenshot as any);
     zip.file("screenshot.png", buf);
   }
 
-  // Build the ZIP as a Node Buffer…
-  const nodeBuf = await zip.generateAsync({
+  // Build the ZIP as Node Buffer…
+  const nodeBuf: Buffer = await zip.generateAsync({
     type: "nodebuffer",
     compression: "DEFLATE",
     compressionOptions: { level: 6 },
   });
 
-  // …then convert to a Web BodyInit (Uint8Array) for NextResponse
-  const body: Uint8Array = new Uint8Array(nodeBuf);
+  // …convert to ArrayBuffer for Web Response BodyInit
+  const ab: ArrayBuffer = nodeBuf.buffer.slice(
+    nodeBuf.byteOffset,
+    nodeBuf.byteOffset + nodeBuf.byteLength
+  );
 
-  return new NextResponse(body, {
+  return new Response(ab, {
     status: 200,
     headers: {
       "content-type": "application/zip",
