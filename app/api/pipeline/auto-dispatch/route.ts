@@ -90,7 +90,7 @@ export async function POST(req: Request) {
       ? res.channel
       : "api";
 
-  // Structured audit (narrow on res.ok before reading providerId)
+  // Structured audit (narrow on res.ok before accessing success-only fields)
   await recordDispatch({
     dedupeKey,
     controllerKey: body.controllerKey,
@@ -100,7 +100,7 @@ export async function POST(req: Request) {
     ok: res.ok,
     providerId: res.ok ? (res.providerId ?? null) : null,
     error: res.ok ? null : (res.error ?? "unknown_error"),
-    note: res.note ?? null,
+    note: res.ok ? (res.note ?? null) : null,
   });
 
   if (!res.ok) {
