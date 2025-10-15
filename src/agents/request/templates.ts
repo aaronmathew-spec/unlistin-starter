@@ -49,7 +49,6 @@ export function renderEmailBody(
 }
 
 export function renderFormPayload(url: string, subject: SubjectProfile) {
-  // For MVP: return a generic shape your form worker can use.
   return {
     formUrl: url,
     fields: {
@@ -58,5 +57,103 @@ export function renderFormPayload(url: string, subject: SubjectProfile) {
       phone: subject.phone ?? "",
       requestType: "deletion",
     },
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* Site-specific templates (EN/HI)                                    */
+/* ------------------------------------------------------------------ */
+
+type SiteKey =
+  | "truecaller"
+  | "naukri"
+  | "olx"
+  | "foundit"
+  | "shine"
+  | "timesjobs"
+  | "generic";
+
+type Locale = "en" | "hi";
+
+type SiteTemplate = {
+  subject: (controllerName: string) => string;
+  body: (controllerName: string, subject: SubjectProfile, locale: Locale) => string;
+};
+
+const genericBody = (purpose: string) => (controllerName: string, s: SubjectProfile, locale: Locale) => {
+  const baseName = s.name || "User";
+  const emailLine = s.email ? `Email: ${s.email}\n` : "";
+  const phoneLine = s.phone ? `Phone: ${s.phone}\n` : "";
+
+  if (locale === "hi") {
+    return [
+      `नमस्ते ${controllerName} टीम,`,
+      ``,
+      `मैं ${purpose} हेतु अनुरोध करता/करती हूँ।`,
+      `कृपया सत्यापन हेतु मेरे पहचान विवरण देखें:`,
+      `${emailLine}${phoneLine}`,
+      `मैं किसी भी आवश्यक सत्यापन/ओटीपी/ईमेल पुष्टि के लिए तैयार हूँ।`,
+      `कृपया अनुरोध की रसीद/टिकट आईडी साझा करें और हटाने की समयसीमा बताएं।`,
+      ``,
+      `धन्यवाद,`,
+      `${baseName}`,
+    ].join("\n");
+  }
+
+  return [
+    `Hello ${controllerName} team,`,
+    ``,
+    `This is a request for ${purpose}.`,
+    `For verification, here are my identifiers:`,
+    `${emailLine}${phoneLine}`,
+    `I will comply with any necessary verification/OTP/email confirmation.`,
+    `Please share a confirmation/ticket ID and an estimated timeline.`,
+    ``,
+    `Thank you,`,
+    `${baseName}`,
+  ].join("\n");
+};
+
+const templates: Record<SiteKey, SiteTemplate> = {
+  generic: {
+    subject: (name) => `Data Deletion / Unlisting Request – ${name}`,
+    body: genericBody("data deletion / unlisting"),
+  },
+  truecaller: {
+    subject: (name) => `Unlisting / Number Removal – ${name}`,
+    body: genericBody("phone number unlisting / data deletion"),
+  },
+  naukri: {
+    subject: (name) => `Profile Removal & Data Deletion – ${name}`,
+    body: genericBody("profile removal and personal data deletion under applicable law"),
+  },
+  olx: {
+    subject: (name) => `Account & Listing Deletion – ${name}`,
+    body: genericBody("account/profile and listing data deletion"),
+  },
+  foundit: {
+    subject: (name) => `Resume/Profile Removal – ${name}`,
+    body: genericBody("resume/profile removal and personal data deletion"),
+  },
+  shine: {
+    subject: (name) => `Profile Deletion & Contact Removal – ${name}`,
+    body: genericBody("profile deletion and contact data removal"),
+  },
+  timesjobs: {
+    subject: (name) => `Profile Removal & Data Deletion – ${name}`,
+    body: genericBody("profile removal and personal data deletion"),
+  },
+};
+
+export function renderSiteSpecificEmail(
+  site: SiteKey,
+  controllerName: string,
+  subject: SubjectProfile,
+  locale: Locale = "en"
+) {
+  const t = templates[site] ?? templates.generic;
+  return {
+    subject: t.subject(controllerName),
+    body: t.body(controllerName, subject, locale),
   };
 }
