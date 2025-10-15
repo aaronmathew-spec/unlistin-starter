@@ -5,6 +5,17 @@ import { loadControllerMeta } from "@/lib/controllers/store";
 
 export type Channel = "email" | "webform" | "api";
 
+export type VerificationArtifacts = {
+  /** Include rendered HTML report (normalized evidence + result) */
+  htmlReport: boolean;
+  /** Capture screenshots from webform/verification steps */
+  screenshots: boolean;
+  /** Store a copy of the outbound email (text/html) in artifacts */
+  emailCopy: boolean;
+  /** Produce signed manifest + Merkle proof in the Proof Pack */
+  signedManifest: boolean;
+};
+
 export type ControllerPolicy = {
   controllerKey: string;
   preferredChannel: Channel;
@@ -12,7 +23,28 @@ export type ControllerPolicy = {
   allowedChannels: Channel[];
   /** SLA targets consumed by Ops/SLA alerts */
   slas: { targetMin: number };
+  /** What to include in verification/proof artifacts */
+  verificationArtifacts: VerificationArtifacts;
 };
+
+/** Per-controller artifact defaults (safe & rich by default) */
+function artifactsFor(key: string): VerificationArtifacts {
+  const k = (key || "").toLowerCase();
+  switch (k) {
+    case "truecaller":
+      return { htmlReport: true, screenshots: true, emailCopy: false, signedManifest: true };
+    case "naukri":
+    case "foundit":
+    case "shine":
+    case "timesjobs":
+      return { htmlReport: true, screenshots: false, emailCopy: true, signedManifest: true };
+    case "olx":
+      return { htmlReport: true, screenshots: true, emailCopy: false, signedManifest: true };
+    default:
+      // Conservative rich defaults
+      return { htmlReport: true, screenshots: true, emailCopy: true, signedManifest: true };
+  }
+}
 
 /**
  * WORLD-CLASS: Async runtime policy that merges DB overrides
@@ -37,6 +69,7 @@ export async function getRuntimePolicy(controllerKey: string): Promise<Controlle
     preferredChannel: preferred,
     allowedChannels: allowed,
     slas: { targetMin },
+    verificationArtifacts: artifactsFor(key),
   };
 }
 
@@ -58,5 +91,6 @@ export function getControllerPolicy(controllerKey: string): ControllerPolicy {
     preferredChannel: preferred,
     allowedChannels: allowed,
     slas: { targetMin },
+    verificationArtifacts: artifactsFor(key),
   };
 }
