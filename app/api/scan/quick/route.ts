@@ -24,6 +24,17 @@ function json(data: any, init?: ResponseInit) {
   });
 }
 
+// Safe helper: dynamic import that returns null on failure
+async function maybeImport<T = any>(path: string): Promise<T | null> {
+  try {
+    // @ts-expect-error: dynamic path may not exist at build-time
+    const mod = await import(path);
+    return (mod ?? null) as T | null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * POST /api/scan/quick
  * Body: { fullName?: string; email?: string; city?: string }
@@ -77,15 +88,30 @@ export async function POST(req: Request) {
 
   const t0 = Date.now();
 
-  // Run adapters concurrently; each adapter already redacts its own snippets
+  // Base adapters (present today)
   const [jd, sl, im] = await Promise.all([
     queryJustdial({ name: fullName, email, city }).catch(() => [] as RawHit[]),
     querySulekha({ name: fullName, email, city }).catch(() => [] as RawHit[]),
     queryIndiaMart({ name: fullName, email, city }).catch(() => [] as RawHit[]),
   ]);
 
+  // Optional adapters (Phase 1): will only run if files exist
+  const tcMod = await maybeImport<{ queryTruecaller: (i: any) => Promise<RawHit[]> }>("@/lib/scan/brokers/truecaller");
+  const nkMod = await maybeImport<{ queryNaukri: (i: any) => Promise<RawHit[]> }>("@/lib/scan/brokers/naukri");
+  const oxMod = await maybeImport<{ queryOlx: (i: any) => Promise<RawHit[]> }>("@/lib/scan/brokers/olx");
+
+  const tc = tcMod?.queryTruecaller
+    ? await tcMod.queryTruecaller({ name: fullName, email, city }).catch(() => [] as RawHit[])
+    : ([] as RawHit[]);
+  const nk = nkMod?.queryNaukri
+    ? await nkMod.queryNaukri({ name: fullName, email, city }).catch(() => [] as RawHit[])
+    : ([] as RawHit[]);
+  const ox = oxMod?.queryOlx
+    ? await oxMod.queryOlx({ name: fullName, email, city }).catch(() => [] as RawHit[])
+    : ([] as RawHit[]);
+
   // Allowlist enforcement (defense in depth)
-  const raw = [...jd, ...sl, ...im].filter((h) => isAllowed(h.url));
+  const raw = [...jd, ...sl, ...im, ...tc, ...nk, ...ox].filter((h) => isAllowed(h.url));
 
   // Normalize & rank (server-side region-aware boost via adapter metadata)
   const normalized = normalizeHits(input, raw);
