@@ -71,7 +71,11 @@ export default async function OpsWebformsPage() {
               const canCancel = j.status === "queued" || j.status === "running";
               return (
                 <tr key={j.id}>
-                  <td style={{ fontFamily: "monospace" }}>{j.id}</td>
+                  <td style={{ fontFamily: "monospace" }}>
+                    <a href={`/ops/webforms/${encodeURIComponent(j.id)}`} style={{ textDecoration: "none" }}>
+                      {j.id}
+                    </a>
+                  </td>
                   <td>
                     {j.controller_name}{" "}
                     <span style={{ color: "#666" }}>({j.controller_key})</span>
@@ -111,14 +115,7 @@ export default async function OpsWebformsPage() {
                           Retry
                         </button>
                       </form>
-                      <form
-                        action={`/api/ops/webform/job/${encodeURIComponent(j.id)}/cancel`}
-                        method="POST"
-                        onSubmit={(e) => {
-                          // no JS in RSC; this is ignored server-side but kept for clarity
-                          return true;
-                        }}
-                      >
+                      <form action={`/api/ops/webform/job/${encodeURIComponent(j.id)}/cancel`} method="POST">
                         <button
                           type="submit"
                           disabled={!canCancel}
