@@ -1,7 +1,7 @@
 // lib/scan/brokers/truecaller.ts
 /**
  * Truecaller adapter (server-only, dependency-free).
- * We DO NOT scrape or log PII. We only produce allowlisted, user-facing URLs
+ * We DO NOT scrape or log PII. We only emit allowlisted, user-facing URLs
  * and conservative preview metadata for ranking.
  */
 import { isAllowed } from "@/lib/scan/domains-allowlist";
@@ -21,19 +21,17 @@ export async function queryTruecaller(input: Partial<ScanInput>): Promise<RawHit
   const city = (input.city ?? "").trim();
   const email = (input.email ?? "").trim();
 
-  // We prefer name + city as a benign public query for preview
   const qParts = [name, city].filter(Boolean).join(" ");
   const q = encodeURIComponent(qParts || email.split("@")[0] || "");
   const url = `https://www.truecaller.com/search/in/${q}`;
 
   if (!isAllowed(url)) return [];
 
-  const fields: Record<string, any> = {};
+  const fields: Record<string, string> = {};
   if (name) fields.name = name;
   if (city) fields.city = city;
   if (email) fields.email = email;
 
-  // We don’t fetch the page here; we emit a preview RawHit
   const hit: RawHit = {
     url,
     label: "Truecaller",
