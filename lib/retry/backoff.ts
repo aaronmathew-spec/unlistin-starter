@@ -21,7 +21,6 @@ export type BackoffOptions = {
 };
 
 function defaultRetryOn(err: unknown): boolean {
-  // Common fetch/network errors have no status -> retry
   const anyErr: any = err;
   const status = anyErr?.status ?? anyErr?.code;
   if (typeof status === "number") {
@@ -29,7 +28,6 @@ function defaultRetryOn(err: unknown): boolean {
     if (status >= 500 && status < 600) return true;
     return false;
   }
-  // Unknown/TypeError: often transient
   return true;
 }
 
@@ -67,7 +65,7 @@ export async function retry<T>(
 
       try {
         opts.onRetry?.(attempt, err, delay);
-      } catch { /* swallow */ }
+      } catch {}
 
       await new Promise<void>((resolve, reject) => {
         const t = setTimeout(() => resolve(), delay);
