@@ -55,14 +55,12 @@ export function redactForLogs<T>(obj: T, opts: RedactOptions = {}): T {
     }
 
     if (typeof v === "object") {
-      // We rely on JSON.stringify traversal; key-sensitive redaction below via a proxy step
       return v;
     }
 
     return v;
   });
 
-  // Second pass to ensure explicit keys are masked (even if value has no email/phone)
   const revived: any = JSON.parse(json);
 
   function maskByKey(o: any) {
