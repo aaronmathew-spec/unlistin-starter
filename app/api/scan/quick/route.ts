@@ -10,10 +10,21 @@ import {
   type ScanInput,
   type RawHit,
 } from "@/lib/scan/normalize";
+
+// --- Base adapters (present today)
 import { queryJustdial } from "@/lib/scan/brokers/justdial";
 import { querySulekha } from "@/lib/scan/brokers/sulekha";
 import { queryIndiaMart } from "@/lib/scan/brokers/indiamart";
 
+// --- Phase 1 adapters (India-first expansion; all files now exist)
+import { queryTruecaller } from "@/lib/scan/brokers/truecaller";
+import { queryNaukri } from "@/lib/scan/brokers/naukri";
+import { queryOlx } from "@/lib/scan/brokers/olx";
+import { queryFoundit } from "@/lib/scan/brokers/foundit";
+import { queryShine } from "@/lib/scan/brokers/shine";
+import { queryTimesJobs } from "@/lib/scan/brokers/timesjobs";
+
+/** JSON helper (keeps your existing semantics) */
 function json(data: any, init?: ResponseInit) {
   return new Response(JSON.stringify(data), {
     ...init,
@@ -24,9 +35,41 @@ function json(data: any, init?: ResponseInit) {
   });
 }
 
+/** Adapter registry with stable labels (optional; helps future toggles) */
+const ADAPTERS: Array<{
+  key: string;
+  run: (i: { name?: string; email?: string; city?: string }) => Promise<RawHit[]>;
+}> = [
+  { key: "justdial", run: queryJustdial },
+  { key: "sulekha", run: querySulekha },
+  { key: "indiamart", run: queryIndiaMart },
+
+  { key: "truecaller", run: queryTruecaller },
+  { key: "naukri", run: queryNaukri },
+  { key: "olx", run: queryOlx },
+  { key: "foundit", run: queryFoundit },
+  { key: "shine", run: queryShine },
+  { key: "timesjobs", run: queryTimesJobs },
+];
+
 /**
  * POST /api/scan/quick
  * Body: { fullName?: string; email?: string; city?: string }
+ *
+ * Returns: { ok: true, results: Array<{
+ *   broker: string;
+ *   category: string;
+ *   url: string;
+ *   confidence: number;
+ *   matchedFields: string[];
+ *   evidence: string[];
+ * }>, tookMs: number }
+ *
+ * Guardrails preserved:
+ * - Rate limits (429 on exceed)
+ * - No persistence of PII; inputs are transient
+ * - Allowlist enforced (defense in depth)
+ * - Strict normalization & redaction downstream
  */
 export async function POST(req: Request) {
   const rl = await ensureSearchLimit(req);
@@ -37,11 +80,12 @@ export async function POST(req: Request) {
     );
   }
 
+  // Parse body safely
   let body: any = {};
   try {
     body = (await req.json()) ?? {};
   } catch {
-    // ignore
+    // ignore invalid JSON – handled by validation below
   }
 
   const fullName = (body?.fullName || "").toString().trim();
@@ -63,90 +107,36 @@ export async function POST(req: Request) {
 
   const t0 = Date.now();
 
-  // --- Base adapters (present today) ---
-  const [jd, sl, im] = await Promise.all([
-    queryJustdial({ name: fullName, email, city }).catch(() => [] as RawHit[]),
-    querySulekha({ name: fullName, email, city }).catch(() => [] as RawHit[]),
-    queryIndiaMart({ name: fullName, email, city }).catch(() => [] as RawHit[]),
-  ]);
-
-  // --- Optional adapters (Phase 1): import safely, literal paths only ---
-  let queryTruecaller:
-    | ((i: { name?: string; email?: string; city?: string }) => Promise<RawHit[]>)
-    | null = null;
-  let queryNaukri:
-    | ((i: { name?: string; email?: string; city?: string }) => Promise<RawHit[]>)
-    | null = null;
-  let queryOlx:
-    | ((i: { name?: string; email?: string; city?: string }) => Promise<RawHit[]>)
-    | null = null;
-  let queryFoundit:
-    | ((i: { name?: string; email?: string; city?: string }) => Promise<RawHit[]>)
-    | null = null;
-  let queryShine:
-    | ((i: { name?: string; email?: string; city?: string }) => Promise<RawHit[]>)
-    | null = null;
-  let queryTimesJobs:
-    | ((i: { name?: string; email?: string; city?: string }) => Promise<RawHit[]>)
-    | null = null;
-
-  try {
-    const m = await import("@/lib/scan/brokers/truecaller");
-    if (m?.queryTruecaller) queryTruecaller = m.queryTruecaller;
-  } catch {}
-  try {
-    const m = await import("@/lib/scan/brokers/naukri");
-    if (m?.queryNaukri) queryNaukri = m.queryNaukri;
-  } catch {}
-  try {
-    const m = await import("@/lib/scan/brokers/olx");
-    if (m?.queryOlx) queryOlx = m.queryOlx;
-  } catch {}
-  try {
-    const m = await import("@/lib/scan/brokers/foundit");
-    if (m?.queryFoundit) queryFoundit = m.queryFoundit;
-  } catch {}
-  try {
-    const m = await import("@/lib/scan/brokers/shine");
-    if (m?.queryShine) queryShine = m.queryShine;
-  } catch {}
-  try {
-    const m = await import("@/lib/scan/brokers/timesjobs");
-    if (m?.queryTimesJobs) queryTimesJobs = m.queryTimesJobs;
-  } catch {}
-
-  const [tc, nk, ox, fd, sh, tj] = await Promise.all([
-    queryTruecaller
-      ? queryTruecaller({ name: fullName, email, city }).catch(() => [] as RawHit[])
-      : Promise.resolve([] as RawHit[]),
-    queryNaukri
-      ? queryNaukri({ name: fullName, email, city }).catch(() => [] as RawHit[])
-      : Promise.resolve([] as RawHit[]),
-    queryOlx
-      ? queryOlx({ name: fullName, email, city }).catch(() => [] as RawHit[])
-      : Promise.resolve([] as RawHit[]),
-    queryFoundit
-      ? queryFoundit({ name: fullName, email, city }).catch(() => [] as RawHit[])
-      : Promise.resolve([] as RawHit[]),
-    queryShine
-      ? queryShine({ name: fullName, email, city }).catch(() => [] as RawHit[])
-      : Promise.resolve([] as RawHit[]),
-    queryTimesJobs
-      ? queryTimesJobs({ name: fullName, email, city }).catch(() => [] as RawHit[])
-      : Promise.resolve([] as RawHit[]),
-  ]);
-
-  // Allowlist enforcement (defense in depth)
-  const raw = [...jd, ...sl, ...im, ...tc, ...nk, ...ox, ...fd, ...sh, ...tj].filter((h) =>
-    isAllowed(h.url)
+  // Fan out to all adapters concurrently with isolation
+  const settled = await Promise.allSettled(
+    ADAPTERS.map((a) =>
+      a
+        .run({ name: fullName, email, city })
+        .catch(() => [] as RawHit[]) // adapter-level catch for extra safety
+    )
   );
 
-  // Normalize & rank (server-side region-aware boost via adapter metadata)
+  // Gather results, filter by allowlist, and de-duplicate by URL
+  const byUrl = new Map<string, RawHit>();
+  for (const s of settled) {
+    if (s.status !== "fulfilled") continue;
+    const hits = Array.isArray(s.value) ? s.value : [];
+    for (const h of hits) {
+      if (!h || !h.url || !isAllowed(h.url)) continue;
+      // Keep the first occurrence (adapters shouldn't collide, but guard anyway)
+      if (!byUrl.has(h.url)) byUrl.set(h.url, h);
+    }
+  }
+
+  const raw = Array.from(byUrl.values());
+
+  // Normalize & rank (region-aware weights via adapter-meta)
   const normalized = normalizeHits(input, raw);
 
-  // Shape the quick-scan result for the UI
+  // Shape the quick-scan result for the UI (keeps your evidence logic)
   const results = normalized.map((n) => {
     const evidence: string[] = [];
+
     if (Array.isArray(n.why) && n.why.length) evidence.push(...n.why);
     if (email && n.preview.email) evidence.push(`Email match ~ ${n.preview.email}`);
     if (fullName && n.preview.name) evidence.push(`Name match ~ ${n.preview.name}`);
