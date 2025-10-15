@@ -11,7 +11,10 @@ const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE!;
 const OPS_SECRET = process.env.SECURE_CRON_SECRET || "";
 const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || "").split(",").map((s) => s.trim()).filter(Boolean);
 
-const TARGET_MINUTES: Record<string, number> = {
+// Ensure "*" always exists at the type level
+type Targets = { [k: string]: number } & { "*": number };
+
+const TARGET_MINUTES: Targets = {
   truecaller: 60,
   naukri: 180,
   olx: 120,
@@ -22,8 +25,7 @@ const TARGET_MINUTES: Record<string, number> = {
 };
 
 function targetFor(key: string): number {
-  const v = TARGET_MINUTES[key];
-  return typeof v === "number" ? v : TARGET_MINUTES["*"];
+  return TARGET_MINUTES[key] ?? TARGET_MINUTES["*"];
 }
 
 function forbidden(msg: string) {
@@ -58,7 +60,7 @@ export async function POST(req: Request) {
   const breaches: Record<string, { id: string; ageMin: number; status: string }[]> = {};
   for (const j of data || []) {
     const key = (j.controller_key || "*") as string;
-    const targetMs = targetFor(key) * 60 * 1000; // <- now guaranteed number
+    const targetMs = targetFor(key) * 60 * 1000;
     const ageMs = now - new Date(j.created_at as string).getTime();
     if (ageMs > targetMs) {
       if (!breaches[key]) breaches[key] = [];
