@@ -23,9 +23,10 @@ function extractTicketId(s: string): string | null {
   return m?.[2] || null;
 }
 
-async function bestUrl(_job: WebformJobInput): Promise<string> {
-  // Prefer explicit job.formUrl if provided upstream; else fall back to candidates.
-  return _job.formUrl?.trim() || CANDIDATE_URLS[0];
+async function bestUrl(job: WebformJobInput): Promise<string> {
+  // Normalize nullable/undefined formUrl -> string, then fallback to candidate[0]
+  const explicit = (job.formUrl ?? "").trim();
+  return explicit.length > 0 ? explicit : CANDIDATE_URLS[0];
 }
 
 async function run(page: Page, job: WebformJobInput): Promise<WebformResult> {
@@ -33,8 +34,6 @@ async function run(page: Page, job: WebformJobInput): Promise<WebformResult> {
     const url = await bestUrl(job);
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
     await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {});
-
-    // If localized copy is desired later, you can switch language via UI here.
 
     // Capture artifacts
     const html = await page.content();
