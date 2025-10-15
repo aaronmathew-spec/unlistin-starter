@@ -9,7 +9,7 @@ type SendEmailInput = {
   html?: string;         // optional HTML body
   cc?: string | string[];
   bcc?: string | string[];
-  replyTo?: string;
+  replyTo?: string | string[];
   tags?: Record<string, string | number | boolean>;
 };
 
@@ -17,7 +17,7 @@ export type SendEmailResult = { ok: true; id: string } | { ok: false; error: str
 
 const KEY = process.env.RESEND_API_KEY || "";
 const FROM = process.env.EMAIL_FROM || "";     // e.g. "UnlistIN <noreply@yourdomain.com>"
-const DRY_RUN = (process.env.EMAIL_DRY_RUN || "").toLowerCase() === "true"; // set to "true" to log-only
+const DRY_RUN = (process.env.EMAIL_DRY_RUN || "").toLowerCase() === "true"; // "true" -> log-only
 
 function asArray(x?: string | string[]): string[] {
   if (!x) return [];
@@ -25,21 +25,19 @@ function asArray(x?: string | string[]): string[] {
 }
 
 export async function sendEmailResend(input: SendEmailInput): Promise<SendEmailResult> {
-  // Defensive parsing
   const to = asArray(input.to).map((s) => s.trim()).filter(Boolean);
   const cc = asArray(input.cc).map((s) => s.trim()).filter(Boolean);
   const bcc = asArray(input.bcc).map((s) => s.trim()).filter(Boolean);
+  const replyTo = asArray(input.replyTo).map((s) => s.trim()).filter(Boolean);
 
   if (!FROM) return { ok: false, error: "EMAIL_FROM is not set" };
   if (!to.length) return { ok: false, error: "No recipients" };
   if (!input.subject) return { ok: false, error: "Missing subject" };
   if (!input.text && !input.html) return { ok: false, error: "Provide text or html" };
 
-  // DRY RUN path for safety in dev/staging
   if (DRY_RUN || !KEY) {
-    // Do not throw—act successful to let pipeline proceed in staging
     console.log("[email.dryrun] from=%s, to=%j, subject=%s, tags=%j", FROM, to, input.subject, input.tags || {});
-    if (input.replyTo) console.log("[email.dryrun] replyTo=%s", input.replyTo);
+    if (replyTo.length) console.log("[email.dryrun] replyTo=%j", replyTo);
     if (cc.length) console.log("[email.dryrun] cc=%j", cc);
     if (bcc.length) console.log("[email.dryrun] bcc=%j", bcc);
     if (input.text) console.log("[email.dryrun.text]\n%s", input.text.slice(0, 2000));
@@ -50,7 +48,6 @@ export async function sendEmailResend(input: SendEmailInput): Promise<SendEmailR
   try {
     const resend = new Resend(KEY);
 
-    // Resend supports "tags" as array of { name, value }
     const tags =
       input.tags
         ? Object.entries(input.tags).map(([name, value]) => ({
@@ -67,7 +64,7 @@ export async function sendEmailResend(input: SendEmailInput): Promise<SendEmailR
       html: input.html,
       cc: cc.length ? cc : undefined,
       bcc: bcc.length ? bcc : undefined,
-      reply_to: input.replyTo,
+      replyTo: replyTo.length ? replyTo : undefined, // <-- camelCase here
       tags,
     });
 
