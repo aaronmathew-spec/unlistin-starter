@@ -1,4 +1,7 @@
 // lib/scan/brokers/olx.ts
+/**
+ * OLX adapter (server-only). Emits safe search URLs for preview.
+ */
 import { isAllowed } from "@/lib/scan/domains-allowlist";
 import type { RawHit, ScanInput } from "@/lib/scan/normalize";
 
@@ -24,7 +27,7 @@ export async function queryOlx(input: Partial<ScanInput>): Promise<RawHit[]> {
   const urls = [urlIn, urlCom].filter(isAllowed);
   if (!urls.length) return [];
 
-  const fields: Record<string, any> = {};
+  const fields: Record<string, string> = {};
   if (name) fields.name = name;
   if (city) fields.city = city;
   if (email) fields.email = email;
