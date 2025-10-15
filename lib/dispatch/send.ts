@@ -13,6 +13,7 @@ import { enqueueWebformJob } from "@/lib/webform/queue";
  * - Respects policy preferred channel.
  * - Email path is production-ready (Resend + retry/backoff).
  * - Webform path enqueues a job (worker processes asynchronously).
+ * - Seeds well-known form URLs when available via getDefaultFormUrl().
  */
 export async function sendControllerRequest(input: ControllerRequestInput): Promise<DispatchResult> {
   const locale = input.locale ?? "en";
@@ -67,7 +68,7 @@ export async function sendControllerRequest(input: ControllerRequestInput): Prom
           subject: input.subject,
           locale,
           draft: { subject: draft.subject, bodyText: draft.bodyText },
-          formUrl: undefined, // you can pass known per-site URLs here later
+          formUrl: getDefaultFormUrl(input.controllerKey) ?? undefined,
         });
         return wf
           ? { ok: true, channel: "webform", note: `enqueued:${wf.id}` }
@@ -84,7 +85,7 @@ export async function sendControllerRequest(input: ControllerRequestInput): Prom
         subject: input.subject,
         locale,
         draft: { subject: draft.subject, bodyText: draft.bodyText },
-        formUrl: undefined,
+        formUrl: getDefaultFormUrl(input.controllerKey) ?? undefined,
       });
       if (wf) return { ok: true, channel: "webform", note: `enqueued:${wf.id}` };
 
@@ -171,6 +172,28 @@ function inferControllerEmailTo(controllerKey: string): string | undefined {
   const value = process.env[envKey];
   if (value && value.trim()) return value.trim();
   return undefined;
+}
+
+/** Known/public webform or help URLs per controller (safe, public pages). */
+function getDefaultFormUrl(controllerKey: string): string | null {
+  switch (controllerKey.toLowerCase()) {
+    case "truecaller":
+      // Public unlisting/privacy request page (may redirect; handler tolerates)
+      return "https://www.truecaller.com/privacy-center/request/unlist";
+    case "naukri":
+      // Placeholder: replace when validated
+      return null;
+    case "olx":
+      return null;
+    case "foundit":
+      return null;
+    case "shine":
+      return null;
+    case "timesjobs":
+      return null;
+    default:
+      return null;
+  }
 }
 
 /** Last-resort admin sink so tests don’t vanish if a desk email isn’t set yet */
