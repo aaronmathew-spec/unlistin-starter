@@ -24,17 +24,6 @@ function json(data: any, init?: ResponseInit) {
   });
 }
 
-// Safe helper: dynamic import that returns null on failure
-async function maybeImport<T = any>(path: string): Promise<T | null> {
-  try {
-    // @ts-expect-error: dynamic path may not exist at build-time
-    const mod = await import(path);
-    return (mod ?? null) as T | null;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * POST /api/scan/quick
  * Body: { fullName?: string; email?: string; city?: string }
@@ -74,42 +63,83 @@ export async function POST(req: Request) {
 
   const t0 = Date.now();
 
-  // Base adapters (present today)
+  // --- Base adapters (present today) ---
   const [jd, sl, im] = await Promise.all([
     queryJustdial({ name: fullName, email, city }).catch(() => [] as RawHit[]),
     querySulekha({ name: fullName, email, city }).catch(() => [] as RawHit[]),
     queryIndiaMart({ name: fullName, email, city }).catch(() => [] as RawHit[]),
   ]);
 
-  // Optional adapters (Phase 1): will only run if files exist
-  const tcMod = await maybeImport<{ queryTruecaller: (i: any) => Promise<RawHit[]> }>("@/lib/scan/brokers/truecaller");
-  const nkMod = await maybeImport<{ queryNaukri: (i: any) => Promise<RawHit[]> }>("@/lib/scan/brokers/naukri");
-  const oxMod = await maybeImport<{ queryOlx: (i: any) => Promise<RawHit[]> }>("@/lib/scan/brokers/olx");
-  const fdMod = await maybeImport<{ queryFoundit: (i: any) => Promise<RawHit[]> }>("@/lib/scan/brokers/foundit");
-  const shMod = await maybeImport<{ queryShine: (i: any) => Promise<RawHit[]> }>("@/lib/scan/brokers/shine");
-  const tjMod = await maybeImport<{ queryTimesJobs: (i: any) => Promise<RawHit[]> }>("@/lib/scan/brokers/timesjobs");
+  // --- Optional adapters (Phase 1): import safely, literal paths only ---
+  let queryTruecaller:
+    | ((i: { name?: string; email?: string; city?: string }) => Promise<RawHit[]>)
+    | null = null;
+  let queryNaukri:
+    | ((i: { name?: string; email?: string; city?: string }) => Promise<RawHit[]>)
+    | null = null;
+  let queryOlx:
+    | ((i: { name?: string; email?: string; city?: string }) => Promise<RawHit[]>)
+    | null = null;
+  let queryFoundit:
+    | ((i: { name?: string; email?: string; city?: string }) => Promise<RawHit[]>)
+    | null = null;
+  let queryShine:
+    | ((i: { name?: string; email?: string; city?: string }) => Promise<RawHit[]>)
+    | null = null;
+  let queryTimesJobs:
+    | ((i: { name?: string; email?: string; city?: string }) => Promise<RawHit[]>)
+    | null = null;
 
-  const tc = tcMod?.queryTruecaller
-    ? await tcMod.queryTruecaller({ name: fullName, email, city }).catch(() => [] as RawHit[])
-    : ([] as RawHit[]);
-  const nk = nkMod?.queryNaukri
-    ? await nkMod.queryNaukri({ name: fullName, email, city }).catch(() => [] as RawHit[])
-    : ([] as RawHit[]);
-  const ox = oxMod?.queryOlx
-    ? await oxMod.queryOlx({ name: fullName, email, city }).catch(() => [] as RawHit[])
-    : ([] as RawHit[]);
-  const fd = fdMod?.queryFoundit
-    ? await fdMod.queryFoundit({ name: fullName, email, city }).catch(() => [] as RawHit[])
-    : ([] as RawHit[]);
-  const sh = shMod?.queryShine
-    ? await shMod.queryShine({ name: fullName, email, city }).catch(() => [] as RawHit[])
-    : ([] as RawHit[]);
-  const tj = tjMod?.queryTimesJobs
-    ? await tjMod.queryTimesJobs({ name: fullName, email, city }).catch(() => [] as RawHit[])
-    : ([] as RawHit[]);
+  try {
+    const m = await import("@/lib/scan/brokers/truecaller");
+    if (m?.queryTruecaller) queryTruecaller = m.queryTruecaller;
+  } catch {}
+  try {
+    const m = await import("@/lib/scan/brokers/naukri");
+    if (m?.queryNaukri) queryNaukri = m.queryNaukri;
+  } catch {}
+  try {
+    const m = await import("@/lib/scan/brokers/olx");
+    if (m?.queryOlx) queryOlx = m.queryOlx;
+  } catch {}
+  try {
+    const m = await import("@/lib/scan/brokers/foundit");
+    if (m?.queryFoundit) queryFoundit = m.queryFoundit;
+  } catch {}
+  try {
+    const m = await import("@/lib/scan/brokers/shine");
+    if (m?.queryShine) queryShine = m.queryShine;
+  } catch {}
+  try {
+    const m = await import("@/lib/scan/brokers/timesjobs");
+    if (m?.queryTimesJobs) queryTimesJobs = m.queryTimesJobs;
+  } catch {}
+
+  const [tc, nk, ox, fd, sh, tj] = await Promise.all([
+    queryTruecaller
+      ? queryTruecaller({ name: fullName, email, city }).catch(() => [] as RawHit[])
+      : Promise.resolve([] as RawHit[]),
+    queryNaukri
+      ? queryNaukri({ name: fullName, email, city }).catch(() => [] as RawHit[])
+      : Promise.resolve([] as RawHit[]),
+    queryOlx
+      ? queryOlx({ name: fullName, email, city }).catch(() => [] as RawHit[])
+      : Promise.resolve([] as RawHit[]),
+    queryFoundit
+      ? queryFoundit({ name: fullName, email, city }).catch(() => [] as RawHit[])
+      : Promise.resolve([] as RawHit[]),
+    queryShine
+      ? queryShine({ name: fullName, email, city }).catch(() => [] as RawHit[])
+      : Promise.resolve([] as RawHit[]),
+    queryTimesJobs
+      ? queryTimesJobs({ name: fullName, email, city }).catch(() => [] as RawHit[])
+      : Promise.resolve([] as RawHit[]),
+  ]);
 
   // Allowlist enforcement (defense in depth)
-  const raw = [...jd, ...sl, ...im, ...tc, ...nk, ...ox, ...fd, ...sh, ...tj].filter((h) => isAllowed(h.url));
+  const raw = [...jd, ...sl, ...im, ...tc, ...nk, ...ox, ...fd, ...sh, ...tj].filter((h) =>
+    isAllowed(h.url)
+  );
 
   // Normalize & rank (server-side region-aware boost via adapter metadata)
   const normalized = normalizeHits(input, raw);
