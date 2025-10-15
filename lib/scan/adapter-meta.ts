@@ -48,6 +48,21 @@ export const ADAPTER_META: Record<string, AdapterMeta> = {
     stateWeight: { MH: 1.03, DL: 1.03, KA: 1.02, TN: 1.02 },
     maxAfterBoost: 1.25,
   },
+  foundit: {
+    baseWeight: 1.02,
+    stateWeight: { KA: 1.03, MH: 1.02, DL: 1.02 },
+    maxAfterBoost: 1.24,
+  },
+  shine: {
+    baseWeight: 1.02,
+    stateWeight: { DL: 1.03, KA: 1.02, MH: 1.02 },
+    maxAfterBoost: 1.24,
+  },
+  timesjobs: {
+    baseWeight: 1.02,
+    stateWeight: { DL: 1.03, MH: 1.02, KA: 1.02 },
+    maxAfterBoost: 1.24,
+  },
 
   /** Fallback for unknown adapters / generic directories */
   generic: {
