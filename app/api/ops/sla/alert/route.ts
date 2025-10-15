@@ -63,11 +63,10 @@ export async function POST(req: Request) {
     const targetMs = targetFor(key) * 60 * 1000;
     const ageMs = now - new Date(j.created_at as string).getTime();
     if (ageMs > targetMs) {
-      if (!breaches[key]) breaches[key] = [];
-      breaches[key].push({
+      (breaches[key] ||= []).push({
         id: j.id as string,
         ageMin: Math.floor(ageMs / 60000),
-        status: j.status as string,
+        status: (j.status as string) || "unknown",
       });
     }
   }
@@ -80,8 +79,10 @@ export async function POST(req: Request) {
   const lines: string[] = [];
   lines.push(`SLA Breach Report – ${new Date().toLocaleString()}`);
   lines.push("");
-  for (const key of Object.keys(breaches).sort()) {
-    const arr = breaches[key];
+
+  const keys = Object.keys(breaches).sort();
+  for (const key of keys) {
+    const arr = breaches[key] ?? [];
     lines.push(`• ${key} (target ${targetFor(key)} min): ${arr.length} breach(es)`);
     for (const b of arr.slice(0, 20)) {
       lines.push(`    - ${b.id} · ${b.status} · age ${b.ageMin} min`);
@@ -89,6 +90,7 @@ export async function POST(req: Request) {
     if (arr.length > 20) lines.push(`    … and ${arr.length - 20} more`);
     lines.push("");
   }
+
   const body = lines.join("\n");
 
   if (ADMIN_EMAILS.length) {
