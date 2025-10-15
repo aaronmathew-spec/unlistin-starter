@@ -20,9 +20,11 @@ export type DispatchAudit = {
   note?: string | null;
 };
 
+/**
+ * Best-effort bootstrap. If you don’t use the exec_sql RPC, this will no-op safely.
+ * We assume migrations created public.dispatch_log already.
+ */
 export async function ensureDispatchTables(): Promise<void> {
-  // Best-effort: if table/policy already exist, this no-ops (thanks to IF NOT EXISTS)
-  // Runs only under service role.
   const ddl = `
   create table if not exists public.dispatch_log (
     id bigserial primary key,
@@ -47,8 +49,7 @@ export async function ensureDispatchTables(): Promise<void> {
     const supa = adminSupabase();
     await supa.rpc("exec_sql", { sql: ddl } as any);
   } catch {
-    // If no "exec_sql" function exists in your instance, ignore silently;
-    // we rely on earlier migrations having created the table.
+    // ignore – table should exist via migrations
   }
 }
 
@@ -68,17 +69,13 @@ export async function insertDispatch(a: DispatchAudit) {
       ok: a.ok,
       error: a.error || null,
     });
-    if (error) {
-      // eslint-disable-next-line no-console
-      console.warn("[dispatch_log.insert.error]", error.message);
-    }
+    if (error) console.warn("[dispatch_log.insert.error]", error.message);
   } catch (e: any) {
-    // eslint-disable-next-line no-console
     console.warn("[dispatch_log.insert.exception]", e?.message || e);
   }
 }
 
-/** Returns the most recent success that matches dedupeKey within lookback minutes. */
+/** Returns the most recent success for dedupeKey within lookback minutes (default 24h). */
 export async function findRecentSuccess(
   dedupeKey: string,
   lookbackMinutes = 24 * 60,
@@ -94,7 +91,6 @@ export async function findRecentSuccess(
       .order("created_at", { ascending: false })
       .limit(1);
     if (error) {
-      // eslint-disable-next-line no-console
       console.warn("[dispatch_log.query.error]", error.message);
       return null;
     }
@@ -102,8 +98,50 @@ export async function findRecentSuccess(
     if (row && row.ok === true) return { id: row.id, created_at: row.created_at };
     return null;
   } catch (e: any) {
-    // eslint-disable-next-line no-console
     console.warn("[dispatch_log.query.exception]", e?.message || e);
     return null;
   }
+}
+
+/* -------------------------
+ * Back-compat aliases used by /api/pipeline/auto-dispatch
+ * ------------------------- */
+
+/** Build a deterministic idempotency key compatible with existing callers. */
+export function makeDedupeKey(params: {
+  controllerKey: string;
+  subject?: { email?: string | null; phone?: string | null; name?: string | null } | null;
+  locale?: "en" | "hi" | null;
+}): string {
+  const parts = [
+    "v1",
+    (params.controllerKey || "").toLowerCase(),
+    norm(params.subject?.email) || "-",
+    norm(params.subject?.phone) || "-",
+    norm(params.subject?.name) || "-",
+    params.locale || "en",
+  ];
+  return parts.join("|");
+}
+
+/** Boolean helper for “already dispatched recently?” */
+export async function wasRecentlyDispatched(
+  dedupeKey: string,
+  lookbackMinutes = 24 * 60,
+): Promise<boolean> {
+  const hit = await findRecentSuccess(dedupeKey, lookbackMinutes);
+  return !!hit;
+}
+
+/** Alias that records an audit row (success/failure/skip). */
+export async function recordDispatch(a: DispatchAudit): Promise<void> {
+  await insertDispatch(a);
+}
+
+/* ------------------- local helpers ------------------- */
+
+function norm(v: string | null | undefined): string | null {
+  if (!v) return null;
+  const s = v.trim().toLowerCase();
+  return s || null;
 }
