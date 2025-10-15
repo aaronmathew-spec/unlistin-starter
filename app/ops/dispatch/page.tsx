@@ -1,146 +1,187 @@
 // app/ops/dispatch/page.tsx
-"use client";
+import { actionSendController } from "./actions";
 
-import * as React from "react";
-import { SendControllerButton } from "@/components/dispatch/SendControllerButton";
-import { Button } from "@/components/ui/Button";
-import { Card, CardBody, CardTitle, CardSubtitle } from "@/components/ui/Card";
-import EmptyState from "@/components/ui/EmptyState";
-import { FormField } from "@/components/ui/FormField";
+export const dynamic = "force-dynamic";
 
-type ControllerKey = "truecaller" | "naukri" | "olx" | "foundit" | "shine" | "timesjobs" | "generic";
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label style={{ display: "grid", gap: 6 }}>
+      <span style={{ fontSize: 13, color: "#374151", fontWeight: 600 }}>{label}</span>
+      {children}
+    </label>
+  );
+}
 
-export default function OpsDispatchPage() {
-  const [controllerKey, setControllerKey] = React.useState<ControllerKey>("truecaller");
-  const [controllerName, setControllerName] = React.useState("Truecaller");
-  const [name, setName] = React.useState("Rahul Sharma");
-  const [email, setEmail] = React.useState("rahul@example.com");
-  const [phone, setPhone] = React.useState("+91 98xxxx1234");
-  const [locale, setLocale] = React.useState<"en" | "hi">("en");
+function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
+  return (
+    <input
+      {...props}
+      style={{
+        padding: "10px 12px",
+        border: "1px solid #e5e7eb",
+        borderRadius: 10,
+        outline: "none",
+        fontSize: 14,
+      }}
+    />
+  );
+}
 
-  const [result, setResult] = React.useState<null | { ok: boolean; message: string }>(null);
+function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
+  return (
+    <select
+      {...props}
+      style={{
+        padding: "10px 12px",
+        border: "1px solid #e5e7eb",
+        borderRadius: 10,
+        outline: "none",
+        fontSize: 14,
+        background: "white",
+      }}
+    />
+  );
+}
+
+function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement>) {
+  return (
+    <button
+      {...props}
+      style={{
+        padding: "10px 14px",
+        borderRadius: 10,
+        border: "1px solid #111827",
+        background: "#111827",
+        color: "white",
+        fontWeight: 700,
+        cursor: "pointer",
+      }}
+    />
+  );
+}
+
+function Notice({ ok, err, hint, channel, id }: { ok?: boolean; err?: string; hint?: string; channel?: string; id?: string }) {
+  if (ok) {
+    return (
+      <div style={{ padding: 12, border: "1px solid #10b981", background: "#ecfdf5", borderRadius: 10 }}>
+        ✅ Dispatched via <b>{channel}</b> · <code>{id || "OK"}</code>
+      </div>
+    );
+  }
+  if (err) {
+    return (
+      <div style={{ padding: 12, border: "1px solid #ef4444", background: "#fef2f2", borderRadius: 10 }}>
+        ❌ Dispatch failed: <b>{err}</b>
+        {hint ? <div style={{ color: "#6b7280", marginTop: 4 }}>Hint: {hint}</div> : null}
+      </div>
+    );
+  }
+  return null;
+}
+
+export default function DispatchConsole({
+  searchParams,
+}: {
+  searchParams?: Record<string, string | string[] | undefined>;
+}) {
+  const ok = searchParams?.ok === "1";
+  const err = typeof searchParams?.err === "string" ? searchParams?.err : undefined;
+  const hint = typeof searchParams?.hint === "string" ? searchParams?.hint : undefined;
+  const channel = typeof searchParams?.channel === "string" ? searchParams?.channel : undefined;
+  const id = typeof searchParams?.id === "string" ? searchParams?.id : undefined;
 
   return (
-    <div className="container" style={{ paddingTop: 24, paddingBottom: 24 }}>
-      <Card>
-        <CardBody>
-          <CardTitle>Ops · Dispatch Test</CardTitle>
-          <CardSubtitle>Send a site-specific request using the unified dispatcher.</CardSubtitle>
+    <div style={{ padding: 24, maxWidth: 900, margin: "0 auto" }}>
+      <h1 style={{ margin: 0 }}>Ops · Dispatch Console</h1>
+      <p style={{ color: "#6b7280", marginTop: 6 }}>
+        Send a controller request manually using your production dispatcher. No client secrets; all server-side.
+      </p>
 
-          <div style={{ marginTop: 16, display: "grid", gap: 12 }}>
-            <div className="row">
-              <div className="col">
-                <FormField label="Controller (key)">
-                  <select
-                    className="input"
-                    value={controllerKey}
-                    onChange={(e) => {
-                      const k = e.target.value as ControllerKey;
-                      setControllerKey(k);
-                      const nameMap: Record<ControllerKey, string> = {
-                        truecaller: "Truecaller",
-                        naukri: "Naukri",
-                        olx: "OLX",
-                        foundit: "Foundit",
-                        shine: "Shine",
-                        timesjobs: "TimesJobs",
-                        generic: "Generic",
-                      };
-                      setControllerName(nameMap[k] || "Controller");
-                    }}
-                  >
-                    <option value="truecaller">truecaller</option>
-                    <option value="naukri">naukri</option>
-                    <option value="olx">olx</option>
-                    <option value="foundit">foundit</option>
-                    <option value="shine">shine</option>
-                    <option value="timesjobs">timesjobs</option>
-                    <option value="generic">generic</option>
-                  </select>
-                </FormField>
-              </div>
-              <div className="col">
-                <FormField label="Controller (display name)">
-                  <input className="input" value={controllerName} onChange={(e) => setControllerName(e.target.value)} />
-                </FormField>
-              </div>
-              <div style={{ width: 160 }}>
-                <FormField label="Locale">
-                  <select className="input" value={locale} onChange={(e) => setLocale(e.target.value as any)}>
-                    <option value="en">English (en)</option>
-                    <option value="hi">Hindi (hi)</option>
-                  </select>
-                </FormField>
-              </div>
-            </div>
+      <div style={{ marginTop: 12 }}>
+        <Notice ok={ok} err={err} hint={hint} channel={channel} id={id} />
+      </div>
 
-            <div className="row">
-              <div className="col">
-                <FormField label="Name">
-                  <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
-                </FormField>
-              </div>
-              <div className="col">
-                <FormField label="Email">
-                  <input className="input" value={email} onChange={(e) => setEmail(e.target.value)} />
-                </FormField>
-              </div>
-              <div className="col">
-                <FormField label="Phone">
-                  <input className="input" value={phone} onChange={(e) => setPhone(e.target.value)} />
-                </FormField>
-              </div>
-            </div>
+      <form action={actionSendController} style={{ display: "grid", gap: 14, marginTop: 16 }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: 14,
+          }}
+        >
+          <Field label="Controller Key">
+            <Select name="controllerKey" defaultValue="truecaller" required>
+              <option value="truecaller">truecaller</option>
+              <option value="naukri">naukri</option>
+              <option value="olx">olx</option>
+              <option value="foundit">foundit</option>
+              <option value="shine">shine</option>
+              <option value="timesjobs">timesjobs</option>
+            </Select>
+          </Field>
 
-            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-              <SendControllerButton
-                controllerKey={controllerKey}
-                controllerName={controllerName}
-                subject={{ name, email, phone }}
-                locale={locale}
-                onSuccess={(info) =>
-                  setResult({
-                    ok: true,
-                    message: `Sent via ${info.channel}${info.providerId ? ` (id ${info.providerId})` : ""}`,
-                  })
-                }
-                onError={(e) => setResult({ ok: false, message: `Failed: ${e.error}${e.hint ? ` [${e.hint}]` : ""}` })}
-              >
-                Send request
-              </SendControllerButton>
+          <Field label="Controller Name">
+            <Input name="controllerName" placeholder="Truecaller" defaultValue="Truecaller" />
+          </Field>
 
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  setName("Rahul Sharma");
-                  setEmail("rahul@example.com");
-                  setPhone("+91 98xxxx1234");
-                }}
-              >
-                Reset sample
-              </Button>
-            </div>
+          <Field label="Locale">
+            <Select name="locale" defaultValue="en">
+              <option value="en">English (en)</option>
+              <option value="hi">Hindi (hi)</option>
+            </Select>
+          </Field>
 
-            <div style={{ marginTop: 16 }}>
-              {!result ? (
-                <EmptyState
-                  title="No dispatch result yet"
-                  subtitle="Submit to test the dispatcher. Admin-only, server-signed."
-                />
-              ) : result.ok ? (
-                <div className="empty" style={{ borderStyle: "solid", color: "var(--success)" }}>
-                  ✅ {result.message}
-                </div>
-              ) : (
-                <div className="empty" style={{ borderStyle: "solid", color: "var(--danger)" }}>
-                  ❌ {result.message}
-                </div>
-              )}
-            </div>
-          </div>
-        </CardBody>
-      </Card>
+          <Field label="Preferred Channel (override)">
+            <Select name="preferred" defaultValue="">
+              <option value="">(auto from templates/policy)</option>
+              <option value="webform">webform</option>
+              <option value="email">email</option>
+              <option value="api">api</option>
+            </Select>
+          </Field>
+        </div>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: 14,
+          }}
+        >
+          <Field label="Subject Name">
+            <Input name="name" placeholder="Rahul Sharma" />
+          </Field>
+          <Field label="Subject Email">
+            <Input name="email" placeholder="rahul@example.com" />
+          </Field>
+          <Field label="Subject Phone">
+            <Input name="phone" placeholder="+91 98xxxx1234" />
+          </Field>
+        </div>
+
+        <Field label="Form URL (optional, seeds worker if webform)">
+          <Input
+            name="formUrl"
+            placeholder="https://www.truecaller.com/privacy-center/request/unlist"
+          />
+        </Field>
+
+        <div>
+          <Button type="submit">Dispatch</Button>
+        </div>
+      </form>
+
+      <div style={{ marginTop: 18, color: "#6b7280", fontSize: 13 }}>
+        Tip: set per-controller desk emails via env like{" "}
+        <code>CONTROLLER_TRUECALLER_EMAIL</code>. When email fails and webform is allowed,
+        the dispatcher auto-falls back to a webform job. All PII in logs is redacted.
+      </div>
     </div>
   );
 }
