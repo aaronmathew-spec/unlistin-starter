@@ -15,6 +15,15 @@ const RAW = [
   "urbanpro.com",
   "shiksha.com",
 
+  // Phase 1 expansion (safe, public-facing surfaces only)
+  "truecaller.com",
+  "naukri.com",
+  "olx.in",
+  "olx.com",
+  "foundit.in", // ex-Monster India
+  "shine.com",
+  "timesjobs.com",
+
   // Threat-intel preview surfaces (no scraping, public landing pages only)
   "haveibeenpwned.com",
   "intelx.io",
