@@ -56,17 +56,22 @@ export async function sendEmailResend(input: SendEmailInput): Promise<SendEmailR
           }))
         : undefined;
 
-    const res = await resend.emails.send({
+    // Build a raw payload (non-React mode) and cast to the SDK arg type.
+    // This avoids the type checker picking the React overload.
+    const payload: any = {
       from: FROM,
       to,
       subject: input.subject,
-      text: input.text,
-      html: input.html,
-      cc: cc.length ? cc : undefined,
-      bcc: bcc.length ? bcc : undefined,
-      replyTo: replyTo.length ? replyTo : undefined, // <-- camelCase here
-      tags,
-    });
+      // Provide only when present (SDK rejects empty strings)
+      ...(input.text ? { text: input.text } : {}),
+      ...(input.html ? { html: input.html } : {}),
+      ...(cc.length ? { cc } : {}),
+      ...(bcc.length ? { bcc } : {}),
+      ...(replyTo.length ? { replyTo } : {}),
+      ...(tags ? { tags } : {}),
+    };
+
+    const res = await resend.emails.send(payload as any);
 
     if ((res as any)?.error) {
       return { ok: false, error: (res as any).error.message || "send_failed" };
