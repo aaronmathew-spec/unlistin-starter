@@ -28,8 +28,24 @@ export default async function OpsWebformsPage() {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
         <div>
           <h1 className="h1">Ops · Webform Jobs</h1>
-          <p className="muted">Recent 50 jobs</p>
+          <p className="muted">Manage runs, download packs, retry or cancel.</p>
         </div>
+        <form action="/api/ops/webform/bulk/retry-breached" method="POST">
+          <button
+            type="submit"
+            style={{
+              padding: "8px 12px",
+              borderRadius: 8,
+              border: "1px solid #ddd",
+              background: "#fff",
+              cursor: "pointer",
+              fontWeight: 600,
+            }}
+            title="Queue all SLA-breached jobs again"
+          >
+            🔁 Bulk Retry breached
+          </button>
+        </form>
       </div>
 
       <div style={{ overflowX: "auto", marginTop: 16 }}>
@@ -52,6 +68,7 @@ export default async function OpsWebformsPage() {
             {jobs.map((j: any) => {
               const hasArtifacts = !!(j.artifact_html || j.artifact_screenshot);
               const canRetry = j.status === "failed" || j.status === "running" || j.status === "queued";
+              const canCancel = j.status === "queued" || j.status === "running";
               return (
                 <tr key={j.id}>
                   <td style={{ fontFamily: "monospace" }}>{j.id}</td>
@@ -77,12 +94,8 @@ export default async function OpsWebformsPage() {
                     )}
                   </td>
                   <td>
-                    <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                      <form
-                        action={`/api/ops/webform/job/${encodeURIComponent(j.id)}/retry`}
-                        method="POST"
-                        style={{ display: "inline" }}
-                      >
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <form action={`/api/ops/webform/job/${encodeURIComponent(j.id)}/retry`} method="POST">
                         <button
                           type="submit"
                           disabled={!canRetry}
@@ -96,6 +109,30 @@ export default async function OpsWebformsPage() {
                           }}
                         >
                           Retry
+                        </button>
+                      </form>
+                      <form
+                        action={`/api/ops/webform/job/${encodeURIComponent(j.id)}/cancel`}
+                        method="POST"
+                        onSubmit={(e) => {
+                          // no JS in RSC; this is ignored server-side but kept for clarity
+                          return true;
+                        }}
+                      >
+                        <button
+                          type="submit"
+                          disabled={!canCancel}
+                          title={canCancel ? "Mark as failed" : "Not cancelable"}
+                          style={{
+                            padding: "6px 10px",
+                            borderRadius: 6,
+                            border: "1px solid #f1d0d0",
+                            background: canCancel ? "#fff5f5" : "#fafafa",
+                            cursor: canCancel ? "pointer" : "not-allowed",
+                            color: "#a00",
+                          }}
+                        >
+                          Cancel
                         </button>
                       </form>
                     </div>
