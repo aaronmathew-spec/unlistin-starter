@@ -5,7 +5,7 @@ export type PreferredChannel = "webform" | "email" | "api";
 export type ControllerMeta = {
   key: string;
   name: string;
-  preferred: PreferredChannel; // default channel (can be overridden in DB)
+  preferred: PreferredChannel;
   formUrl?: string;
   slaTargetMin?: number;
   identity?: {
@@ -15,9 +15,13 @@ export type ControllerMeta = {
     wantsIdDoc?: boolean;
   };
   locales?: Array<"en" | "hi">;
+
+  // NEW: auto-dispatch controls (defaults; Ops can override in DB)
+  autoDispatchEnabled?: boolean;
+  autoDispatchMinConf?: number; // 0..1
 };
 
-/** Authoritative defaults (code). DB overrides merge on top at runtime. */
+/** Authoritative defaults; DB overrides merge on top at runtime. */
 export const CONTROLLER_DEFAULTS: Record<string, ControllerMeta> = {
   truecaller: {
     key: "truecaller",
@@ -27,6 +31,8 @@ export const CONTROLLER_DEFAULTS: Record<string, ControllerMeta> = {
     slaTargetMin: 60,
     identity: { wantsName: true, wantsEmail: true, wantsPhone: true },
     locales: ["en", "hi"],
+    autoDispatchEnabled: true,
+    autoDispatchMinConf: 0.94,
   },
   naukri: {
     key: "naukri",
@@ -35,6 +41,8 @@ export const CONTROLLER_DEFAULTS: Record<string, ControllerMeta> = {
     slaTargetMin: 180,
     identity: { wantsName: true, wantsEmail: true },
     locales: ["en", "hi"],
+    autoDispatchEnabled: false,
+    autoDispatchMinConf: 0.95,
   },
   olx: {
     key: "olx",
@@ -43,6 +51,8 @@ export const CONTROLLER_DEFAULTS: Record<string, ControllerMeta> = {
     slaTargetMin: 120,
     identity: { wantsName: true, wantsEmail: true },
     locales: ["en"],
+    autoDispatchEnabled: false,
+    autoDispatchMinConf: 0.96,
   },
   foundit: {
     key: "foundit",
@@ -51,6 +61,8 @@ export const CONTROLLER_DEFAULTS: Record<string, ControllerMeta> = {
     slaTargetMin: 180,
     identity: { wantsName: true, wantsEmail: true },
     locales: ["en"],
+    autoDispatchEnabled: false,
+    autoDispatchMinConf: 0.95,
   },
   shine: {
     key: "shine",
@@ -59,6 +71,8 @@ export const CONTROLLER_DEFAULTS: Record<string, ControllerMeta> = {
     slaTargetMin: 180,
     identity: { wantsName: true, wantsEmail: true },
     locales: ["en"],
+    autoDispatchEnabled: false,
+    autoDispatchMinConf: 0.95,
   },
   timesjobs: {
     key: "timesjobs",
@@ -67,6 +81,8 @@ export const CONTROLLER_DEFAULTS: Record<string, ControllerMeta> = {
     slaTargetMin: 180,
     identity: { wantsName: true, wantsEmail: true },
     locales: ["en"],
+    autoDispatchEnabled: false,
+    autoDispatchMinConf: 0.95,
   },
 };
 
