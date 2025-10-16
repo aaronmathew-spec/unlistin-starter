@@ -6,6 +6,25 @@
     { "path": "/api/cron/dispatch", "schedule": "*/10 * * * *" },
     { "path": "/api/cron/auto-intake", "schedule": "*/5 * * * *" },
     { "path": "/api/cron/verify", "schedule": "*/30 * * * *" },
-    { "path": "/api/detect/changes", "schedule": "0 11 * * *" }
+    { "path": "/api/detect/changes", "schedule": "0 11 * * *" },
+
+    {
+      "path": "/api/ops/webform/worker",
+      "schedule": "*/10 * * * *",
+      "method": "POST",
+      "headers": { "x-secure-cron": "@SECURE_CRON_SECRET" }
+    },
+    {
+      "path": "/api/ops/verify/recheck",
+      "schedule": "0 */6 * * *",
+      "method": "POST",
+      "headers": { "x-secure-cron": "@SECURE_CRON_SECRET" }
+    },
+    {
+      "path": "/api/ops/verify/alert",
+      "schedule": "5 */6 * * *",
+      "method": "POST",
+      "headers": { "x-secure-cron": "@SECURE_CRON_SECRET" }
+    }
   ]
 }
