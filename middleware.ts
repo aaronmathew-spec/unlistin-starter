@@ -3,17 +3,33 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 
 /**
- * Build a conservative CSP that works with:
- * - Next.js (self, inline styles via 'unsafe-inline' for critical CSS)
+ * ==========================
+ * Ops access gate (world-class simple)
+ * ==========================
+ * Protects /ops/* with an HTTP-only cookie ("ops") that must match OPS_DASHBOARD_TOKEN.
+ * - /ops/login is always allowed (to set the cookie).
+ * - /api/* stays guarded by your existing x-secure-cron or auth logic; this gate is only for pages under /ops.
+ */
+const OPS_COOKIE = "ops";
+const OPS_LOGIN_PATH = "/ops/login";
+
+function needsOpsGate(pathname: string): boolean {
+  if (!pathname.startsWith("/ops")) return false;
+  if (pathname === OPS_LOGIN_PATH) return false; // allow the login page
+  return true;
+}
+
+/**
+ * ==========================
+ * Content Security Policy
+ * ==========================
+ * Works with:
+ * - Next.js (allows 'unsafe-inline' for styles only)
  * - Supabase (REST, Realtime websockets, Storage)
- * - Vercel Analytics/Speed Insights (optional; comment out if unused)
- *
- * NOTE: If you use other 3rd parties (fonts, maps, cdn), add them below.
+ * - Vercel Analytics/Speed Insights (optional)
  */
 function buildCSP() {
-  // Supabase URL(s) available at build time
   const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/\/+$/, "");
-  // Supabase RT and Storage share the same origin base
   const supabaseOrigins = SUPABASE_URL
     ? [
         SUPABASE_URL,
@@ -24,26 +40,15 @@ function buildCSP() {
       ]
     : [];
 
-  // If you use Google Fonts, uncomment these:
-  // const googleFonts = [
-  //   "https://fonts.googleapis.com",
-  //   "https://fonts.gstatic.com",
-  // ];
-
-  // If you use Vercel analytics/speed-insights, keep these. Otherwise remove.
   const vercel = ["https://vitals.vercel-insights.com"];
-
   const self = "'self'";
 
-  // Keep CSP readable. Join arrays at the end.
   const directives: Record<string, string[]> = {
     "default-src": [self],
-    // Next.js inlines some styles during SSR; allow 'unsafe-inline' for styles only.
     "style-src": [self, "'unsafe-inline'"],
     "img-src": [self, "data:", "blob:", ...supabaseOrigins],
-    // Next needs blob: for certain runtime features; Supabase uses websockets.
-    "script-src": [self], // No 'unsafe-inline' for scripts — safer.
-    "font-src": [self, "data:" /*, ...googleFonts*/],
+    "script-src": [self], // no inline scripts
+    "font-src": [self, "data:"],
     "connect-src": [
       self,
       "https://*.vercel.app",
@@ -51,92 +56,93 @@ function buildCSP() {
       ...vercel,
       ...supabaseOrigins,
     ],
-    "frame-ancestors": ["'none'"], // disallow embedding
+    "frame-ancestors": ["'none'"],
     "object-src": ["'none'"],
     "base-uri": [self],
     "form-action": [self],
-    "frame-src": [], // keep empty unless you intentionally embed frames
+    "frame-src": [],
     "media-src": [self, "blob:", ...supabaseOrigins],
     "worker-src": [self, "blob:"],
     "manifest-src": [self],
-    "upgrade-insecure-requests": [], // auto-upgrade http->https when possible
+    "upgrade-insecure-requests": [],
   };
 
-  // turn into a single header string
   return Object.entries(directives)
     .map(([key, vals]) => (vals.length ? `${key} ${vals.join(" ")}` : key))
     .join("; ");
 }
 
 /**
- * Common security headers (OWASP-ish baseline)
+ * ==========================
+ * Baseline security headers
+ * ==========================
  */
 const securityHeaders: Record<string, string> = {
-  // HSTS (only when site is HTTPS + stable on a subdomain you control)
-  // If you test on http://localhost these are harmless; browsers ignore HSTS on http.
   "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
-  // Avoid MIME sniffing
   "X-Content-Type-Options": "nosniff",
-  // Clickjacking protection
   "X-Frame-Options": "DENY",
-  // Legacy XSS filter (modern browsers ignore or treat as 0)
   "X-XSS-Protection": "0",
-  // COOP/COEP/CORP harden cross-origin isolation (tune if you embed 3rd-party iframes)
   "Cross-Origin-Opener-Policy": "same-origin",
   "Cross-Origin-Resource-Policy": "same-site",
-  // COEP can break some embeds; start with unsafe-none. If you need SharedArrayBuffer, change to require-corp.
   "Cross-Origin-Embedder-Policy": "unsafe-none",
-  // Referrer policy
   "Referrer-Policy": "strict-origin-when-cross-origin",
-  // Permissions policy (formerly Feature-Policy) — disable sensitive sensors by default
-  "Permissions-Policy":
-    [
-      "camera=()",
-      "microphone=()",
-      "geolocation=()",
-      "payment=()",
-      "usb=()",
-      "accelerometer=()",
-      "autoplay=()",
-      "gyroscope=()",
-      "magnetometer=()",
-      "xr-spatial-tracking=()",
-    ].join(", "),
+  "Permissions-Policy": [
+    "camera=()",
+    "microphone=()",
+    "geolocation=()",
+    "payment=()",
+    "usb=()",
+    "accelerometer=()",
+    "autoplay=()",
+    "gyroscope=()",
+    "magnetometer=()",
+    "xr-spatial-tracking=()",
+  ].join(", "),
 };
 
-export function middleware(req: NextRequest) {
-  // Let Next handle static assets quickly; we still set headers for pages/APIs below.
-  const res = NextResponse.next();
-
-  // 1) Set baseline headers
+function applySecurityHeaders(res: NextResponse) {
   for (const [k, v] of Object.entries(securityHeaders)) {
     res.headers.set(k, v);
   }
-
-  // 2) Content Security Policy
-  // In dev, it’s useful to start with Report-Only so you can see violations without breaking pages.
   const isDev = process.env.NODE_ENV !== "production";
   const csp = buildCSP();
-
   if (isDev) {
     res.headers.set("Content-Security-Policy-Report-Only", csp);
   } else {
     res.headers.set("Content-Security-Policy", csp);
   }
-
-  // 3) Cache busting for middleware changes (optional)
   res.headers.set("Server-Timing", "middleware;desc=security-headers;dur=0.1");
-
   return res;
 }
 
+export function middleware(req: NextRequest) {
+  const { pathname, search } = req.nextUrl;
+
+  // ---- Ops gate (only for /ops pages) ----
+  if (needsOpsGate(pathname)) {
+    const configuredToken = process.env.OPS_DASHBOARD_TOKEN || "";
+    const cookieValue = req.cookies.get(OPS_COOKIE)?.value || "";
+
+    // If no token configured, we still redirect to login so the page can clearly show the misconfig.
+    if (!configuredToken || cookieValue !== configuredToken) {
+      const url = req.nextUrl.clone();
+      url.pathname = OPS_LOGIN_PATH;
+      if (pathname) url.searchParams.set("next", pathname + (search || ""));
+      const redirect = NextResponse.redirect(url);
+      return applySecurityHeaders(redirect);
+    }
+  }
+
+  // ---- Normal pass-through + headers for everything else ----
+  const res = NextResponse.next();
+  return applySecurityHeaders(res);
+}
+
 /**
- * Match all routes except Next internals and assets.
- * Adjust the matcher if you need headers on images too (usually unnecessary).
+ * Match all routes except Next internals and static assets.
  */
 export const config = {
   matcher: [
-    // Apply to all application routes & API routes:
     "/((?!_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml).*)",
   ],
 };
