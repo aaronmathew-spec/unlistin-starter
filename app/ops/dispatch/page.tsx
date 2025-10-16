@@ -1,5 +1,6 @@
 // app/ops/dispatch/page.tsx
 import { actionSendController } from "./actions";
+import { listDispatchLog } from "@/lib/dispatch/query";
 
 export const dynamic = "force-dynamic";
 
@@ -12,7 +13,9 @@ function Field({
 }) {
   return (
     <label style={{ display: "grid", gap: 6 }}>
-      <span style={{ fontSize: 13, color: "#374151", fontWeight: 600 }}>{label}</span>
+      <span style={{ fontSize: 13, color: "#374151", fontWeight: 600 }}>
+        {label}
+      </span>
       {children}
     </label>
   );
@@ -66,48 +69,133 @@ function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement>) {
   );
 }
 
-function Notice({ ok, err, hint, channel, id }: { ok?: boolean; err?: string; hint?: string; channel?: string; id?: string }) {
+function Notice({
+  ok,
+  err,
+  hint,
+  channel,
+  id,
+}: {
+  ok?: boolean;
+  err?: string;
+  hint?: string;
+  channel?: string;
+  id?: string;
+}) {
   if (ok) {
     return (
-      <div style={{ padding: 12, border: "1px solid #10b981", background: "#ecfdf5", borderRadius: 10 }}>
+      <div
+        style={{
+          padding: 12,
+          border: "1px solid #10b981",
+          background: "#ecfdf5",
+          borderRadius: 10,
+        }}
+      >
         ✅ Dispatched via <b>{channel}</b> · <code>{id || "OK"}</code>
       </div>
     );
   }
   if (err) {
     return (
-      <div style={{ padding: 12, border: "1px solid #ef4444", background: "#fef2f2", borderRadius: 10 }}>
+      <div
+        style={{
+          padding: 12,
+          border: "1px solid #ef4444",
+          background: "#fef2f2",
+          borderRadius: 10,
+        }}
+      >
         ❌ Dispatch failed: <b>{err}</b>
-        {hint ? <div style={{ color: "#6b7280", marginTop: 4 }}>Hint: {hint}</div> : null}
+        {hint ? (
+          <div style={{ color: "#6b7280", marginTop: 4 }}>Hint: {hint}</div>
+        ) : null}
       </div>
     );
   }
   return null;
 }
 
-export default function DispatchConsole({
+function Badge({ ok }: { ok: boolean }) {
+  return (
+    <span
+      style={{
+        padding: "2px 8px",
+        borderRadius: 999,
+        fontSize: 12,
+        fontWeight: 700,
+        color: ok ? "#065f46" : "#991b1b",
+        background: ok ? "#d1fae5" : "#fee2e2",
+        border: `1px solid ${ok ? "#10b981" : "#ef4444"}`,
+      }}
+    >
+      {ok ? "OK" : "ERROR"}
+    </span>
+  );
+}
+
+// Keep this type aligned with your lib/dispatch/query return shape
+type DispatchRow = Awaited<ReturnType<typeof listDispatchLog>>[number];
+
+function groupLatest(rows: DispatchRow[]) {
+  const byKey = new Map<string, DispatchRow>();
+  for (const r of rows) {
+    const prev = byKey.get(r.dedupe_key);
+    if (!prev) {
+      byKey.set(r.dedupe_key, r);
+    } else if (
+      new Date(r.created_at).getTime() > new Date(prev.created_at).getTime()
+    ) {
+      byKey.set(r.dedupe_key, r);
+    }
+  }
+  return Array.from(byKey.values());
+}
+
+export default async function DispatchConsole({
   searchParams,
 }: {
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
   const ok = searchParams?.ok === "1";
-  const err = typeof searchParams?.err === "string" ? searchParams?.err : undefined;
-  const hint = typeof searchParams?.hint === "string" ? searchParams?.hint : undefined;
-  const channel = typeof searchParams?.channel === "string" ? searchParams?.channel : undefined;
-  const id = typeof searchParams?.id === "string" ? searchParams?.id : undefined;
+  const err =
+    typeof searchParams?.err === "string" ? searchParams?.err : undefined;
+  const hint =
+    typeof searchParams?.hint === "string" ? searchParams?.hint : undefined;
+  const channel =
+    typeof searchParams?.channel === "string"
+      ? searchParams?.channel
+      : undefined;
+  const id =
+    typeof searchParams?.id === "string" ? searchParams?.id : undefined;
+
+  // Fetch recent dispatch audit (server-side)
+  // We keep the limit moderate for perf; the UI will show latest per dedupe.
+  let latestPerRequest: DispatchRow[] = [];
+  try {
+    const recent = await listDispatchLog(500);
+    latestPerRequest = groupLatest(recent);
+  } catch {
+    // Non-fatal: if query helper changes or fails, we don't break the form.
+    latestPerRequest = [];
+  }
 
   return (
     <div style={{ padding: 24, maxWidth: 900, margin: "0 auto" }}>
       <h1 style={{ margin: 0 }}>Ops · Dispatch Console</h1>
       <p style={{ color: "#6b7280", marginTop: 6 }}>
-        Send a controller request manually using your production dispatcher. No client secrets; all server-side.
+        Send a controller request manually using your production dispatcher. No
+        client secrets; all server-side.
       </p>
 
       <div style={{ marginTop: 12 }}>
         <Notice ok={ok} err={err} hint={hint} channel={channel} id={id} />
       </div>
 
-      <form action={actionSendController} style={{ display: "grid", gap: 14, marginTop: 16 }}>
+      <form
+        action={actionSendController}
+        style={{ display: "grid", gap: 14, marginTop: 16 }}
+      >
         <div
           style={{
             display: "grid",
@@ -127,7 +215,11 @@ export default function DispatchConsole({
           </Field>
 
           <Field label="Controller Name">
-            <Input name="controllerName" placeholder="Truecaller" defaultValue="Truecaller" />
+            <Input
+              name="controllerName"
+              placeholder="Truecaller"
+              defaultValue="Truecaller"
+            />
           </Field>
 
           <Field label="Locale">
@@ -179,9 +271,93 @@ export default function DispatchConsole({
 
       <div style={{ marginTop: 18, color: "#6b7280", fontSize: 13 }}>
         Tip: set per-controller desk emails via env like{" "}
-        <code>CONTROLLER_TRUECALLER_EMAIL</code>. When email fails and webform is allowed,
-        the dispatcher auto-falls back to a webform job. All PII in logs is redacted.
+        <code>CONTROLLER_TRUECALLER_EMAIL</code>. When email fails and webform
+        is allowed, the dispatcher auto-falls back to a webform job. All PII in
+        logs is redacted.
       </div>
+
+      {/* ---- Latest status per request (delivery + outcomes) ---- */}
+      <div style={{ marginTop: 28 }}>
+        <h2 style={{ margin: "0 0 8px 0" }}>Latest status per request</h2>
+        <div
+          style={{
+            border: "1px solid #e5e7eb",
+            borderRadius: 12,
+            overflow: "hidden",
+          }}
+        >
+          <table
+            style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}
+          >
+            <thead style={{ background: "#f9fafb", textAlign: "left" }}>
+              <tr>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
+                  When
+                </th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
+                  Controller
+                </th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
+                  Subject
+                </th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
+                  Channel
+                </th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
+                  Provider ID
+                </th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
+                  Note
+                </th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
+                  Status
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {latestPerRequest.map((r) => (
+                <tr
+                  key={`${r.dedupe_key}-${r.id}`}
+                  style={{ borderTop: "1px solid #e5e7eb" }}
+                >
+                  <td style={{ padding: 12 }}>
+                    {new Date(r.created_at).toLocaleString()}
+                  </td>
+                  <td style={{ padding: 12 }}>{r.controller_key}</td>
+                  <td style={{ padding: 12 }}>
+                    {[r.subject_name, r.subject_email, r.subject_phone]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </td>
+                  <td style={{ padding: 12 }}>{r.channel || "-"}</td>
+                  <td style={{ padding: 12, fontFamily: "monospace" }}>
+                    {r.provider_id || "-"}
+                  </td>
+                  <td style={{ padding: 12 }}>{r.note || "-"}</td>
+                  <td style={{ padding: 12 }}>
+                    <Badge ok={!!r.ok} />
+                  </td>
+                </tr>
+              ))}
+              {latestPerRequest.length === 0 && (
+                <tr>
+                  <td
+                    colSpan={7}
+                    style={{
+                      padding: 24,
+                      textAlign: "center",
+                      color: "#6b7280",
+                    }}
+                  >
+                    No dispatches yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {/* ---- /Latest status ---- */}
     </div>
   );
 }
