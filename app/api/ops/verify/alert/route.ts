@@ -1,4 +1,3 @@
-// app/api/ops/verify/alert/route.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export const runtime = "nodejs";
 
@@ -13,10 +12,10 @@ import { renderSimpleEmail } from "@/lib/email/templates/simple";
  *          records that are past-due for recheck (or stale for too long).
  *
  * NOTE: This does not perform the recheck; it only notifies. Keep your
- *       existing /api/ops/verify/recheck job to do the actual work.
+ *       /api/ops/verify/recheck job to do the actual work.
  */
 
-const OPS_SECRET = process.env.SECURE_CRON_SECRET || "";
+const OPS_SECRET = (process.env.SECURE_CRON_SECRET || "").trim();
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE!;
 const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || "")
@@ -29,15 +28,8 @@ const STALE_MINUTES_DEFAULT = 24 * 60; // 24h since last update if no next_reche
 const WINDOW_LIMIT = 2000; // max rows to scan
 const MAX_LINES_PER_GROUP = 20;
 
-// Some common “still pending” statuses your schema may use.
-// Keep liberal; unknowns are grouped as "unknown".
-const PENDING_STATUSES = new Set([
-  "pending",
-  "awaiting",
-  "submitted",
-  "queued",
-  "checking",
-]);
+// Common “still pending” statuses; unknowns are grouped as "unknown".
+const PENDING_STATUSES = new Set(["pending", "awaiting", "submitted", "queued", "checking"]);
 
 function forbidden(msg: string) {
   return NextResponse.json({ ok: false, error: msg }, { status: 403 });
@@ -59,7 +51,7 @@ function baseUrl(req: Request): string {
 
 export async function POST(req: Request) {
   if (!OPS_SECRET) return forbidden("secret_not_set");
-  if ((req.headers.get("x-secure-cron") || "") !== OPS_SECRET) return forbidden("invalid_secret");
+  if ((req.headers.get("x-secure-cron") || "").trim() !== OPS_SECRET) return forbidden("invalid_secret");
 
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
     return NextResponse.json({ ok: false, error: "env_missing" }, { status: 500 });
@@ -70,7 +62,7 @@ export async function POST(req: Request) {
 
   const sb = srv();
 
-  // We intentionally select with broad, nullable fields—schema-tolerant.
+  // Broad, nullable fields—schema-tolerant.
   const { data, error } = await sb
     .from("verifications")
     .select("id, controller_key, status, updated_at, next_recheck_at")
@@ -92,11 +84,10 @@ export async function POST(req: Request) {
   const now = Date.now();
   const staleMinMs = STALE_MINUTES_DEFAULT * 60 * 1000;
 
-  // Pick candidates: either next_recheck_at <= now OR (pending status and last update too old)
+  // Pick candidates: next_recheck_at <= now OR (pending status and last update too old)
   const candidates = (data || []).filter((r: Row) => {
     const status = (r.status || "").toString().toLowerCase();
-    const nextRecheckDue =
-      r.next_recheck_at ? new Date(r.next_recheck_at).getTime() <= now : false;
+    const nextRecheckDue = r.next_recheck_at ? new Date(r.next_recheck_at).getTime() <= now : false;
 
     const lastUpd = r.updated_at ? new Date(r.updated_at).getTime() : 0;
     const tooOld = lastUpd > 0 ? now - lastUpd > staleMinMs : false;
@@ -110,7 +101,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, due: 0 });
   }
 
-  // Group lines by controller
+  // Group by controller
   const groups: Record<string, Array<{ id: string; status: string; ageMin: number; due: boolean }>> = {};
   for (const r of candidates as Row[]) {
     const key = (r.controller_key || "*").toString();
@@ -164,5 +155,10 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: sent.error }, { status: 500 });
   }
 
-  return NextResponse.json({ ok: true, sent: true, controllers: keys.length, messageId: sent.id });
+  return NextResponse.json({
+    ok: true,
+    sent: true,
+    controllers: keys.length,
+    messageId: sent.id ?? null,
+  });
 }
