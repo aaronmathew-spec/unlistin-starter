@@ -4,18 +4,18 @@ import { NextResponse } from "next/server";
 
 /**
  * ==========================
- * Ops access gate (world-class simple)
+ * Ops access gate (simple & robust)
  * ==========================
  * Protects /ops/* with an HTTP-only cookie ("ops") that must match OPS_DASHBOARD_TOKEN.
  * - /ops/login is always allowed (to set the cookie).
- * - /api/* stays guarded by your existing x-secure-cron or auth logic; this gate is only for pages under /ops.
+ * - API security is separate; this only gates pages under /ops.
  */
 const OPS_COOKIE = "ops";
 const OPS_LOGIN_PATH = "/ops/login";
 
 function needsOpsGate(pathname: string): boolean {
   if (!pathname.startsWith("/ops")) return false;
-  if (pathname === OPS_LOGIN_PATH) return false; // allow the login page
+  if (pathname === OPS_LOGIN_PATH) return false; // allow the login page itself
   return true;
 }
 
@@ -120,10 +120,10 @@ export function middleware(req: NextRequest) {
 
   // ---- Ops gate (only for /ops pages) ----
   if (needsOpsGate(pathname)) {
-    const configuredToken = process.env.OPS_DASHBOARD_TOKEN || "";
-    const cookieValue = req.cookies.get(OPS_COOKIE)?.value || "";
+    const configuredToken = (process.env.OPS_DASHBOARD_TOKEN || "").trim();
+    const cookieValue = (req.cookies.get(OPS_COOKIE)?.value || "").trim();
 
-    // If no token configured, we still redirect to login so the page can clearly show the misconfig.
+    // If missing/mismatch, redirect to login with ?next=
     if (!configuredToken || cookieValue !== configuredToken) {
       const url = req.nextUrl.clone();
       url.pathname = OPS_LOGIN_PATH;
@@ -142,7 +142,5 @@ export function middleware(req: NextRequest) {
  * Match all routes except Next internals and static assets.
  */
 export const config = {
-  matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml).*)",
-  ],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml).*)"],
 };
