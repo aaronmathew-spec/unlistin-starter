@@ -7,25 +7,28 @@ const OPS_COOKIE = "ops";
 const MAX_AGE = 60 * 60 * 8; // 8h session
 
 export async function POST(req: Request) {
-  const body = (await req.json().catch(() => ({}))) as { token?: string };
-  const token = process.env.OPS_DASHBOARD_TOKEN || "";
+  // Tolerate bad/empty JSON bodies
+  const body = (await req.json().catch(() => ({}))) as { token?: string | null };
 
-  if (!token) {
+  const configured = (process.env.OPS_DASHBOARD_TOKEN || "").trim();
+  if (!configured) {
     return NextResponse.json(
       { ok: false, error: "OPS_DASHBOARD_TOKEN is not configured" },
       { status: 500 }
     );
   }
 
-  if (!body?.token || body.token !== token) {
+  const provided = (body?.token || "").trim();
+  if (!provided || provided !== configured) {
     return NextResponse.json({ ok: false, error: "Invalid token" }, { status: 401 });
   }
 
+  // Create secure cookie. (We store the token itself to match your existing middleware.)
   const res = NextResponse.json({ ok: true });
-  res.cookies.set(OPS_COOKIE, token, {
+  res.cookies.set(OPS_COOKIE, configured, {
     httpOnly: true,
     sameSite: "lax",
-    secure: true, // important on Vercel (HTTPS)
+    secure: true, // HTTPS on Vercel
     path: "/",
     maxAge: MAX_AGE,
   });
