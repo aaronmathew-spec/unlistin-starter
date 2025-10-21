@@ -45,6 +45,7 @@ function KVPairs({ obj }: { obj?: Record<string, unknown> }) {
                 padding: "4px 8px",
                 fontFamily:
                   "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
+                wordBreak: "break-word",
               }}
             >
               {typeof v === "boolean" ? (v ? "true" : "false") : String(v)}
@@ -56,10 +57,15 @@ function KVPairs({ obj }: { obj?: Record<string, unknown> }) {
   );
 }
 
-function Button(props: React.PropsWithChildren<{ formAction?: (fd: FormData) => Promise<any> }>) {
+// Typed so formAction expects void | Promise<void> (keeps TS happy with Server Actions)
+function Button(
+  props: React.PropsWithChildren<{
+    formAction?: (fd: FormData) => void | Promise<void>;
+  }>
+) {
   return (
     <button
-      formAction={props.formAction as any}
+      formAction={props.formAction}
       style={{
         display: "inline-flex",
         alignItems: "center",
@@ -94,7 +100,7 @@ function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
 }
 
 export default async function SystemStatusPage() {
-  // TODO: ensure admin-only guard via existing isAdmin() middleware/layout
+  // Admin guard should live in your layout/middleware if needed
   const status = gatherSystemStatus();
   const env = process.env.VERCEL_ENV || "unknown";
   const proj = process.env.VERCEL_PROJECT_PRODUCTION_URL || null;
@@ -118,6 +124,7 @@ export default async function SystemStatusPage() {
                 <a
                   href={`https://${String(proj).replace(/^https?:\/\//, "")}`}
                   target="_blank"
+                  rel="noreferrer"
                 >
                   {proj}
                 </a>
@@ -200,9 +207,13 @@ export default async function SystemStatusPage() {
         </div>
 
         <div style={{ marginTop: 8, color: "#6b7280", fontSize: 13 }}>
-          {emailOk ? "Email config looks good." : "Email config incomplete—check EMAIL_FROM / RESEND_API_KEY or EMAIL_DRY_RUN."}
+          {emailOk
+            ? "Email config looks good."
+            : "Email config incomplete—check EMAIL_FROM / RESEND_API_KEY or EMAIL_DRY_RUN."}
           {" · "}
-          {cronOk ? "Cron secret present." : "SECURE_CRON_SECRET missing—secure quick actions & crons depend on it."}
+          {cronOk
+            ? "Cron secret present."
+            : "SECURE_CRON_SECRET missing—secure quick actions & crons depend on it."}
         </div>
       </section>
 
