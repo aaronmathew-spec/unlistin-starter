@@ -6,7 +6,7 @@ type Artifact = {
   id: string;
   type: "screenshot" | "dom_tree" | "email_receipt" | "api_response" | "search_index";
   createdAt: string; // ISO
-  contentUri: string; // supabase storage path or presigned url
+  contentUri: string; // Supabase storage path or presigned URL
   contentSha256?: string; // optional if precomputed
   meta?: Record<string, any>;
 };
@@ -22,13 +22,11 @@ type Manifest = {
     contentSha256: string;
     meta?: Record<string, any>;
   }>;
-  merkle?: {
-    root?: string;
-  };
+  merkle?: { root?: string };
 };
 
 async function getArtifactsForSubject(subjectId: string): Promise<Artifact[]> {
-  // TODO: wire to your DB. Minimal placeholder uses contentUri to fetch bytes.
+  // TODO: wire to your DB and storage; placeholder for now.
   return []; // <<< replace with your actual query
 }
 
@@ -89,16 +87,17 @@ Verify:
 `
   );
 
-  // Generate as Uint8Array (web BodyInit-friendly)
+  // Generate as Uint8Array (we'll wrap it in a Blob for Response)
   const u8 = await zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
   return u8;
 }
 
-// Utility HTTP responder (use web Response, not NextResponse, to avoid Buffer typing issues)
+// Return a web Response with a Blob body to satisfy BodyInit typing across runtimes
 export async function proofPackResponse(subjectId: string): Promise<Response> {
-  const zip = await buildProofPack(subjectId);
+  const zipU8 = await buildProofPack(subjectId);
   const filename = `unlistin-proof-pack-${subjectId}.zip`;
-  return new Response(zip, {
+  const blob = new Blob([zipU8], { type: "application/zip" });
+  return new Response(blob, {
     status: 200,
     headers: {
       "Content-Type": "application/zip",
