@@ -19,10 +19,8 @@ function bad(status: number, msg: string) {
 function toCsvValue(v: unknown) {
   if (v === null || v === undefined) return "";
   const s = String(v);
-  // quote if contains comma, quote or newline
-  if (/[",\n]/.test(s)) {
-    return `"${s.replace(/"/g, '""')}"`;
-  }
+  // Quote if contains comma, quote or newline
+  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
   return s;
 }
 
@@ -34,6 +32,7 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const limRaw = url.searchParams.get("limit");
   let limit = Number.isFinite(Number(limRaw)) ? Number(limRaw) : 200;
+  if (!Number.isFinite(limit)) limit = 200;
   if (limit <= 0) limit = 200;
   if (limit > 1000) limit = 1000;
 
@@ -50,10 +49,9 @@ export async function GET(req: Request) {
     .limit(limit);
 
   if (error) return bad(500, error.message);
-
   const rows = (data || []) as any[];
 
-  // Verify each row (ok/error/false). This is synchronous per row to keep it simple.
+  // Verify each row (ok/error/false).
   const enriched = [];
   for (const r of rows) {
     let verified: boolean | "error" = "error";
@@ -92,7 +90,9 @@ export async function GET(req: Request) {
         toCsvValue(r.algorithm ?? ""),
         toCsvValue(r.key_id ?? ""),
         toCsvValue(r.root_hex ?? ""),
-        toCsvValue(r.verified === true ? "valid" : r.verified === false ? "invalid" : "error"),
+        toCsvValue(
+          r.verified === true ? "valid" : r.verified === false ? "invalid" : "error"
+        ),
         toCsvValue(r.pack_id ?? ""),
         toCsvValue(r.subject_id ?? ""),
         toCsvValue(r.controller_key ?? ""),
