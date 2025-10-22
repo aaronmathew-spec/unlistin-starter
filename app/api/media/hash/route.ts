@@ -5,16 +5,24 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { computeHashes } from "@/lib/media/hash";
+import { getClientIp, rateLimit, tooManyResponse } from "@/lib/rate-limit";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE!;
+
+// Tunables for this endpoint
+const RL_WINDOW_MS = 60_000; // 1 minute
+const RL_MAX = 30;           // 30 uploads / minute / IP
 
 function bad(status: number, msg: string) {
   return NextResponse.json({ ok: false, error: msg }, { status });
 }
 
 export async function POST(req: Request) {
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) return bad(500, "supabase_env_missing");
+  // ----- Rate limit (per IP) -----
+  const ip = getClientIp(req);
+  const rl = rateLimit(`media-hash:${ip}`, { windowMs: RL_WINDOW_MS, max: RL_MAX, prefix: "api" });
+  if (!rl.allowed) return tooManyResponse(rl.remaining, rl.resetMs);
 
   const ct = (req.headers.get("content-type") || "").toLowerCase();
   try {
@@ -33,42 +41,35 @@ export async function POST(req: Request) {
 
     const hashes = await computeHashes(buf);
 
-    const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
-      auth: { persistSession: false },
+    const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, { auth: { persistSession: false } });
+    const { error } = await sb.from("sensitive_media_hashes").insert({
+      sha256_hex: hashes.sha256_hex,
+      phash64: hashes.phash64,
+      width: hashes.width,
+      height: hashes.height,
+      source: "upload",
+      meta: null,
     });
-
-    // Your table name (kept as you currently use it)
-    const { data: inserted, error } = await sb
-      .from("sensitive_media_hashes")
-      .insert({
-        sha256_hex: hashes.sha256_hex,
-        phash64: hashes.phash64,
-        width: hashes.width,
-        height: hashes.height,
-        source: "upload",
-        meta: null,
-      })
-      .select("id")
-      .single();
-
     if (error) return bad(400, error.message);
 
-    return NextResponse.json({
-      ok: true,
-      id: inserted?.id ?? null,
-      ...hashes,
-    });
+    const res = NextResponse.json({ ok: true, ...hashes });
+    // Include RL headers for observability
+    res.headers.set("x-ratelimit-remaining", String(rl.remaining));
+    res.headers.set("x-ratelimit-reset", String(rl.resetMs));
+    return res;
   } catch (e: any) {
     // eslint-disable-next-line no-console
     console.error("[media.hash.error]", String(e?.message || e));
     if (String(e?.message || e).includes("sharp_not_available")) {
-      // Graceful fallback: still return SHA-256, aHash may be null
-      return NextResponse.json({
+      const res = NextResponse.json({
         ok: true,
         sha256_hex: "computed",
         phash64: null,
         note: "sharp_not_available",
       });
+      res.headers.set("x-ratelimit-remaining", String(rl.remaining));
+      res.headers.set("x-ratelimit-reset", String(rl.resetMs));
+      return res;
     }
     return bad(500, "internal_error");
   }
