@@ -1,6 +1,6 @@
 // src/lib/proofs/verify.ts
 import JSZip from "jszip";
-import { createVerify, createHash } from "node:crypto";
+import { createVerify, createHash, constants } from "node:crypto";
 import * as ed25519 from "@noble/ed25519";
 
 type Manifest = {
@@ -8,13 +8,13 @@ type Manifest = {
   subjectId: string;
   createdAt: string;
   signer: {
-    backend: string; // "local-ed25519" | "aws-kms"
+    backend: string; // "local-ed25519" | "aws-kms" | ...
     keyId: string;
     alg: "ed25519" | "rsa-pss-sha256";
   };
   assets: {
     filename: "pack.zip";
-    sha256: string; // hex
+    sha256: string; // hex digest
     size: number;
   };
   meta?: Record<string, any>;
@@ -37,50 +37,96 @@ function u8(ab: ArrayBuffer): Uint8Array {
   return new Uint8Array(ab);
 }
 
-async function verifyRsaPssSha256(pubKeyPem: string, message: Uint8Array, signature: Uint8Array): Promise<boolean> {
+/**
+ * Minimal DER TLV reader (enough for finding BIT STRING in SPKI)
+ */
+function readTLV(buf: Uint8Array, off: number) {
+  const tag = buf[off];
+  const firstLen = buf[off + 1];
+  let len = 0;
+  let lenByteCount = 0;
+
+  if ((firstLen & 0x80) === 0) {
+    // short form
+    len = firstLen;
+    lenByteCount = 1;
+  } else {
+    // long form
+    const n = firstLen & 0x7f;
+    lenByteCount = 1 + n;
+    let acc = 0;
+    for (let i = 0; i < n; i++) {
+      acc = (acc << 8) | buf[off + 2 + i];
+    }
+    len = acc;
+  }
+
+  const header = 1 + lenByteCount;
+  const start = off + header;
+  const end = start + len;
+  return { tag, length: len, header, start, end };
+}
+
+/**
+ * SPKI (RFC 8410) Ed25519 public key is stored as a BIT STRING (tag 0x03):
+ *   - content[0] = 0 (unused bits)
+ *   - content[1..32] = raw 32-byte public key
+ * We scan DER for a suitable BIT STRING and return the 32 raw bytes.
+ */
+function findSpkiBitStringKey(der: Uint8Array): Uint8Array | null {
+  let off = 0;
+  let candidate: Uint8Array | null = null;
+  while (off < der.length) {
+    const tlv = readTLV(der, off);
+    if (tlv.tag === 0x03) {
+      const bitstr = der.subarray(tlv.start, tlv.end);
+      // Expect 0 unused bits + 32 bytes key
+      if (bitstr.length >= 33 && bitstr[0] === 0x00) {
+        const raw = bitstr.subarray(1);
+        if (raw.length === 32) {
+          candidate = raw;
+          // Keep scanning to find the last one, but usually this is the correct one already.
+        }
+      }
+    }
+    off = tlv.end;
+  }
+  return candidate ? new Uint8Array(candidate) : null;
+}
+
+async function verifyRsaPssSha256(
+  pubKeyPem: string,
+  message: Uint8Array,
+  signature: Uint8Array
+): Promise<boolean> {
   const v = createVerify("sha256");
   v.update(message);
   v.end();
   return v.verify(
-    { key: pubKeyPem, padding: (require("node:crypto") as any).constants.RSA_PKCS1_PSS_PADDING, saltLength: 32 },
+    { key: pubKeyPem, padding: constants.RSA_PKCS1_PSS_PADDING, saltLength: 32 },
     signature
   );
 }
 
-async function verifyEd25519(pubKeyPemOrRaw: string | Uint8Array, message: Uint8Array, signature: Uint8Array): Promise<boolean> {
-  // Accept PEM or raw 32-byte hex/base64? Here we expect PEM.
+async function verifyEd25519(
+  pubKeyPemOrRaw: string | Uint8Array,
+  message: Uint8Array,
+  signature: Uint8Array
+): Promise<boolean> {
   let raw: Uint8Array | null = null;
 
   if (pubKeyPemOrRaw instanceof Uint8Array) {
     raw = pubKeyPemOrRaw;
   } else {
     const pem = pubKeyPemOrRaw.trim();
-    // Basic PEM → DER extraction
-    const match = pem.match(/-----BEGIN PUBLIC KEY-----([A-Za-z0-9+\/=\n\r]+)-----END PUBLIC KEY-----/);
-    if (!match) return false;
-    const der = Buffer.from(match[1].replace(/\s+/g, ""), "base64");
+    const match = pem.match(/-----BEGIN PUBLIC KEY-----([\s\S]+?)-----END PUBLIC KEY-----/);
+    if (!match || !match[1]) return false;
 
-    // Poor-man’s SubjectPublicKeyInfo parser to extract 32-byte Ed25519 key:
-    // Ed25519 OID = 1.3.101.112; DER layout varies, but the last OCTET STRING should be the 32-byte key.
-    // A robust parser is overkill—look for the final 0x04 (OCTET STRING) and slice that.
-    let i = 0;
-    while (i < der.length) {
-      if (der[i] === 0x04 && i + 2 < der.length) {
-        const len = der[i + 1] & 0x7f
-        let offset = 2;
-        let size = der[i + 1];
-        if (len === 0x81) { size = der[i + 2]; offset = 3; }
-        else if (len === 0x82) { size = (der[i + 2] << 8) | der[i + 3]; offset = 4; }
-        const start = i + offset;
-        const end = start + size;
-        const candidate = der.slice(start, end);
-        if (candidate.length === 32) {
-          raw = u8(candidate.buffer.slice(candidate.byteOffset, candidate.byteOffset + candidate.byteLength));
-          break;
-        }
-      }
-      i++;
-    }
+    const b64 = match[1].replace(/\s+/g, "");
+    const derBuf = Buffer.from(b64, "base64");
+    const der = new Uint8Array(derBuf.buffer, derBuf.byteOffset, derBuf.byteLength);
+
+    raw = findSpkiBitStringKey(der);
   }
 
   if (!raw || raw.length !== 32) return false;
@@ -133,15 +179,20 @@ export async function verifySignedBundle(bundleBytes: Uint8Array): Promise<Verif
   let ok = false;
 
   if (alg === "rsa-pss-sha256") {
-    if (!publicKeyPem) return { ok: false, reason: "missing_public_key_pem", manifest, recomputedSha256: recomputed };
+    if (!publicKeyPem) {
+      return { ok: false, reason: "missing_public_key_pem", manifest, recomputedSha256: recomputed };
+    }
     ok = await verifyRsaPssSha256(publicKeyPem, manifestBytes, signature);
   } else if (alg === "ed25519") {
-    if (!publicKeyPem) return { ok: false, reason: "missing_public_key_pem", manifest, recomputedSha256: recomputed };
+    if (!publicKeyPem) {
+      return { ok: false, reason: "missing_public_key_pem", manifest, recomputedSha256: recomputed };
+    }
     ok = await verifyEd25519(publicKeyPem, manifestBytes, signature);
   } else {
     return { ok: false, reason: "unknown_alg", manifest, recomputedSha256: recomputed };
   }
 
-  return ok ? { ok: true, manifest, recomputedSha256: recomputed } :
-              { ok: false, reason: "signature_invalid", manifest, recomputedSha256: recomputed };
+  return ok
+    ? { ok: true, manifest, recomputedSha256: recomputed }
+    : { ok: false, reason: "signature_invalid", manifest, recomputedSha256: recomputed };
 }
