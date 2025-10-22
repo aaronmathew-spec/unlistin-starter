@@ -8,6 +8,7 @@ import {
   completeJobFailure,
   completeJobSuccess,
 } from "@/lib/webform/queue";
+import type { WebformJob } from "@/lib/webform/queue";
 import { redactForLogs } from "@/lib/pii/redact";
 import { pickHandler } from "@/lib/webform/handlers";
 import type { WebformJobInput } from "@/lib/webform/handlers";
@@ -52,7 +53,7 @@ export async function POST(req: Request) {
 
   try {
     // Process the first + up to N-1 more
-    let current = first;
+    let current: WebformJob | null = first;
 
     while (current && processed < MAX_JOBS_PER_PULSE) {
       const job = current;
@@ -101,12 +102,12 @@ export async function POST(req: Request) {
           phone: subject_phone || undefined,
         },
         locale,
-        // NOTE: draft fields must be strings (not undefined) to satisfy typing
+        // draft fields coerced to strings above to satisfy typing
         draft: {
-          subject: draft_subject, // coerced to string above
-          bodyText: draft_body,   // coerced to string above
+          subject: draft_subject,
+          bodyText: draft_body,
         },
-        // formUrl remains optional in your handler type, so undefined is fine
+        // formUrl remains optional in your handler type
         formUrl: formUrl || undefined,
       };
 
@@ -181,7 +182,7 @@ export async function POST(req: Request) {
       }
 
       // Try to claim next job; break if none
-      current = await claimNextJob();
+      current = await claimNextJob(); // current is WebformJob | null
     }
 
     return NextResponse.json({
