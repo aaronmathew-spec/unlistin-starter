@@ -23,7 +23,9 @@ type EnrichedRow = ProofRow & { verified: boolean | "error" };
 
 async function fetchLatest(): Promise<ProofRow[]> {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
-    throw new Error("Supabase environment variables are missing (NEXT_PUBLIC_SUPABASE_URL / SUPABASE_SERVICE_ROLE).");
+    throw new Error(
+      "Supabase environment variables are missing (NEXT_PUBLIC_SUPABASE_URL / SUPABASE_SERVICE_ROLE)."
+    );
   }
 
   const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
@@ -82,18 +84,34 @@ export default async function OpsProofsPage() {
             Latest signed Merkle roots with live verification.
           </p>
         </div>
-        <a
-          href="/ops/proofs/export"
-          style={{
-            padding: "8px 12px",
-            borderRadius: 8,
-            border: "1px solid #ddd",
-            textDecoration: "none",
-            fontWeight: 600,
-          }}
-        >
-          ⬇️ Download CSV
-        </a>
+
+        {/* Actions */}
+        <div style={{ display: "flex", gap: 8 }}>
+          <a
+            href="/ops/proofs/verify"
+            style={{
+              padding: "8px 12px",
+              borderRadius: 8,
+              border: "1px solid #ddd",
+              textDecoration: "none",
+              fontWeight: 600,
+            }}
+          >
+            🔐 Verify Bundle / ID
+          </a>
+          <a
+            href="/ops/proofs/export"
+            style={{
+              padding: "8px 12px",
+              borderRadius: 8,
+              border: "1px solid #ddd",
+              textDecoration: "none",
+              fontWeight: 600,
+            }}
+          >
+            ⬇️ Download CSV
+          </a>
+        </div>
       </div>
 
       <div style={{ overflowX: "auto", marginTop: 16 }}>
@@ -197,9 +215,9 @@ export default async function OpsProofsPage() {
           color: "#6b7280",
         }}
       >
-        Tip: You can export a KMS-signed bundle from{" "}
-        <a href="/ops/proofs">/ops/proofs</a> (Export & Verify UI) if you’ve
-        enabled Proof Vault v2.
+        Tip: Export a KMS-signed bundle from your Proof Vault v2 flow, then
+        verify it at{" "}
+        <a href="/ops/proofs/verify">/ops/proofs/verify</a>.
       </div>
     </div>
   );
