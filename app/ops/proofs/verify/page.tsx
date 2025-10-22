@@ -5,8 +5,6 @@ import * as React from "react";
 
 type VerifyBundleResult = {
   ok: boolean;
-  // The exact shape depends on your verifySignedBundle() return.
-  // We'll type this as unknown and render it as JSON.
   [k: string]: unknown;
 };
 
@@ -38,7 +36,9 @@ function Section(props: React.PropsWithChildren<{ title: string; desc?: string }
   );
 }
 
-function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { loading?: boolean }) {
+function Button(
+  props: React.ButtonHTMLAttributes<HTMLButtonElement> & { loading?: boolean }
+) {
   const { loading, ...rest } = props;
   return (
     <button
@@ -113,7 +113,7 @@ export default function OpsVerifyPage() {
       const json = (await resp.json()) as VerifyBundleResult;
       setBundleRes(json);
       if (!resp.ok) {
-        setBundleErr(json?.["error"] as string || `HTTP ${resp.status}`);
+        setBundleErr((json as any)?.error || `HTTP ${resp.status}`);
       }
     } catch (e: any) {
       setBundleErr(String(e?.message || e));
@@ -179,9 +179,7 @@ export default function OpsVerifyPage() {
         {bundleErr ? (
           <div style={{ color: "#b91c1c", marginTop: 12 }}>Error: {bundleErr}</div>
         ) : null}
-        {bundleRes ? (
-          <MonoBox>{JSON.stringify(bundleRes, null, 2)}</MonoBox>
-        ) : null}
+        {bundleRes ? <MonoBox>{JSON.stringify(bundleRes, null, 2)}</MonoBox> : null}
       </Section>
 
       <Section
