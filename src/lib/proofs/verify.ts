@@ -38,11 +38,15 @@ function u8(ab: ArrayBuffer): Uint8Array {
 }
 
 /**
- * Minimal DER TLV reader (enough for finding BIT STRING in SPKI)
+ * Minimal DER TLV reader (with strict bounds checks).
+ * Throws on malformed / truncated input.
  */
 function readTLV(buf: Uint8Array, off: number) {
-  const tag = buf[off];
-  const firstLen = buf[off + 1];
+  if (off < 0 || off + 2 > buf.length) {
+    throw new Error("DER truncated at header");
+  }
+  const tag = buf[off]!;
+  const firstLen = buf[off + 1]!;
   let len = 0;
   let lenByteCount = 0;
 
@@ -53,10 +57,12 @@ function readTLV(buf: Uint8Array, off: number) {
   } else {
     // long form
     const n = firstLen & 0x7f;
+    if (n === 0) throw new Error("Indefinite length not supported");
+    if (off + 2 + n > buf.length) throw new Error("DER truncated at length");
     lenByteCount = 1 + n;
     let acc = 0;
     for (let i = 0; i < n; i++) {
-      acc = (acc << 8) | buf[off + 2 + i];
+      acc = (acc << 8) | buf[off + 2 + i]!;
     }
     len = acc;
   }
@@ -64,6 +70,8 @@ function readTLV(buf: Uint8Array, off: number) {
   const header = 1 + lenByteCount;
   const start = off + header;
   const end = start + len;
+  if (end > buf.length) throw new Error("DER value truncated");
+
   return { tag, length: len, header, start, end };
 }
 
@@ -76,22 +84,33 @@ function readTLV(buf: Uint8Array, off: number) {
 function findSpkiBitStringKey(der: Uint8Array): Uint8Array | null {
   let off = 0;
   let candidate: Uint8Array | null = null;
+
   while (off < der.length) {
-    const tlv = readTLV(der, off);
+    let tlv;
+    try {
+      tlv = readTLV(der, off);
+    } catch {
+      // malformed remainder; stop scanning
+      break;
+    }
+
     if (tlv.tag === 0x03) {
       const bitstr = der.subarray(tlv.start, tlv.end);
       // Expect 0 unused bits + 32 bytes key
       if (bitstr.length >= 33 && bitstr[0] === 0x00) {
         const raw = bitstr.subarray(1);
         if (raw.length === 32) {
-          candidate = raw;
-          // Keep scanning to find the last one, but usually this is the correct one already.
+          candidate = new Uint8Array(raw);
+          // Keep scanning for robustness, but this is usually the one.
         }
       }
     }
+
+    // Advance to next TLV
     off = tlv.end;
   }
-  return candidate ? new Uint8Array(candidate) : null;
+
+  return candidate;
 }
 
 async function verifyRsaPssSha256(
