@@ -7,6 +7,7 @@ import {
   actionWorkerPulse,
   actionVerifyRecheck,
 } from "./actions";
+import { redirect } from "next/navigation";
 
 export const dynamic = "force-dynamic"; // always fresh on load
 
@@ -35,8 +36,8 @@ function KVPairs({ obj }: { obj?: Record<string, unknown> }) {
   const entries = Object.entries(obj);
   if (!entries.length) return null;
   return (
-    <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 8 }}>
-      <tbody>
+      <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 8 }}>
+        <tbody>
         {entries.map(([k, v]) => (
           <tr key={k}>
             <td style={{ padding: "4px 8px", width: 180, color: "#6b7280" }}>{k}</td>
@@ -52,8 +53,8 @@ function KVPairs({ obj }: { obj?: Record<string, unknown> }) {
             </td>
           </tr>
         ))}
-      </tbody>
-    </table>
+        </tbody>
+      </table>
   );
 }
 
@@ -61,10 +62,12 @@ function KVPairs({ obj }: { obj?: Record<string, unknown> }) {
 function Button(
   props: React.PropsWithChildren<{
     formAction?: (fd: FormData) => void | Promise<void>;
+    type?: "button" | "submit";
   }>
 ) {
   return (
     <button
+      type={props.type ?? "submit"}
       formAction={props.formAction}
       style={{
         display: "inline-flex",
@@ -108,6 +111,15 @@ export default async function SystemStatusPage() {
   // Pre-calc hints for quick eyes
   const emailOk = status.checks.find((c) => c.name === "email.config")?.ok ?? false;
   const cronOk = status.checks.find((c) => c.name === "secure_cron.present")?.ok ?? false;
+
+  // Server action: export KMS-signed bundle
+  async function actionExportBundle(fd: FormData) {
+    "use server";
+    const subjectId = String(fd.get("subjectId") || "").trim();
+    if (!subjectId) return;
+    const url = `/api/proofs/${encodeURIComponent(subjectId)}/export`;
+    redirect(url);
+  }
 
   return (
     <div style={{ padding: 24, maxWidth: 1000, margin: "0 auto" }}>
@@ -217,29 +229,48 @@ export default async function SystemStatusPage() {
         </div>
       </section>
 
-      <section style={{ marginTop: 16, display: "grid", gap: 12 }}>
-        {status.checks.map((c) => (
-          <div
-            key={c.name}
-            style={{
-              border: "1px solid #e5e7eb",
-              borderRadius: 12,
-              padding: 16,
-              background: "#fff",
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <h3 style={{ margin: 0, fontSize: 16 }}>{c.name}</h3>
-              <Badge ok={c.ok} />
-            </div>
-            {c.details ? <KVPairs obj={c.details} /> : null}
-            {c.hint ? (
-              <div style={{ marginTop: 8, color: "#6b7280", fontSize: 13 }}>
-                <span style={{ fontWeight: 600 }}>Hint:</span> {c.hint}
-              </div>
-            ) : null}
+      {/* Proof Vault v2: Export & Verify */}
+      <section
+        style={{
+          marginTop: 16,
+          padding: 16,
+          border: "1px solid #e5e7eb",
+          borderRadius: 12,
+          background: "#fff",
+        }}
+      >
+        <h3 style={{ marginTop: 0 }}>Proof Vault v2</h3>
+
+        {/* Export signed bundle (server action redirects to the download) */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <form>
+            <Input name="subjectId" placeholder="Subject ID for export" />
+            <Button formAction={actionExportBundle}>📦 Export KMS-Signed Bundle</Button>
+          </form>
+        </div>
+
+        {/* Verify a bundle (plain HTML multipart form posting to the API) */}
+        <div style={{ marginTop: 12 }}>
+          <form action="/api/proofs/verify" method="post" encType="multipart/form-data">
+            <input
+              type="file"
+              name="file"
+              accept=".zip,application/zip"
+              style={{
+                padding: "8px 10px",
+                borderRadius: 10,
+                border: "1px solid #e5e7eb",
+                outline: "none",
+                minWidth: 280,
+                marginRight: 8,
+              }}
+            />
+            <Button type="submit">🧪 Verify Uploaded Bundle</Button>
+          </form>
+          <div style={{ marginTop: 8, color: "#6b7280", fontSize: 12 }}>
+            Upload the bundle produced by the export to validate signature & contents.
           </div>
-        ))}
+        </div>
       </section>
 
       <section style={{ marginTop: 16 }}>
