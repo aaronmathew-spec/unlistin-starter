@@ -101,10 +101,12 @@ export async function POST(req: Request) {
           phone: subject_phone || undefined,
         },
         locale,
+        // NOTE: draft fields must be strings (not undefined) to satisfy typing
         draft: {
-          subject: draft_subject || undefined,
-          bodyText: draft_body || undefined,
+          subject: draft_subject, // coerced to string above
+          bodyText: draft_body,   // coerced to string above
         },
+        // formUrl remains optional in your handler type, so undefined is fine
         formUrl: formUrl || undefined,
       };
 
