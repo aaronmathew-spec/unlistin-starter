@@ -290,6 +290,7 @@ export default async function SystemStatusPage() {
             <li>
               <a href="/ops/overview">Ops Overview</a>
             </li>
+            <li><a href="/ops/proofs">Proof Vault v2 (Export & Verify)</a></li>
             <li>
               <a href="/ops/webforms">Download Packs / Retry / Cancel</a>
             </li>
