@@ -13,12 +13,18 @@ function bad(status: number, msg: string) {
 }
 
 export async function POST(req: Request) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) return bad(500, "supabase_env_missing");
+
   try {
     const ct = (req.headers.get("content-type") || "").toLowerCase();
-    let data: any = {};
+    let data: Record<string, any> = {};
+
     if (ct.startsWith("application/json")) {
-      data = await req.json();
-    } else if (ct.startsWith("application/x-www-form-urlencoded") || ct.startsWith("multipart/form-data")) {
+      data = (await req.json()) ?? {};
+    } else if (
+      ct.startsWith("application/x-www-form-urlencoded") ||
+      ct.startsWith("multipart/form-data")
+    ) {
       const fd = await req.formData();
       data = Object.fromEntries(fd.entries());
     } else {
@@ -36,13 +42,33 @@ export async function POST(req: Request) {
       return bad(400, "missing_required_fields");
     }
 
-    const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, { auth: { persistSession: false } });
-    const { error } = await sb.from("social_reports").insert({
-      controller_key, platform, handle, url, reporter_email, notes, status: "new",
-    });
-    if (error) return bad(400, error.message);
+    // Simple platform allowlist (extend as needed)
+    const allowed = new Set(["twitter", "x", "instagram", "facebook", "reddit", "youtube", "tiktok", "linkedin"]);
+    if (!allowed.has(platform)) {
+      // still accept but normalize common alias
+      if (platform === "x") data.platform = "twitter";
+    }
 
-    return NextResponse.json({ ok: true });
+    const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
+      auth: { persistSession: false },
+    });
+
+    const { data: inserted, error } = await sb
+      .from("social_reports")
+      .insert({
+        controller_key,
+        platform: data.platform || platform,
+        handle,
+        url,
+        reporter_email,
+        notes,
+        status: "new",
+      })
+      .select("id")
+      .single();
+
+    if (error) return bad(400, error.message);
+    return NextResponse.json({ ok: true, id: inserted?.id ?? null });
   } catch (e: any) {
     // eslint-disable-next-line no-console
     console.error("[social.report.error]", String(e?.message || e));
