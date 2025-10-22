@@ -22,6 +22,18 @@ function forbidden(msg: string) {
 /** Tune: how many jobs to try per pulse */
 const MAX_JOBS_PER_PULSE = 3;
 
+/** Safe string coerce with fallback */
+function str(v: any, fallback = ""): string {
+  if (v === null || v === undefined) return fallback;
+  return String(v);
+}
+
+/** "en" | "hi" with fallback to "en" */
+function asLocale(v: any): "en" | "hi" {
+  const s = str(v).toLowerCase();
+  return s === "hi" ? "hi" : "en";
+}
+
 export async function POST(req: Request) {
   if (!OPS_SECRET) return forbidden("SECURE_CRON_SECRET not configured");
   const header = (req.headers.get("x-secure-cron") || "").trim();
@@ -46,17 +58,54 @@ export async function POST(req: Request) {
       const job = current;
       lastId = job.id;
 
+      // Pull meta for fallbacks
+      const meta = (job as any).meta ?? {};
+
+      // Coerce strict strings and provide sensible fallbacks from meta
+      const controllerKey = str(
+        (job as any).controller_key ?? meta.controllerKey ?? meta.siteKey ?? ""
+      );
+      const controllerName = str(
+        (job as any).controller_name ?? meta.controllerName ?? meta.siteName ?? controllerKey
+      );
+
+      const subject_name = str(
+        (job as any).subject_name ?? meta.subjectName ?? meta.name ?? ""
+      );
+      const subject_email = str(
+        (job as any).subject_email ?? meta.subjectEmail ?? meta.email ?? ""
+      );
+      const subject_phone = str(
+        (job as any).subject_phone ?? meta.subjectPhone ?? meta.phone ?? ""
+      );
+
+      const locale = asLocale((job as any).locale ?? meta.locale ?? "en");
+
+      const draft_subject = str(
+        (job as any).draft_subject ?? meta.draftSubject ?? meta.subject ?? ""
+      );
+      const draft_body = str(
+        (job as any).draft_body ?? meta.draftBody ?? meta.bodyText ?? meta.body ?? ""
+      );
+
+      const formUrlRaw =
+        (job as any).form_url ?? meta.formUrl ?? meta.url ?? (job as any).url;
+      const formUrl = str(formUrlRaw || "");
+
       const payload: WebformJobInput = {
-        controllerKey: job.controller_key,
-        controllerName: job.controller_name,
+        controllerKey,
+        controllerName,
         subject: {
-          name: job.subject_name,
-          email: job.subject_email,
-          phone: job.subject_phone,
+          name: subject_name || undefined,
+          email: subject_email || undefined,
+          phone: subject_phone || undefined,
         },
-        locale: (job.locale as "en" | "hi") || "en",
-        draft: { subject: job.draft_subject, bodyText: job.draft_body },
-        formUrl: job.form_url || undefined,
+        locale,
+        draft: {
+          subject: draft_subject || undefined,
+          bodyText: draft_body || undefined,
+        },
+        formUrl: formUrl || undefined,
       };
 
       const handler = pickHandler(payload);
@@ -67,7 +116,7 @@ export async function POST(req: Request) {
         redactForLogs(
           {
             id: job.id,
-            controller: job.controller_key,
+            controller: controllerKey,
             handler: handler?.key ?? "generic",
           },
           { keys: ["email", "phone"] }
