@@ -15,46 +15,88 @@ export type WebformJob = {
   finished_at: string | null;
   worker_id: string | null;
 
-  // --- Optional fields your worker may read directly (make them optional) ---
+  // Optional fields some code may read directly
   controller_key?: string | null;
   controller_name?: string | null;
   subject_name?: string | null;
   subject_email?: string | null;
   subject_handle?: string | null;
 
-  // Future-compat: allow any extra columns without breaking TS
   [key: string]: any;
 };
 
 const TABLE = process.env.WEBFORM_JOBS_TABLE || "webform_jobs";
 const MAX_ATTEMPTS = Number(process.env.WEBFORM_MAX_ATTEMPTS ?? 3);
 
+/** Extended args: we accept richer fields and fold them into meta */
+type EnqueueArgs = {
+  subjectId: string;
+  url: string;
+  meta?: Record<string, any>;
+  // common structured fields (optional); callers may pass these:
+  controllerKey?: string;
+  controllerName?: string;
+  subject?: { name?: string; email?: string; phone?: string; handle?: string; id?: string };
+  locale?: string;
+  draft?: { subject?: string; bodyText?: string };
+  formUrl?: string;
+  // allow future extras without type errors
+  [key: string]: any;
+};
+
 /**
- * Enqueue a webform job into Supabase (preferred).
- * If you previously posted directly to the worker endpoint, this replaces that with a durable queue.
+ * Enqueue a webform job into Supabase.
+ * Accepts a rich input and merges well-known fields into meta so call-sites
+ * (like lib/dispatch/send.ts) don't need to reshape data.
  */
-export async function enqueueWebformJob(args: { subjectId: string; url: string; meta?: Record<string, any> }) {
+export async function enqueueWebformJob(args: EnqueueArgs) {
   const s = supabaseAdmin();
+
+  const {
+    subjectId,
+    url,
+    meta = {},
+    controllerKey,
+    controllerName,
+    subject,
+    locale,
+    draft,
+    formUrl,
+    ...rest
+  } = args;
+
+  // Merge extras into meta; preserve explicit meta keys if already present
+  const mergedMeta: Record<string, any> = {
+    ...(meta || {}),
+    ...(controllerKey !== undefined ? { controllerKey } : {}),
+    ...(controllerName !== undefined ? { controllerName } : {}),
+    ...(subject !== undefined ? { subject } : {}),
+    ...(locale !== undefined ? { locale } : {}),
+    ...(draft !== undefined ? { draft } : {}),
+    ...(formUrl !== undefined ? { formUrl } : {}),
+    // pass through any remaining fields so nothing is lost
+    ...(Object.keys(rest).length ? { _extra: rest } : {}),
+  };
+
   const { error } = await s.from(TABLE).insert({
     status: "queued",
-    subject_id: args.subjectId,
-    url: args.url,
-    meta: args.meta ?? {},
+    subject_id: subjectId,
+    url,
+    meta: mergedMeta,
     attempts: 0,
     error: null,
     result: null,
   });
+
   if (error) throw new Error(`enqueueWebformJob: ${error.message}`);
 }
 
 /**
  * Claim the next queued job atomically (best-effort, race-safe).
- * Strategy: select oldest queued/retryable, then update to running iff still queued.
  */
 export async function claimNextJob(): Promise<WebformJob | null> {
   const s = supabaseAdmin();
 
-  // Pick the oldest job that's queued and still below max attempts
   const { data: candidates, error: selErr } = await s
     .from(TABLE)
     .select("*")
@@ -69,7 +111,6 @@ export async function claimNextJob(): Promise<WebformJob | null> {
 
   const workerId = crypto.randomUUID();
 
-  // Try to claim it by transitioning from queued -> running
   const { data: updData, error: updErr } = await s
     .from(TABLE)
     .update({
@@ -86,7 +127,6 @@ export async function claimNextJob(): Promise<WebformJob | null> {
   if (updErr) throw new Error(`claimNextJob.update: ${updErr.message}`);
 
   const claimed = (updData?.[0] as WebformJob | undefined) ?? null;
-  // If someone else grabbed it between select and update, try again next tick.
   if (!claimed || claimed.status !== "running") return null;
 
   return claimed;
@@ -115,7 +155,6 @@ export async function completeJobSuccess(jobId: string, result?: Record<string, 
 export async function completeJobFailure(jobId: string, errMsg: string, attemptsSoFar?: number) {
   const s = supabaseAdmin();
 
-  // Fetch current attempts if not provided
   let attempts = attemptsSoFar ?? 0;
   if (attemptsSoFar == null) {
     const { data, error } = await s.from(TABLE).select("attempts").eq("id", jobId).single();
