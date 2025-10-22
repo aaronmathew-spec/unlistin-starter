@@ -14,10 +14,15 @@ export async function GET(
   }
 
   try {
-    const zip = await buildSignedExport(subjectId);
+    // Uint8Array from builder
+    const u8 = await buildSignedExport(subjectId);
+
+    // Convert to a standalone ArrayBuffer (BodyInit-friendly in Node/Fetch)
+    const ab = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+
     const filename = `unlistin-proof-bundle-${subjectId}.zip`;
 
-    return new Response(zip, {
+    return new Response(ab, {
       status: 200,
       headers: {
         "Content-Type": "application/zip",
