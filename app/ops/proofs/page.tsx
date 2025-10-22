@@ -149,6 +149,12 @@ export default async function OpsProofsPage() {
                   : r.verified === false
                   ? "red"
                   : "#995f00";
+              const subjectId = r.subject_id ?? null;
+
+              // Build export link if subject_id exists
+              const exportHref = subjectId
+                ? `/api/proofs/${encodeURIComponent(subjectId)}/export`
+                : null;
 
               return (
                 <tr key={r.id}>
@@ -175,9 +181,9 @@ export default async function OpsProofsPage() {
                       : "error"}
                   </td>
                   <td>{r.pack_id || "—"}</td>
-                  <td>{r.subject_id || "—"}</td>
+                  <td>{subjectId || "—"}</td>
                   <td>{r.controller_key || "—"}</td>
-                  <td>
+                  <td style={{ whiteSpace: "nowrap", display: "flex", gap: 10 }}>
                     <a
                       href={`/api/ops/proofs/${encodeURIComponent(
                         r.id
@@ -186,6 +192,19 @@ export default async function OpsProofsPage() {
                     >
                       Download JSON
                     </a>
+                    <span style={{ color: "#d1d5db" }}>·</span>
+                    {exportHref ? (
+                      <a href={exportHref} style={{ textDecoration: "none" }}>
+                        Export ZIP
+                      </a>
+                    ) : (
+                      <span
+                        title="No subject_id on this row"
+                        style={{ color: "#9ca3af", cursor: "not-allowed" }}
+                      >
+                        Export ZIP
+                      </span>
+                    )}
                   </td>
                 </tr>
               );
@@ -215,8 +234,12 @@ export default async function OpsProofsPage() {
           color: "#6b7280",
         }}
       >
-        Tip: Export a KMS-signed bundle from your Proof Vault v2 flow, then
-        verify it at{" "}
+        Tip: Export a KMS-signed bundle from a row that has a subject_id via
+        <span> </span>
+        <code style={{ background: "#eef2ff", padding: "1px 6px", borderRadius: 6 }}>
+          Actions → Export ZIP
+        </code>
+        . Then verify it at{" "}
         <a href="/ops/proofs/verify">/ops/proofs/verify</a>.
       </div>
     </div>
