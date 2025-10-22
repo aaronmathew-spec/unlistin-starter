@@ -14,11 +14,14 @@ export async function GET(
   }
 
   try {
-    // Uint8Array from builder
+    // Builder returns a Uint8Array view that may sit on a SharedArrayBuffer.
     const u8 = await buildSignedExport(subjectId);
 
-    // Wrap in a Blob to avoid BodyInit typing issues with ArrayBuffer/SharedArrayBuffer
-    const blob = new Blob([u8], { type: "application/zip" });
+    // Create a plain ArrayBuffer copy that Blob accepts without type issues.
+    const ab: ArrayBuffer = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+
+    // Wrap in Blob to produce a clean BodyInit
+    const blob = new Blob([ab], { type: "application/zip" });
 
     const filename = `unlistin-proof-bundle-${subjectId}.zip`;
 
