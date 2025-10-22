@@ -8,6 +8,7 @@ export default function robots(): MetadataRoute.Robots {
       {
         userAgent: "*",
         allow: ["/", "/blog", "/help", "/policy", "/legal"],
+        // keep internal surfaces out of the index
         disallow: ["/ops", "/admin", "/api"],
       },
     ],
