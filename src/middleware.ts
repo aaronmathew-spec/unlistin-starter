@@ -60,18 +60,23 @@ function isAdminPath(pathname: string) {
   return pathname.startsWith(ADMIN_PATH_PREFIX);
 }
 
-function ipFrom(req: NextRequest) {
-  return (
-    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-    // @ts-expect-error: NextRequest may expose ip in some runtimes
-    (req as any).ip ||
-    "0.0.0.0"
-  );
+// Consistent client IP extraction without TS suppression
+function ipFrom(req: NextRequest): string {
+  const xfwd = req.headers.get("x-forwarded-for");
+  if (xfwd) {
+    const first = xfwd.split(",")[0]?.trim();
+    if (first) return first;
+  }
+  // Some runtimes attach ip on the request; use a loose cast without ts-expect-error.
+  const anyReq = req as unknown as { ip?: string };
+  if (typeof anyReq.ip === "string" && anyReq.ip.length > 0) {
+    return anyReq.ip;
+  }
+  return "0.0.0.0";
 }
 
 // Cron-guard: only for specific ops endpoints we call from Vercel Cron
 function isCronProtected(pathname: string) {
-  // Protect the worker and verify endpoints from unauth'd external calls
   if (pathname === "/api/ops/webform/worker") return true;
   if (pathname.startsWith("/api/ops/verify/")) return true;
   return false;
@@ -116,8 +121,7 @@ export async function middleware(req: NextRequest) {
   }
 
   // 3) Lightweight admin guard for /admin pages:
-  // We do not read cookies here (edge constraint); server routes should do strong checks.
-  // Here we block obviously unauthenticated clients by header allowlist.
+  // (Strong auth still enforced in server routes; this is an early block.)
   if (isAdminPath(pathname)) {
     const email = req.headers.get("x-user-email")?.toLowerCase() || "";
     if (ADMIN_EMAILS.length > 0 && !ADMIN_EMAILS.includes(email)) {
@@ -127,9 +131,7 @@ export async function middleware(req: NextRequest) {
     }
   }
 
-  // 4) Security headers (leave your existing CSP/HSTS etc in server handlers;
-  // you can also set simple headers here if desired)
-
+  // 4) Security headers can be set in route handlers; keep middleware lean.
   const res = NextResponse.next();
   res.headers.set("x-request-id", reqId);
   return res;
