@@ -1,6 +1,6 @@
+// src/lib/proofs/pack.ts
 import JSZip from "jszip";
 import { getSigner, sha256 } from "../signing";
-import { NextResponse } from "next/server";
 
 type Artifact = {
   id: string;
@@ -23,40 +23,31 @@ type Manifest = {
     meta?: Record<string, any>;
   }>;
   merkle?: {
-    // (optional) if you add your tree; pack signing works fine over concatenated hashes too
     root?: string;
   };
 };
 
 async function getArtifactsForSubject(subjectId: string): Promise<Artifact[]> {
   // TODO: wire to your DB. Minimal placeholder uses contentUri to fetch bytes.
-  // You likely already store references in your "proof-vault" bucket.
-  // Return newest-first or grouped.
-  return []; // <<< REPLACE with your actual query
+  return []; // <<< replace with your actual query
 }
 
 async function streamArtifact(contentUri: string): Promise<Uint8Array> {
-  // Fetch from Supabase Storage (private) with a server key or signed URL.
-  // Example using fetch:
   const res = await fetch(contentUri);
   if (!res.ok) throw new Error(`Fetch failed for ${contentUri}`);
-  const buf = Buffer.from(await res.arrayBuffer());
+  const buf = await res.arrayBuffer();
   return new Uint8Array(buf);
 }
 
-export async function buildProofPack(subjectId: string): Promise<Buffer> {
+export async function buildProofPack(subjectId: string): Promise<Uint8Array> {
   const signer = await getSigner();
   const artifacts = await getArtifactsForSubject(subjectId);
 
-  // Compute hashes and manifest
   const normalized = await Promise.all(
     artifacts.map(async (a) => {
       const bytes = await streamArtifact(a.contentUri);
       const digest = sha256(bytes).toString("hex");
-      return {
-        ...a,
-        contentSha256: digest,
-      };
+      return { ...a, contentSha256: digest };
     })
   );
 
@@ -73,22 +64,18 @@ export async function buildProofPack(subjectId: string): Promise<Buffer> {
     })),
   };
 
-  const manifestBytes = Buffer.from(JSON.stringify(manifest, null, 2));
+  const manifestBytes = new TextEncoder().encode(JSON.stringify(manifest, null, 2));
   const manifestDigest = sha256(manifestBytes);
 
-  // Sign the manifest digest via configured backend (KMS in prod)
   const sig = await signer.signSha256(manifestDigest);
   const pub = await signer.publicKeyPem();
 
-  // Zip it all up
   const zip = new JSZip();
   zip.file("manifest.json", manifestBytes);
-  zip.file("signature.bin", sig.signature); // raw DER for RSA-PSS; raw bytes for Ed25519
+  zip.file("signature.bin", sig.signature); // raw bytes
   zip.file("public_key.pem", pub);
   zip.file("signature.alg.txt", `${sig.alg}`);
   zip.file("signature.key_id.txt", `${sig.keyId}`);
-
-  // (optional) include small READMEs
   zip.file(
     "README.txt",
     `UnlistIN Proof Pack v2
@@ -102,15 +89,16 @@ Verify:
 `
   );
 
-  const buf = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
-  return buf;
+  // Generate as Uint8Array (web BodyInit-friendly)
+  const u8 = await zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
+  return u8;
 }
 
-// Utility HTTP responder
-export async function proofPackResponse(subjectId: string): Promise<NextResponse> {
+// Utility HTTP responder (use web Response, not NextResponse, to avoid Buffer typing issues)
+export async function proofPackResponse(subjectId: string): Promise<Response> {
   const zip = await buildProofPack(subjectId);
   const filename = `unlistin-proof-pack-${subjectId}.zip`;
-  return new NextResponse(zip, {
+  return new Response(zip, {
     status: 200,
     headers: {
       "Content-Type": "application/zip",
