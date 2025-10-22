@@ -1,7 +1,8 @@
+// src/app/api/proofs/export/route.ts
 import { NextRequest } from "next/server";
 import { proofPackResponse } from "@/src/lib/proofs/pack";
 
-export const runtime = "nodejs"; // ensure Node runtime (not edge) for zipping
+export const runtime = "nodejs"; // ensure Node runtime for zipping
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
