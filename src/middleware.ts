@@ -6,16 +6,21 @@ import { Redis } from "@upstash/redis";
 
 // --- Config -------------------------------------------------------------
 
-// Which paths are protected by the middleware
+// Paths the middleware should consider "protected"
 const PROTECTED_PREFIXES = [
-  "/api",                 // all APIs
-  "/ops",                 // ops portal pages
-  "/admin",               // admin pages
+  "/api",   // all APIs
+  "/ops",   // ops portal pages
+  "/admin", // admin pages
 ];
 
 const ADMIN_PATH_PREFIX = "/admin";
 
-// If Upstash env vars are absent, middleware becomes a safe no-op.
+// Secure header for cron invocations (Vercel Cron → your API)
+// Set SECURE_CRON_SECRET in env (both local and Vercel)
+const SECURE_CRON_HEADER = "x-secure-cron";
+const SECURE_CRON_SECRET = process.env.SECURE_CRON_SECRET || "";
+
+// If Upstash env vars are absent, middleware becomes a safe no-op for rate limit.
 const hasUpstash =
   !!process.env.UPSTASH_REDIS_REST_URL && !!process.env.UPSTASH_REDIS_REST_TOKEN;
 
@@ -36,7 +41,7 @@ const ratelimit = hasUpstash
     })
   : null;
 
-// Optionally allow an internal header to bypass rate limit (e.g., trusted cron)
+// Optionally allow an internal header to bypass rate limit (e.g., trusted internal calls)
 const INTERNAL_KEY = process.env.INTERNAL_API_KEY;
 
 // Admins list (aligned with /lib/auth.ts)
@@ -58,9 +63,18 @@ function isAdminPath(pathname: string) {
 function ipFrom(req: NextRequest) {
   return (
     req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-    req.ip ||
+    // @ts-expect-error: NextRequest may expose ip in some runtimes
+    (req as any).ip ||
     "0.0.0.0"
   );
+}
+
+// Cron-guard: only for specific ops endpoints we call from Vercel Cron
+function isCronProtected(pathname: string) {
+  // Protect the worker and verify endpoints from unauth'd external calls
+  if (pathname === "/api/ops/webform/worker") return true;
+  if (pathname.startsWith("/api/ops/verify/")) return true;
+  return false;
 }
 
 // --- Middleware ---------------------------------------------------------
@@ -74,17 +88,26 @@ export async function middleware(req: NextRequest) {
   // Attach a stable request id for tracing
   const reqId = crypto.randomUUID();
 
-  // Rate limit (skip if internal key present)
+  // 1) Cron header guard for specific endpoints (runs before rate limit/admin checks)
+  if (isCronProtected(pathname)) {
+    const hdr = req.headers.get(SECURE_CRON_HEADER);
+    if (!SECURE_CRON_SECRET || hdr !== SECURE_CRON_SECRET) {
+      const res = new NextResponse("Forbidden", { status: 403 });
+      res.headers.set("x-request-id", reqId);
+      return res;
+    }
+  }
+
+  // 2) Rate limit (skip if internal key present)
   if (
     ratelimit &&
     (!INTERNAL_KEY || req.headers.get("x-internal-key") !== INTERNAL_KEY)
   ) {
     const ip = ipFrom(req);
     const { success, limit, remaining, reset } = await ratelimit.limit(`ip:${ip}`);
-    const res = success ? NextResponse.next() : NextResponse.json(
-      { error: "Too many requests" },
-      { status: 429 },
-    );
+    const res = success
+      ? NextResponse.next()
+      : NextResponse.json({ error: "Too many requests" }, { status: 429 });
     res.headers.set("x-request-id", reqId);
     res.headers.set("x-ratelimit-limit", String(limit));
     res.headers.set("x-ratelimit-remaining", String(remaining));
@@ -92,9 +115,9 @@ export async function middleware(req: NextRequest) {
     if (!success) return res;
   }
 
-  // Lightweight admin guard for /admin pages:
-  // We do not read cookies here (edge constraint); we rely on server routes to do
-  // strong checks. Here we only block obviously unauthenticated clients by header.
+  // 3) Lightweight admin guard for /admin pages:
+  // We do not read cookies here (edge constraint); server routes should do strong checks.
+  // Here we block obviously unauthenticated clients by header allowlist.
   if (isAdminPath(pathname)) {
     const email = req.headers.get("x-user-email")?.toLowerCase() || "";
     if (ADMIN_EMAILS.length > 0 && !ADMIN_EMAILS.includes(email)) {
@@ -103,6 +126,9 @@ export async function middleware(req: NextRequest) {
       return res;
     }
   }
+
+  // 4) Security headers (leave your existing CSP/HSTS etc in server handlers;
+  // you can also set simple headers here if desired)
 
   const res = NextResponse.next();
   res.headers.set("x-request-id", reqId);
