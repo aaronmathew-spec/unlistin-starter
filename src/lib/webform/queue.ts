@@ -31,10 +31,10 @@ const MAX_ATTEMPTS = Number(process.env.WEBFORM_MAX_ATTEMPTS ?? 3);
 type MaybeStr = string | null | undefined;
 
 /** Extended args: accept richer fields and fold them into meta */
-type EnqueueArgs = {
-  // NOW OPTIONAL (derive from subject.id if missing)
+export type EnqueueArgs = {
+  // Optional (derive from subject.id if missing)
   subjectId?: MaybeStr;
-  // NOW OPTIONAL (derive from formUrl if missing)
+  // Optional (derive from formUrl if missing)
   url?: MaybeStr;
 
   meta?: Record<string, any>;
@@ -68,9 +68,9 @@ function clean<T extends Record<string, any>>(obj: T | null | undefined): Record
 /**
  * Enqueue a webform job into Supabase.
  * Accepts a rich input and merges known fields into meta.
- * subjectId/url are optional to match call sites; we derive safe fallbacks.
+ * Returns the inserted job id so callers can log / branch on it.
  */
-export async function enqueueWebformJob(args: EnqueueArgs) {
+export async function enqueueWebformJob(args: EnqueueArgs): Promise<{ id: string }> {
   const s = supabaseAdmin();
 
   const {
@@ -109,17 +109,23 @@ export async function enqueueWebformJob(args: EnqueueArgs) {
     mergedMeta._extra = { ...(mergedMeta._extra || {}), ...clean(rest) };
   }
 
-  const { error } = await s.from(TABLE).insert({
-    status: "queued",
-    subject_id: resolvedSubjectId,
-    url: resolvedUrl,
-    meta: mergedMeta,
-    attempts: 0,
-    error: null,
-    result: null,
-  });
+  // Insert and return the created row's id
+  const { data, error } = await s
+    .from(TABLE)
+    .insert({
+      status: "queued",
+      subject_id: resolvedSubjectId,
+      url: resolvedUrl,
+      meta: mergedMeta,
+      attempts: 0,
+      error: null,
+      result: null,
+    })
+    .select("id")
+    .single();
 
   if (error) throw new Error(`enqueueWebformJob: ${error.message}`);
+  return { id: (data as any).id as string };
 }
 
 /** Claim the next queued job (race-safe best effort). */
