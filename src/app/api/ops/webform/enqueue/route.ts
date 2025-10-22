@@ -2,23 +2,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import { chooseHandler } from "@/src/lib/dispatch/choose-handler";
 
-// Reuse your existing helpers if you have them:
-import { enqueueWebformJob } from "@/src/lib/webform/queue";     // <-- adjust path/name if different
-import { sendEmailViaResend } from "@/src/lib/email/dispatch";   // <-- adjust path/name if different
+// Helpers (shims provided below; if you have your own, keep the same export names)
+import { enqueueWebformJob } from "@/src/lib/webform/queue";
+import { sendEmailViaResend } from "@/src/lib/email/dispatch";
 
 export const runtime = "nodejs";
 
-// Example request body shape — adapt to your existing fields
 type EnqueueBody = {
-  subjectId: string;         // internal subject / case id
-  countryCode: string;       // ISO-2, e.g. "IN"
-  siteKey: string;           // e.g. "instagram", "gov-ncii"
-  emailPayload?: {           // only used if email path is chosen
+  subjectId: string;
+  countryCode: string; // ISO-2
+  siteKey: string;     // platform/site key
+  emailPayload?: {
     subject?: string;
     body?: string;
     attachments?: Array<{ filename: string; content: string }>;
   };
-  webformPayload?: Record<string, any>; // extra form data for worker
+  webformPayload?: Record<string, any>;
 };
 
 export async function POST(req: NextRequest) {
@@ -30,12 +29,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing subjectId/countryCode/siteKey" }, { status: 400 });
     }
 
-    // ✨ NEW: central selection via resolver
-    const target = await chooseHandler({ subjectId, countryCode: countryCode.toUpperCase(), siteKey: siteKey.toLowerCase() });
+    const target = await chooseHandler({
+      subjectId,
+      countryCode: countryCode.toUpperCase(),
+      siteKey: siteKey.toLowerCase(),
+    });
 
-    // Decide by channel
     if (target.kind === "webform") {
-      // Your existing worker enqueue (Playwright runner will pick it up)
       await enqueueWebformJob({
         subjectId,
         url: target.url,
@@ -46,11 +46,11 @@ export async function POST(req: NextRequest) {
 
     if (target.kind === "email") {
       const subject = body.emailPayload?.subject ?? target.subject ?? `Removal request — ${target.label}`;
-      const bodyText = body.emailPayload?.body ?? `Please review the attached evidence for subject ${subjectId}.`;
+      const text = body.emailPayload?.body ?? `Please review the attached evidence for subject ${subjectId}.`;
       await sendEmailViaResend({
         to: target.to,
         subject,
-        text: bodyText,
+        text,
         attachments: body.emailPayload?.attachments,
         meta: { label: target.label, ...(target.meta || {}) },
       });
@@ -58,13 +58,10 @@ export async function POST(req: NextRequest) {
     }
 
     if (target.kind === "portal") {
-      // No automatic action — return URL so Analyst can follow the portal flow manually.
       return NextResponse.json({ ok: true, channel: "portal", url: target.url, label: target.label });
     }
 
     if (target.kind === "api") {
-      // Future: platform API flow
-      // enqueue a specific API job here if you want
       return NextResponse.json({ ok: true, channel: "api", url: target.url, label: target.label });
     }
 
