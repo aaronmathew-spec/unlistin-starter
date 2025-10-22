@@ -5,10 +5,7 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import { buildSignedBundle } from "@/lib/proofs/export";
 
-/**
- * Convert a Uint8Array to a fresh, plain ArrayBuffer (no SharedArrayBuffer),
- * which plays nicely with Blob/Response typing during build.
- */
+/** Convert Uint8Array -> fresh ArrayBuffer to keep Response/Blob happy in builds. */
 function toPlainArrayBuffer(u8: Uint8Array): ArrayBuffer {
   const ab = new ArrayBuffer(u8.byteLength);
   new Uint8Array(ab).set(u8);
@@ -27,14 +24,11 @@ export async function GET(
     const subjectId = decodeURIComponent(String(params?.subjectId || "")).trim();
     if (!subjectId) return bad(400, "subject_id_required");
 
-    // Produce a signed bundle (manifest.json + signature + pack.zip)
-    // buildSignedBundle(subjectId) -> Uint8Array
+    // Build the signed bundle (manifest.json + signature.json + pack.zip)
     const u8 = await buildSignedBundle(subjectId);
 
-    // Wrap in Blob via a plain ArrayBuffer to avoid SAB typing issues on Vercel builds
     const ab = toPlainArrayBuffer(u8);
     const blob = new Blob([ab], { type: "application/zip" });
-
     const filename = `unlistin-proof-bundle-${subjectId}.zip`;
 
     return new NextResponse(blob, {
