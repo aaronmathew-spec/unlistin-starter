@@ -55,8 +55,9 @@ export type EnqueueArgs = {
   [key: string]: any;
 };
 
-function clean<T extends Record<string, any>>(obj: T | null | undefined): Record<string, any> {
-  const o = obj ?? {};
+// Safely remove null/undefined from shallow objects
+function clean(obj: unknown): Record<string, any> {
+  const o: Record<string, any> = (obj ?? {}) as Record<string, any>;
   const out: Record<string, any> = {};
   for (const k of Object.keys(o)) {
     const v = o[k];
