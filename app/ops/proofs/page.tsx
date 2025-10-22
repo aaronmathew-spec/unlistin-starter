@@ -185,9 +185,7 @@ export default async function OpsProofsPage() {
                   <td>{r.controller_key || "—"}</td>
                   <td style={{ whiteSpace: "nowrap", display: "flex", gap: 10 }}>
                     <a
-                      href={`/api/ops/proofs/${encodeURIComponent(
-                        r.id
-                      )}/download`}
+                      href={`/api/ops/proofs/${encodeURIComponent(r.id)}/download`}
                       style={{ textDecoration: "none" }}
                     >
                       Download JSON
@@ -234,13 +232,11 @@ export default async function OpsProofsPage() {
           color: "#6b7280",
         }}
       >
-        Tip: Export a KMS-signed bundle from a row that has a subject_id via
-        <span> </span>
+        Tip: Export a KMS-signed bundle from a row that has a subject_id via{" "}
         <code style={{ background: "#eef2ff", padding: "1px 6px", borderRadius: 6 }}>
           Actions → Export ZIP
         </code>
-        . Then verify it at{" "}
-        <a href="/ops/proofs/verify">/ops/proofs/verify</a>.
+        . Then verify it at <a href="/ops/proofs/verify">/ops/proofs/verify</a>.
       </div>
     </div>
   );
