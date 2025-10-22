@@ -15,7 +15,7 @@ export type WebformJob = {
   finished_at: string | null;
   worker_id: string | null;
 
-  // Optional fields some code may read directly
+  // Optional columns some code may read directly
   controller_key?: string | null;
   controller_name?: string | null;
   subject_name?: string | null;
@@ -28,26 +28,40 @@ export type WebformJob = {
 const TABLE = process.env.WEBFORM_JOBS_TABLE || "webform_jobs";
 const MAX_ATTEMPTS = Number(process.env.WEBFORM_MAX_ATTEMPTS ?? 3);
 
-/** Extended args: we accept richer fields and fold them into meta */
+/** Extended args: accept richer fields and fold them into meta */
+type MaybeStr = string | null | undefined;
 type EnqueueArgs = {
   subjectId: string;
   url: string;
   meta?: Record<string, any>;
-  // common structured fields (optional); callers may pass these:
-  controllerKey?: string;
-  controllerName?: string;
-  subject?: { name?: string; email?: string; phone?: string; handle?: string; id?: string };
-  locale?: string;
-  draft?: { subject?: string; bodyText?: string };
-  formUrl?: string;
-  // allow future extras without type errors
+  controllerKey?: MaybeStr;
+  controllerName?: MaybeStr;
+  subject?: {
+    name?: MaybeStr;
+    email?: MaybeStr;
+    phone?: MaybeStr;
+    handle?: MaybeStr;
+    id?: MaybeStr;
+  };
+  locale?: MaybeStr;
+  draft?: { subject?: MaybeStr; bodyText?: MaybeStr };
+  formUrl?: MaybeStr;
   [key: string]: any;
 };
 
+function clean<T extends Record<string, any>>(obj: T | null | undefined): Record<string, any> {
+  const o = obj ?? {};
+  const out: Record<string, any> = {};
+  for (const k of Object.keys(o)) {
+    const v = o[k];
+    if (v !== undefined && v !== null) out[k] = v;
+  }
+  return out;
+}
+
 /**
  * Enqueue a webform job into Supabase.
- * Accepts a rich input and merges well-known fields into meta so call-sites
- * (like lib/dispatch/send.ts) don't need to reshape data.
+ * Accepts a rich input and merges known fields into meta.
  */
 export async function enqueueWebformJob(args: EnqueueArgs) {
   const s = supabaseAdmin();
@@ -55,7 +69,7 @@ export async function enqueueWebformJob(args: EnqueueArgs) {
   const {
     subjectId,
     url,
-    meta = {},
+    meta,
     controllerKey,
     controllerName,
     subject,
@@ -65,18 +79,21 @@ export async function enqueueWebformJob(args: EnqueueArgs) {
     ...rest
   } = args;
 
-  // Merge extras into meta; preserve explicit meta keys if already present
   const mergedMeta: Record<string, any> = {
-    ...(meta || {}),
-    ...(controllerKey !== undefined ? { controllerKey } : {}),
-    ...(controllerName !== undefined ? { controllerName } : {}),
-    ...(subject !== undefined ? { subject } : {}),
-    ...(locale !== undefined ? { locale } : {}),
-    ...(draft !== undefined ? { draft } : {}),
-    ...(formUrl !== undefined ? { formUrl } : {}),
-    // pass through any remaining fields so nothing is lost
-    ...(Object.keys(rest).length ? { _extra: rest } : {}),
+    ...clean(meta),
+    ...clean({
+      controllerKey,
+      controllerName,
+      subject: subject ? clean(subject) : undefined,
+      locale,
+      draft: draft ? clean(draft) : undefined,
+      formUrl,
+    }),
   };
+
+  if (Object.keys(rest).length) {
+    mergedMeta._extra = { ...(mergedMeta._extra || {}), ...clean(rest) };
+  }
 
   const { error } = await s.from(TABLE).insert({
     status: "queued",
@@ -91,9 +108,7 @@ export async function enqueueWebformJob(args: EnqueueArgs) {
   if (error) throw new Error(`enqueueWebformJob: ${error.message}`);
 }
 
-/**
- * Claim the next queued job atomically (best-effort, race-safe).
- */
+/** Claim the next queued job (race-safe best effort). */
 export async function claimNextJob(): Promise<WebformJob | null> {
   const s = supabaseAdmin();
 
@@ -132,9 +147,7 @@ export async function claimNextJob(): Promise<WebformJob | null> {
   return claimed;
 }
 
-/**
- * Mark job as succeeded and attach a small result payload (e.g., screenshot IDs).
- */
+/** Mark job succeeded with small result payload. */
 export async function completeJobSuccess(jobId: string, result?: Record<string, any>) {
   const s = supabaseAdmin();
   const { error } = await s
@@ -149,9 +162,7 @@ export async function completeJobSuccess(jobId: string, result?: Record<string, 
   if (error) throw new Error(`completeJobSuccess: ${error.message}`);
 }
 
-/**
- * Mark job failure. If attempts left, re-queue, otherwise fail.
- */
+/** Mark job failure; re-queue if attempts remain. */
 export async function completeJobFailure(jobId: string, errMsg: string, attemptsSoFar?: number) {
   const s = supabaseAdmin();
 
