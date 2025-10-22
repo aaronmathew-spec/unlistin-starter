@@ -14,6 +14,16 @@ export type WebformJob = {
   claimed_at: string | null;
   finished_at: string | null;
   worker_id: string | null;
+
+  // --- Optional fields your worker may read directly (make them optional) ---
+  controller_key?: string | null;
+  controller_name?: string | null;
+  subject_name?: string | null;
+  subject_email?: string | null;
+  subject_handle?: string | null;
+
+  // Future-compat: allow any extra columns without breaking TS
+  [key: string]: any;
 };
 
 const TABLE = process.env.WEBFORM_JOBS_TABLE || "webform_jobs";
