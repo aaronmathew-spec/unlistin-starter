@@ -28,11 +28,15 @@ export type WebformJob = {
 const TABLE = process.env.WEBFORM_JOBS_TABLE || "webform_jobs";
 const MAX_ATTEMPTS = Number(process.env.WEBFORM_MAX_ATTEMPTS ?? 3);
 
-/** Extended args: accept richer fields and fold them into meta */
 type MaybeStr = string | null | undefined;
+
+/** Extended args: accept richer fields and fold them into meta */
 type EnqueueArgs = {
-  subjectId: string;
-  url: string;
+  // NOW OPTIONAL (derive from subject.id if missing)
+  subjectId?: MaybeStr;
+  // NOW OPTIONAL (derive from formUrl if missing)
+  url?: MaybeStr;
+
   meta?: Record<string, any>;
   controllerKey?: MaybeStr;
   controllerName?: MaybeStr;
@@ -46,6 +50,8 @@ type EnqueueArgs = {
   locale?: MaybeStr;
   draft?: { subject?: MaybeStr; bodyText?: MaybeStr };
   formUrl?: MaybeStr;
+
+  // allow future extras without type errors
   [key: string]: any;
 };
 
@@ -62,6 +68,7 @@ function clean<T extends Record<string, any>>(obj: T | null | undefined): Record
 /**
  * Enqueue a webform job into Supabase.
  * Accepts a rich input and merges known fields into meta.
+ * subjectId/url are optional to match call sites; we derive safe fallbacks.
  */
 export async function enqueueWebformJob(args: EnqueueArgs) {
   const s = supabaseAdmin();
@@ -78,6 +85,13 @@ export async function enqueueWebformJob(args: EnqueueArgs) {
     formUrl,
     ...rest
   } = args;
+
+  // Derive required DB fields (never insert nulls)
+  const resolvedSubjectId =
+    (subjectId ?? subject?.id ?? null) ? String(subjectId ?? subject?.id) : crypto.randomUUID();
+
+  const resolvedUrl =
+    (url ?? formUrl ?? null) ? String(url ?? formUrl) : "https://google.com/";
 
   const mergedMeta: Record<string, any> = {
     ...clean(meta),
@@ -97,8 +111,8 @@ export async function enqueueWebformJob(args: EnqueueArgs) {
 
   const { error } = await s.from(TABLE).insert({
     status: "queued",
-    subject_id: subjectId,
-    url,
+    subject_id: resolvedSubjectId,
+    url: resolvedUrl,
     meta: mergedMeta,
     attempts: 0,
     error: null,
