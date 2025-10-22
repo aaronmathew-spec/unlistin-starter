@@ -1,4 +1,3 @@
-// src/lib/dispatch/choose-handler.ts
 import { resolveHandler } from "@/src/lib/controllers/resolve";
 
 export type DispatchTarget =
@@ -9,16 +8,14 @@ export type DispatchTarget =
 
 export async function chooseHandler(params: {
   subjectId?: string;
-  countryCode: string; // e.g., "IN"
-  siteKey: string;     // e.g., "instagram"
+  countryCode: string;
+  siteKey: string;
 }): Promise<DispatchTarget> {
   const r = await resolveHandler(params);
   if (!r) {
     throw new Error(`No handler found for ${params.countryCode}:${params.siteKey}`);
   }
-
   const label = r.display_name || `${params.countryCode}:${params.siteKey}`;
-
   switch (r.channel) {
     case "email": {
       const to = (r.email_to || "").trim();
