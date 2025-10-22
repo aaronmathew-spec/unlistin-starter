@@ -25,9 +25,9 @@ type Manifest = {
   merkle?: { root?: string };
 };
 
-async function getArtifactsForSubject(subjectId: string): Promise<Artifact[]> {
-  // TODO: wire to your DB and storage; placeholder for now.
-  return []; // <<< replace with your actual query
+async function getArtifactsForSubject(subjectId: string) {
+  // TODO: wire to your DB and storage.
+  return [] as Artifact[]; // <<< replace with your actual query
 }
 
 async function streamArtifact(contentUri: string): Promise<Uint8Array> {
@@ -37,7 +37,8 @@ async function streamArtifact(contentUri: string): Promise<Uint8Array> {
   return new Uint8Array(buf);
 }
 
-export async function buildProofPack(subjectId: string): Promise<Uint8Array> {
+// Return the ZIP as an ArrayBuffer (BodyInit-friendly)
+export async function buildProofPack(subjectId: string): Promise<ArrayBuffer> {
   const signer = await getSigner();
   const artifacts = await getArtifactsForSubject(subjectId);
 
@@ -87,17 +88,16 @@ Verify:
 `
   );
 
-  // Generate as Uint8Array (we'll wrap it in a Blob for Response)
-  const u8 = await zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
-  return u8;
+  // Generate the ZIP as an ArrayBuffer to satisfy BodyInit typing across runtimes
+  const ab = await zip.generateAsync({ type: "arraybuffer", compression: "DEFLATE" });
+  return ab;
 }
 
-// Return a web Response with a Blob body to satisfy BodyInit typing across runtimes
+// Web Response using ArrayBuffer body
 export async function proofPackResponse(subjectId: string): Promise<Response> {
-  const zipU8 = await buildProofPack(subjectId);
+  const zipAB = await buildProofPack(subjectId);
   const filename = `unlistin-proof-pack-${subjectId}.zip`;
-  const blob = new Blob([zipU8], { type: "application/zip" });
-  return new Response(blob, {
+  return new Response(zipAB, {
     status: 200,
     headers: {
       "Content-Type": "application/zip",
