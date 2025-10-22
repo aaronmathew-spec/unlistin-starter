@@ -1,6 +1,6 @@
 // src/lib/media/hash.ts
 // Build-safe: no 'sharp' imports (static or dynamic).
-// We preserve the same exports/signatures as your previous 93-line file,
+// We preserve the same exports/signatures as your previous file,
 // so callers don't break. Perceptual hashing is left opt-in.
 //
 // If/when you want actual image decode + aHash/pHash, we’ll add an optional
@@ -39,7 +39,7 @@ export function bitsToBase64(bits: number[]): string {
 }
 
 // aHash implementation (works if you already have grayscale bytes)
-// Keeping this so any internal usage won’t break.
+// Safe indexing to avoid "possibly undefined" in TS and at runtime.
 export function aHash64(gray: Uint8Array, w: number, h: number): string {
   const target = 8;
   const blockW = w / target;
@@ -54,9 +54,12 @@ export function aHash64(gray: Uint8Array, w: number, h: number): string {
       const y0 = Math.floor(by * blockH);
       const x1 = Math.min(w, Math.floor((bx + 1) * blockW));
       const y1 = Math.min(h, Math.floor((by + 1) * blockH));
+
       for (let y = y0; y < y1; y++) {
         for (let x = x0; x < x1; x++) {
-          sum += gray[y * w + x];
+          const idx = y * w + x;
+          // Guard against out-of-bounds, satisfy TS with ?? 0
+          sum += gray[idx] ?? 0;
           count++;
         }
       }
@@ -72,13 +75,13 @@ export function aHash64(gray: Uint8Array, w: number, h: number): string {
 // ------------------------
 // toGrayscale: now an opt-out stub
 // ------------------------
-// We keep the signature so imports don’t break, but we don’t decode images
-// in this build. If some code calls this directly, it will throw a clear
-// error (which you can catch) rather than causing build-time failures.
+// Signature preserved; throws a clear error if called in this build.
 export async function toGrayscale(
   _buf: Uint8Array
 ): Promise<{ gray: Uint8Array; width: number; height: number }> {
-  throw new Error("image_decode_not_enabled: install & enable optional sharp-based module to use toGrayscale()");
+  throw new Error(
+    "image_decode_not_enabled: install & enable optional sharp-based module to use toGrayscale()"
+  );
 }
 
 // ------------------------
