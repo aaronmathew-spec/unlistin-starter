@@ -1,43 +1,53 @@
 // app/api/proofs/[subjectId]/export/route.ts
-import { NextResponse } from "next/server";
-import { buildSignedExport } from "@/lib/proofs/export";
-
+/* eslint-disable @typescript-eslint/no-explicit-any */
 export const runtime = "nodejs";
+
+import { NextResponse } from "next/server";
+import { buildSignedBundle } from "@/lib/proofs/export";
+
+/**
+ * Convert a Uint8Array to a fresh, plain ArrayBuffer (no SharedArrayBuffer),
+ * which plays nicely with Blob/Response typing during build.
+ */
+function toPlainArrayBuffer(u8: Uint8Array): ArrayBuffer {
+  const ab = new ArrayBuffer(u8.byteLength);
+  new Uint8Array(ab).set(u8);
+  return ab;
+}
+
+function bad(status: number, msg: string) {
+  return NextResponse.json({ ok: false, error: msg }, { status });
+}
 
 export async function GET(
   _req: Request,
-  ctx: { params: { subjectId: string } }
+  { params }: { params: { subjectId: string } }
 ) {
-  const subjectId = ctx.params.subjectId;
-  if (!subjectId) {
-    return NextResponse.json({ error: "subjectId required" }, { status: 400 });
-  }
-
   try {
-    // Builder returns a Uint8Array that may sit on a SharedArrayBuffer.
-    const u8 = await buildSignedExport(subjectId);
+    const subjectId = decodeURIComponent(String(params?.subjectId || "")).trim();
+    if (!subjectId) return bad(400, "subject_id_required");
 
-    // Make a COPY -> guarantees a fresh ArrayBuffer (not SharedArrayBuffer).
-    const copy = new Uint8Array(u8.length);
-    copy.set(u8);
-    const ab = copy.buffer; // plain ArrayBuffer now
+    // Produce a signed bundle (manifest.json + signature + pack.zip)
+    // buildSignedBundle(subjectId) -> Uint8Array
+    const u8 = await buildSignedBundle(subjectId);
 
-    // Wrap in Blob to satisfy BodyInit types cleanly
+    // Wrap in Blob via a plain ArrayBuffer to avoid SAB typing issues on Vercel builds
+    const ab = toPlainArrayBuffer(u8);
     const blob = new Blob([ab], { type: "application/zip" });
 
     const filename = `unlistin-proof-bundle-${subjectId}.zip`;
 
-    return new Response(blob, {
+    return new NextResponse(blob, {
       status: 200,
       headers: {
-        "Content-Type": "application/zip",
-        "Content-Disposition": `attachment; filename="${filename}"`,
-        "Cache-Control": "no-store",
+        "content-type": "application/zip",
+        "cache-control": "no-store",
+        "content-disposition": `attachment; filename="${filename}"`,
       },
     });
   } catch (e: any) {
     // eslint-disable-next-line no-console
-    console.error("[proofs.export.error]", { subjectId, error: String(e?.message || e) });
-    return NextResponse.json({ error: String(e?.message || e) }, { status: 500 });
+    console.error("[proofs.export.error]", String(e?.message || e));
+    return bad(500, "export_failed");
   }
 }
