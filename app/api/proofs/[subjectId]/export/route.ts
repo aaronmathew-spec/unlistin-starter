@@ -17,12 +17,12 @@ export async function GET(
     // Uint8Array from builder
     const u8 = await buildSignedExport(subjectId);
 
-    // Convert to a standalone ArrayBuffer (BodyInit-friendly in Node/Fetch)
-    const ab = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+    // Wrap in a Blob to avoid BodyInit typing issues with ArrayBuffer/SharedArrayBuffer
+    const blob = new Blob([u8], { type: "application/zip" });
 
     const filename = `unlistin-proof-bundle-${subjectId}.zip`;
 
-    return new Response(ab, {
+    return new Response(blob, {
       status: 200,
       headers: {
         "Content-Type": "application/zip",
