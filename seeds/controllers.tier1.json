@@ -1,0 +1,68 @@
+{
+  "controllers": [
+    {
+      "country_code": "IN",
+      "region": "APAC",
+      "site_key": "gov-ncii",
+      "display_name": "National Cyber Crime (NCII Reporting)",
+      "category": "gov",
+      "notes": "Indian NCII/deepfake reporting landing; web referral.",
+      "handlers": [
+        {
+          "channel": "webform",
+          "priority": 10,
+          "endpoint_url": "https://cybercrime.gov.in/",
+          "meta": { "captcha": "human", "flow": "landing_referral" }
+        }
+      ]
+    },
+    {
+      "country_code": "US",
+      "region": "NA",
+      "site_key": "instagram",
+      "display_name": "Instagram Safety",
+      "category": "social",
+      "notes": "Abuse/impersonation/NCII report. Public page with internal flows.",
+      "handlers": [
+        {
+          "channel": "webform",
+          "priority": 20,
+          "endpoint_url": "https://help.instagram.com/",
+          "meta": { "flow": "search_then_specific" }
+        }
+      ]
+    },
+    {
+      "country_code": "US",
+      "region": "NA",
+      "site_key": "x",
+      "display_name": "X Safety",
+      "category": "social",
+      "notes": "Abuse/impersonation/brand report entry point.",
+      "handlers": [
+        {
+          "channel": "webform",
+          "priority": 20,
+          "endpoint_url": "https://help.twitter.com/",
+          "meta": { "flow": "entry_portal" }
+        }
+      ]
+    },
+    {
+      "country_code": "GB",
+      "region": "EU",
+      "site_key": "youtube",
+      "display_name": "YouTube Reporting",
+      "category": "social",
+      "notes": "Copyright/impersonation/harassment entry portal.",
+      "handlers": [
+        {
+          "channel": "webform",
+          "priority": 20,
+          "endpoint_url": "https://support.google.com/youtube/",
+          "meta": { "flow": "entry_portal" }
+        }
+      ]
+    }
+  ]
+}
