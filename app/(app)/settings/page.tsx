@@ -1,77 +1,67 @@
-// app/(app)/settings/page.tsx
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 
 export default function SettingsPage() {
   const [name, setName] = useState("");
-  const [locale, setLocale] = useState<"en" | "hi">("en");
-  const [tz, setTz] = useState("Asia/Kolkata");
-  const [saving, setSaving] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
-
-  async function save() {
-    setSaving(true);
-    setNote(null);
-    try {
-      // TODO: call your settings API
-      await new Promise((r) => setTimeout(r, 700));
-      setNote("Saved.");
-    } catch {
-      setNote("Could not save. Try again.");
-    } finally {
-      setSaving(false);
-    }
-  }
+  const [notify, setNotify] = useState(true);
+  const [locale, setLocale] = useState("en");
 
   return (
-    <div className="space-y-8">
-      <div>
-        <div className="text-xs text-[color:var(--muted)]">Account</div>
-        <h1 className="text-2xl md:text-3xl font-semibold tracking-tight">Settings</h1>
-      </div>
+    <main>
+      <div className="bg-glow" aria-hidden />
+      <div className="container" style={{ padding: 16, maxWidth: 900 }}>
+        <header className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <div className="pill">Profile</div>
+            <h1 className="hero-title" style={{ marginTop: 8 }}>Settings</h1>
+            <div className="sub">Keep it simple. Only what’s needed to run your requests.</div>
+          </div>
+          <Link href="/dashboard" className="btn btn-outline btn-lg">Back to Dashboard</Link>
+        </header>
 
-      <div className="grid gap-6 md:grid-cols-2">
-        <section className="rounded-2xl border border-[var(--card-border)] bg-[var(--card)] p-6">
-          <h3 className="text-sm font-semibold">Profile</h3>
-          <div className="mt-4 space-y-4">
-            <div>
-              <label className="label" htmlFor="name">Display Name</label>
-              <input id="name" className="input" placeholder="Your name" value={name} onChange={(e) => setName(e.target.value)} />
-            </div>
+        <section className="panel" style={{ marginTop: 16 }}>
+          <label className="label">Display name</label>
+          <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" />
 
-            <div>
-              <label className="label" htmlFor="locale">Preferred Language</label>
-              <select id="locale" className="input" value={locale} onChange={(e) => setLocale(e.target.value as any)}>
-                <option value="en">English</option>
-                <option value="hi">हिन्दी</option>
-              </select>
-            </div>
+          <div style={{ height: 12 }} />
 
-            <div>
-              <label className="label" htmlFor="tz">Time Zone</label>
-              <input id="tz" className="input" value={tz} onChange={(e) => setTz(e.target.value)} />
-            </div>
+          <label className="label">Locale</label>
+          <select className="input" value={locale} onChange={(e) => setLocale(e.target.value)}>
+            <option value="en">English</option>
+            <option value="hi">हिन्दी</option>
+            <option value="es">Español</option>
+          </select>
 
-            <button className="btn" onClick={save} disabled={saving}>
-              {saving ? "Saving…" : "Save Changes"}
+          <div style={{ height: 12 }} />
+
+          <label className="label">Notifications</label>
+          <div className="row" style={{ alignItems: "center", justifyContent: "space-between" }}>
+            <span className="sub" style={{ margin: 0 }}>Email status updates and SLA follow-ups</span>
+            <button
+              className={`btn ${notify ? "" : "btn-outline"}`}
+              onClick={() => setNotify((v) => !v)}
+              type="button"
+            >
+              {notify ? "On" : "Off"}
             </button>
-            {note ? <div className="text-sm text-[color:var(--muted)]">{note}</div> : null}
+          </div>
+
+          <div className="row" style={{ marginTop: 16, justifyContent: "flex-end", gap: 8 }}>
+            <button className="btn btn-ghost" type="button" onClick={() => window.location.reload()}>Cancel</button>
+            <button className="btn" type="button" onClick={() => alert("Saved (wire to API later)")}>Save changes</button>
           </div>
         </section>
 
-        <section className="rounded-2xl border border-[var(--card-border)] bg-[var(--card)] p-6">
-          <h3 className="text-sm font-semibold">Security</h3>
-          <div className="mt-4 space-y-3 text-sm text-[color:var(--muted)]">
-            <div>• SSO/SAML (Enterprise)</div>
-            <div>• Session length: 12h (renewal tokens)</div>
-            <div>• Device approvals & sign-out everywhere</div>
-          </div>
-          <div className="mt-4">
-            <button className="btn-outline px-4 py-2 rounded-full">Reset Password</button>
+        <section className="panel" style={{ marginTop: 12 }}>
+          <div className="label">Data controls</div>
+          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+            <Link href="/ops/proofs/export" className="btn btn-outline">Export CSV</Link>
+            <Link href="/ops/proofs/verify" className="btn btn-outline">Verify Bundle</Link>
           </div>
         </section>
       </div>
-    </div>
+    </main>
   );
 }
