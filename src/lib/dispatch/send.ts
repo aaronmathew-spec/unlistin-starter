@@ -11,6 +11,9 @@ import { pushDLQ } from "@/lib/ops/dlq";
 // Adapter to your webform queue API
 import { enqueueWebformJob } from "@/lib/webform/queue";
 
+// Public types (for call-sites using ControllerRequestInput)
+import type { ControllerRequestInput } from "@/lib/dispatch/types";
+
 type Locale = string;
 
 // Accept nulls from upstream and normalize inside
@@ -34,11 +37,11 @@ type SendInput = {
     | string;
   controllerName: string;
   subject: SubjectProfile;
-  locale?: Locale;
-  draft?: { subject?: string | null; bodyText?: string | null };
+  locale?: Locale | null;
+  draft?: { subject?: string | null; bodyText?: string | null } | null;
   formUrl?: string | null;
-  action?: string;          // used for idempotency (default: create_request_v1)
-  subjectId?: string | null; // canonical subjectId if available
+  action?: string | null;           // used for idempotency (default: create_request_v1)
+  subjectId?: string | null;        // canonical subjectId if available
 };
 
 type SendResult = {
@@ -48,7 +51,7 @@ type SendResult = {
   error: string | null;
   note: string | null;
   idempotent?: "deduped" | "new";
-  hint?: string | null;     // <-- added for callers expecting a hint
+  hint?: string | null;             // some routes show an optional hint
 };
 
 function norm(v?: string | null): string | undefined {
@@ -57,8 +60,36 @@ function norm(v?: string | null): string | undefined {
   return s.length ? s : undefined;
 }
 
+/** Map ControllerRequestInput -> internal SendInput (tolerant, no-throw) */
+function mapToSendInput(input: ControllerRequestInput | SendInput): SendInput {
+  // If it already looks like SendInput, return as-is.
+  if ("controllerName" in input && "subject" in input) {
+    return {
+      controllerKey: (input as any).controllerKey,
+      controllerName: (input as any).controllerName,
+      subject: (input as any).subject ?? {},
+      locale: (input as any).locale ?? null,
+      draft: (input as any).draft ?? null,
+      formUrl: (input as any).formUrl ?? null,
+      action: (input as any).action ?? "create_request_v1",
+      subjectId: (input as any).subjectId ?? null,
+    };
+  }
+  // Fallback (shouldn’t hit, but keeps it safe)
+  return {
+    controllerKey: (input as any)?.controllerKey || "generic",
+    controllerName: (input as any)?.controllerName || "Generic",
+    subject: (input as any)?.subject || {},
+    locale: (input as any)?.locale ?? null,
+    draft: (input as any)?.draft ?? null,
+    formUrl: (input as any)?.formUrl ?? null,
+    action: (input as any)?.action ?? "create_request_v1",
+    subjectId: (input as any)?.subjectId ?? null,
+  };
+}
+
 function stableIdempotencyKey(input: SendInput): string {
-  const action = (input.action || "create_request_v1").trim();
+  const action = norm(input.action) ?? "create_request_v1";
   const s = input.subject || {};
   // Prefer canonical subject ID, then email, phone, handle, then name.
   const subjectIdent =
@@ -72,10 +103,12 @@ function stableIdempotencyKey(input: SendInput): string {
   return `${input.controllerKey}:${subjectIdent}:${action}`;
 }
 
-export async function sendDispatch(input: SendInput): Promise<SendResult> {
+export async function sendDispatch(raw: ControllerRequestInput | SendInput): Promise<SendResult> {
+  const input = mapToSendInput(raw);
+
   // 1) Idempotency guard
   const key = stableIdempotencyKey(input);
-  const idem = await ensureIdempotent(key, input.action || "create_request_v1");
+  const idem = await ensureIdempotent(key, norm(input.action) ?? "create_request_v1");
   if (idem === "exists") {
     return {
       ok: true,
@@ -157,7 +190,7 @@ export async function sendDispatch(input: SendInput): Promise<SendResult> {
         locale: input.locale || "en-IN",
         formUrl: norm(input.formUrl) ?? null,
         draft: input.draft ?? null,
-        action: input.action ?? "create_request_v1",
+        action: norm(input.action) ?? "create_request_v1",
       },
       error_code: "enqueue_failed",
       error_note: msg,
@@ -182,8 +215,12 @@ export async function sendDispatch(input: SendInput): Promise<SendResult> {
  * and for default-imports:
  *   import sendControllerRequest from "@/lib/dispatch/send";
  */
-export const sendControllerRequest = sendDispatch;
+export async function sendControllerRequest(
+  input: ControllerRequestInput | SendInput
+): Promise<SendResult> {
+  return sendDispatch(input);
+}
 export default sendControllerRequest;
 
-// (Optional) re-export useful types
+// (Optional) re-export useful types for local consumers
 export type { SendInput, SendResult, SubjectProfile, Locale };
