@@ -13,7 +13,7 @@ import { enqueueWebformJob } from "@/lib/webform/queue";
 
 type Locale = string;
 
-// Accept nulls from upstream (e.g., ControllerRequestInput) and normalize inside
+// Accept nulls from upstream and normalize inside
 type SubjectProfile = {
   id?: string | null;
   name?: string | null;
@@ -37,7 +37,7 @@ type SendInput = {
   locale?: Locale;
   draft?: { subject?: string | null; bodyText?: string | null };
   formUrl?: string | null;
-  action?: string;      // used for idempotency (default: create_request_v1)
+  action?: string;          // used for idempotency (default: create_request_v1)
   subjectId?: string | null; // canonical subjectId if available
 };
 
@@ -48,6 +48,7 @@ type SendResult = {
   error: string | null;
   note: string | null;
   idempotent?: "deduped" | "new";
+  hint?: string | null;     // <-- added for callers expecting a hint
 };
 
 function norm(v?: string | null): string | undefined {
@@ -83,19 +84,22 @@ export async function sendDispatch(input: SendInput): Promise<SendResult> {
       error: null,
       note: "idempotent_deduped",
       idempotent: "deduped",
+      hint: "Duplicate request suppressed by idempotency.",
     };
   }
 
   // 2) Circuit breaker guard for this controller
   const gate = await shouldAllowController(input.controllerKey);
   if (!gate.allow) {
+    const rf = gate.recentFailures ?? 0;
     return {
       ok: false,
       channel: "noop",
       providerId: null,
       error: "controller_circuit_open",
-      note: `recent_failures=${gate.recentFailures ?? 0}`,
+      note: `recent_failures=${rf}`,
       idempotent: "new",
+      hint: `Controller circuit is open due to recent failures (${rf}). Retry later or inspect Ops dashboard.`,
     };
   }
 
@@ -130,6 +134,7 @@ export async function sendDispatch(input: SendInput): Promise<SendResult> {
       error: null,
       note,
       idempotent: "new",
+      hint: null,
     };
   } catch (e: any) {
     const msg = String(e?.message || e);
@@ -166,6 +171,7 @@ export async function sendDispatch(input: SendInput): Promise<SendResult> {
       error: "webform_enqueue_failed",
       note: msg,
       idempotent: "new",
+      hint: "Failed to enqueue webform job; details recorded and DLQ’d.",
     };
   }
 }
