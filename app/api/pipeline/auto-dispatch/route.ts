@@ -1,4 +1,3 @@
-// app/api/pipeline/auto-dispatch/route.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export const runtime = "nodejs";
 
@@ -9,12 +8,11 @@ import {
   wasRecentlyDispatched,
   recordDispatch,
 } from "@/lib/dispatch/log";
-import type { ControllerRequestInput } from "@/lib/dispatch/types";
 
-const OPS_SECRET = process.env.SECURE_CRON_SECRET || "";
+const OPS_SECRET = (process.env.SECURE_CRON_SECRET || "").trim();
 
-function forbidden(msg: string) {
-  return NextResponse.json({ ok: false, error: msg }, { status: 403 });
+function bad(status: number, msg: string, extra?: Record<string, unknown>) {
+  return NextResponse.json({ ok: false, error: msg, ...(extra || {}) }, { status });
 }
 
 /**
@@ -26,86 +24,90 @@ function forbidden(msg: string) {
  *   "controllerKey": "truecaller",
  *   "controllerName": "Truecaller",
  *   "subject": { "name": "Rahul", "email": "rahul@example.com", "phone": "+91..." },
- *   "locale": "en"
+ *   "locale": "en-IN",
+ *   "idempotencyKey": "optional-external-key"
  * }
  */
 export async function POST(req: Request) {
-  if (!OPS_SECRET) return forbidden("SECURE_CRON_SECRET not configured");
-  const header = req.headers.get("x-secure-cron") || "";
-  if (header !== OPS_SECRET) return forbidden("Invalid secret");
+  if (!OPS_SECRET) return bad(500, "SECURE_CRON_SECRET not configured");
+  const sec = (req.headers.get("x-secure-cron") || "").trim();
+  if (sec !== OPS_SECRET) return bad(403, "Invalid secret");
 
-  const body = (await req.json().catch(() => ({}))) as Partial<ControllerRequestInput>;
+  let body: any = {};
+  try {
+    body = await req.json();
+  } catch {
+    return bad(400, "invalid_json");
+  }
 
-  // Minimal validation
-  if (!body.controllerKey || !body.controllerName) {
-    return NextResponse.json(
-      { ok: false, error: "controllerKey and controllerName are required" },
-      { status: 400 }
-    );
+  const controllerKey = String(body.controllerKey || "").trim();
+  const controllerName = String(body.controllerName || controllerKey || "").trim();
+  if (!controllerKey || !controllerName) {
+    return bad(400, "controllerKey and controllerName are required");
   }
 
   const subject = {
+    id: body.subject?.id ?? null,
     name: body.subject?.name ?? null,
     email: body.subject?.email ?? null,
     phone: body.subject?.phone ?? null,
+    handle: body.subject?.handle ?? null,
   };
 
-  const locale: "en" | "hi" = (body.locale === "hi" ? "hi" : "en");
+  const locale = String(body.locale || "en-IN");
 
-  // Build idempotency key using correct shape
-  const dedupeKey = makeDedupeKey({
-    controllerKey: body.controllerKey,
-    subject,
-    locale,
-  });
+  // Prefer explicit idempotencyKey if provided
+  const idemKey =
+    (body.idempotencyKey && String(body.idempotencyKey).trim()) ||
+    makeDedupeKey({ controllerKey, subject, locale });
 
-  // Idempotency short-circuit (24h look-back by default)
-  const already = await wasRecentlyDispatched(dedupeKey);
+  const already = await wasRecentlyDispatched(idemKey);
   if (already) {
     await recordDispatch({
-      dedupeKey,
-      controllerKey: body.controllerKey,
+      dedupeKey: idemKey,
+      controllerKey,
       subject,
       locale,
       channel: "api",
       ok: true,
       note: "idempotent_skip:existing",
+      providerId: null,
+      error: null,
     });
     return NextResponse.json({ ok: true, note: "idempotent_skip:existing" });
   }
 
-  // Run the dispatch
-  const input: ControllerRequestInput = {
-    controllerKey: body.controllerKey,
-    controllerName: body.controllerName!,
+  const res = await sendControllerRequest({
+    controllerKey,
+    controllerName,
     subject,
     locale,
-  };
+    draft: body.draft
+      ? { subject: body.draft.subject ?? null, bodyText: body.draft.bodyText ?? null }
+      : undefined,
+    formUrl: body.formUrl ?? null,
+    action: "create_request_v1",
+    subjectId: body.subjectId ?? null,
+  });
 
-  const res = await sendControllerRequest(input);
-
-  // Normalize channel to the audit-allowed set: "email" | "webform" | "api"
   const channel: "email" | "webform" | "api" =
-    res.ok && (res.channel === "email" || res.channel === "webform")
-      ? res.channel
-      : "api";
+    res.ok && (res.channel === "email" || res.channel === "webform") ? res.channel : "api";
 
-  // Structured audit (narrow on res.ok before accessing success-only fields)
   await recordDispatch({
-    dedupeKey,
-    controllerKey: body.controllerKey,
+    dedupeKey: idemKey,
+    controllerKey,
     subject,
     locale,
     channel,
     ok: res.ok,
     providerId: res.ok ? (res.providerId ?? null) : null,
     error: res.ok ? null : (res.error ?? "unknown_error"),
-    note: res.ok ? (res.note ?? null) : null,
+    note: res.ok ? (res.note ?? null) : (res as any).hint ?? null,
   });
 
   if (!res.ok) {
     return NextResponse.json(
-      { ok: false, error: res.error, hint: res.hint ?? null },
+      { ok: false, error: res.error, note: res.note, hint: (res as any).hint ?? null },
       { status: 500 }
     );
   }
