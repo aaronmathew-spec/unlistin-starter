@@ -1,145 +1,228 @@
-"use client";
+// app/ops/dlq/page.tsx
+import { listDLQ } from "@/lib/ops/dlq";
 
-import { useEffect, useState } from "react";
+export const dynamic = "force-dynamic";
 
-type DlqItem = {
-  id: string | number;
-  created_at: string;
-  channel: string;
-  controller_key: string;
-  subject_id: string | null;
-  payload: any;
-  error_code: string | null;
-  error_note: string | null;
-  retries: number | null;
-};
+/** Small monospace pill used for terse values */
+function Mono({ children }: { children: React.ReactNode }) {
+  return (
+    <code
+      style={{
+        fontFamily:
+          "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+        fontSize: 12,
+        background: "#f9fafb",
+        border: "1px solid #e5e7eb",
+        padding: "2px 6px",
+        borderRadius: 6,
+      }}
+    >
+      {children}
+    </code>
+  );
+}
 
-export default function OpsDlqPage() {
-  const [items, setItems] = useState<DlqItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [secret, setSecret] = useState("");
-
-  async function load() {
-    setLoading(true);
+/** Safe JSON stringify with clipping and fallback */
+function safeJsonPreview(value: unknown, max = 140): string {
+  try {
+    const s = JSON.stringify(value);
+    if (!s) return "-";
+    return s.length > max ? s.slice(0, max) + "…" : s;
+  } catch {
     try {
-      const r = await fetch("/api/ops/dlq/list", {
-        headers: secret ? { "x-secure-cron": secret } : undefined,
-        cache: "no-store",
-      });
-      const j = await r.json();
-      if (j.ok) setItems(j.items || []);
-      else alert(j.error || "Failed to load DLQ");
-    } catch (e: any) {
-      alert(String(e?.message || e));
-    } finally {
-      setLoading(false);
+      // last resort: coerce
+      const s = String(value ?? "-");
+      return s.length > max ? s.slice(0, max) + "…" : s;
+    } catch {
+      return "-";
     }
   }
+}
 
-  useEffect(() => {
-    // do nothing by default; require the secret (so you can paste it)
-  }, []);
+/** Parse and clamp a number */
+function clamp(n: number, lo: number, hi: number) {
+  return Math.max(lo, Math.min(hi, n));
+}
 
-  async function requeue(id: string | number) {
+export default async function OpsDLQPage({
+  searchParams,
+}: {
+  searchParams?: Record<string, string | string[] | undefined>;
+}) {
+  // parse filters (kept optional; no DB-side filtering so we don’t change your lib)
+  const qChannel =
+    typeof searchParams?.channel === "string"
+      ? searchParams?.channel.trim()
+      : "";
+  const qController =
+    typeof searchParams?.controller === "string"
+      ? searchParams?.controller.trim()
+      : "";
+
+  // optional limit control
+  const limitRaw =
+    typeof searchParams?.limit === "string" ? searchParams?.limit : undefined;
+  const limit = limitRaw && !isNaN(+limitRaw) ? clamp(+limitRaw, 1, 1000) : 200;
+
+  let rows = await (async () => {
     try {
-      const r = await fetch("/api/ops/dlq/requeue", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...(secret ? { "x-secure-cron": secret } : {}),
-        },
-        body: JSON.stringify({ id }),
-      });
-      const j = await r.json();
-      if (!j.ok) {
-        alert(j.error || "Requeue failed");
-        return;
-      }
-      await load();
-      alert(`Requeued as ${j.requeuedAs ?? "job"}`);
-    } catch (e: any) {
-      alert(String(e?.message || e));
+      return await listDLQ(limit);
+    } catch {
+      return [] as Awaited<ReturnType<typeof listDLQ>>;
     }
+  })();
+
+  // light in-memory filter to avoid changing your DAL
+  if (qChannel) {
+    rows = rows.filter((r) => String(r.channel || "").includes(qChannel));
+  }
+  if (qController) {
+    rows = rows.filter((r) =>
+      String(r.controller_key || "").includes(qController)
+    );
   }
 
   return (
-    <main>
-      <div className="bg-glow" aria-hidden />
-      <div className="container" style={{ padding: 16, maxWidth: 1000 }}>
-        <header className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <div className="pill">Ops</div>
-            <h1 className="hero-title" style={{ marginTop: 8 }}>Dead-Letter Queue</h1>
-            <div className="sub">Review failed dispatches and requeue items safely.</div>
+    <div style={{ padding: 24, maxWidth: 1100, margin: "0 auto" }}>
+      {/* Header */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          gap: 12,
+          alignItems: "baseline",
+        }}
+      >
+        <div>
+          <h1 style={{ margin: 0 }}>Ops · Dead Letter Queue</h1>
+          <p style={{ marginTop: 6, color: "#6b7280" }}>
+            Failed dispatch or worker jobs captured for investigation.
+            PII is redacted by producers. Use filters in the URL to narrow results.
+          </p>
+          <div style={{ marginTop: 6, color: "#6b7280", fontSize: 12 }}>
+            <Mono>?channel=webform</Mono>{" "}
+            <Mono>?controller=truecaller</Mono>{" "}
+            <Mono>?limit=500</Mono>
           </div>
-          <div className="row" style={{ gap: 8, alignItems: "center" }}>
-            <input
-              className="input"
-              placeholder="x-secure-cron secret"
-              value={secret}
-              onChange={(e) => setSecret(e.target.value)}
-              style={{ width: 240 }}
-            />
-            <button className="btn btn-outline" onClick={load}>Load</button>
-          </div>
-        </header>
-
-        <section className="panel" style={{ marginTop: 16 }}>
-          {loading ? (
-            <div className="sub">Loading…</div>
-          ) : items.length === 0 ? (
-            <div className="empty">DLQ empty 🎉</div>
-          ) : (
-            <div style={{ overflowX: "auto" }}>
-              <table className="table" style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead>
-                  <tr>
-                    <th>ID</th>
-                    <th>When</th>
-                    <th>Channel</th>
-                    <th>Controller</th>
-                    <th>Subject</th>
-                    <th>Error</th>
-                    <th>Retries</th>
-                    <th>Payload</th>
-                    <th>Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {items.map((it) => (
-                    <tr key={String(it.id)}>
-                      <td style={{ fontFamily: "monospace" }}>{String(it.id)}</td>
-                      <td>{new Date(it.created_at).toLocaleString()}</td>
-                      <td>{it.channel}</td>
-                      <td>{it.controller_key}</td>
-                      <td style={{ fontFamily: "monospace" }}>{it.subject_id ?? "—"}</td>
-                      <td>
-                        <div style={{ fontSize: 12 }}>
-                          <div style={{ fontWeight: 600 }}>{it.error_code ?? "—"}</div>
-                          <div style={{ color: "var(--muted)" }}>{it.error_note ?? ""}</div>
-                        </div>
-                      </td>
-                      <td>{it.retries ?? 0}</td>
-                      <td style={{ maxWidth: 360 }}>
-                        <pre className="mono" style={{ whiteSpace: "pre-wrap", fontSize: 12, color: "var(--muted)" }}>
-                          {JSON.stringify(it.payload, null, 2)}
-                        </pre>
-                      </td>
-                      <td>
-                        {it.channel === "webform" ? (
-                          <button className="btn" onClick={() => requeue(it.id)}>Requeue</button>
-                        ) : (
-                          <span className="sub">N/A</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
+        </div>
+        <a
+          href="/ops/dispatch"
+          style={{
+            textDecoration: "none",
+            border: "1px solid #e5e7eb",
+            padding: "8px 12px",
+            borderRadius: 8,
+            fontWeight: 600,
+          }}
+        >
+          ← Back to Dispatch
+        </a>
       </div>
-    </main>
+
+      {/* Table */}
+      <div
+        style={{
+          marginTop: 16,
+          border: "1px solid #e5e7eb",
+          borderRadius: 12,
+          overflow: "hidden",
+        }}
+      >
+        <div style={{ overflowX: "auto" }}>
+          <table
+            style={{
+              width: "100%",
+              minWidth: 880,
+              borderCollapse: "separate",
+              borderSpacing: 0,
+            }}
+          >
+            <thead style={{ background: "#f9fafb", textAlign: "left" }}>
+              <tr>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
+                  When
+                </th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
+                  Channel
+                </th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
+                  Controller
+                </th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
+                  Subject
+                </th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
+                  Error
+                </th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
+                  Retries
+                </th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
+                  Payload
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => {
+                const subject =
+                  r.subject_id ??
+                  r.payload?.subject?.email ??
+                  r.payload?.subject?.phone ??
+                  "-";
+                const error = r.error_code
+                  ? `${r.error_code}${
+                      r.error_note ? ` – ${r.error_note}` : ""
+                    }`
+                  : r.error_note || "-";
+                const payloadShort = safeJsonPreview(r.payload, 140);
+
+                return (
+                  <tr
+                    key={r.id}
+                    style={{ borderTop: "1px solid #e5e7eb" }}
+                  >
+                    <td style={{ padding: 12 }}>
+                      {new Date(r.created_at).toLocaleString()}
+                    </td>
+                    <td style={{ padding: 12 }}>{r.channel}</td>
+                    <td style={{ padding: 12 }}>
+                      {r.controller_key || "-"}
+                    </td>
+                    <td style={{ padding: 12 }}>{subject}</td>
+                    <td style={{ padding: 12 }}>
+                      <Mono>{error}</Mono>
+                    </td>
+                    <td style={{ padding: 12 }}>{r.retries ?? 0}</td>
+                    <td style={{ padding: 12 }}>
+                      <Mono>{payloadShort}</Mono>
+                    </td>
+                  </tr>
+                );
+              })}
+              {rows.length === 0 && (
+                <tr>
+                  <td
+                    colSpan={7}
+                    style={{
+                      padding: 24,
+                      textAlign: "center",
+                      color: "#6b7280",
+                    }}
+                  >
+                    DLQ empty (or no rows match your filters).
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div style={{ marginTop: 14, fontSize: 12, color: "#6b7280" }}>
+        Coming soon: one-click retry and export. Server helper{" "}
+        <code>retryDLQ(id)</code> is already stubbed.
+      </div>
+    </div>
   );
 }
