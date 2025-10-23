@@ -5,7 +5,6 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
 /* ---------- Types (kept compatible with your existing API shape) ---------- */
-
 type Act = {
   id: number;
   entity_type: "request" | "coverage" | "broker" | "file";
@@ -113,8 +112,10 @@ export default function HomePage() {
 
         {/* Hero */}
         <section className="relative overflow-hidden rounded-3xl border bg-white shadow-[0_16px_60px_rgba(0,0,0,.06)]">
-          <div className="absolute right-[-120px] top-[-100px] h-[320px] w-[320px] rounded-full blur-3xl opacity-20"
-               style={{ background: "linear-gradient(45deg,#F472B6,#A78BFA)" }} />
+          <div
+            className="absolute right-[-120px] top-[-100px] h-[320px] w-[320px] rounded-full blur-3xl opacity-20"
+            style={{ background: "linear-gradient(45deg,#F472B6,#A78BFA)" }}
+          />
           <div className="grid gap-6 p-6 md:grid-cols-2 md:p-10">
             <div className="space-y-3">
               <div className="inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs">
@@ -290,10 +291,4 @@ function prettyEntity(t: Act["entity_type"]) {
 function prettyAction(a: Act["action"]) {
   switch (a) {
     case "create": return "Created";
-    case "update": return "Updated";
-    case "status": return "Status Changed";
-    case "delete": return "Deleted";
-    case "upload": return "Uploaded";
-    case "download": return "Downloaded";
-  }
-}
+    case "update": return "
