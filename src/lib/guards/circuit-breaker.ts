@@ -10,9 +10,7 @@ export type BreakerDecision = {
   recentFailures?: number;
 };
 
-/**
- * If recent failures >= threshold within windowMinutes -> block
- */
+/** Block a controller when recent failures >= threshold within windowMinutes */
 export async function shouldAllowController(
   controllerKey: string,
   windowMinutes = 15,
@@ -21,7 +19,6 @@ export async function shouldAllowController(
   const since = new Date(Date.now() - windowMinutes * 60_000).toISOString();
   const sb = createClient(URL, SR, { auth: { persistSession: false } });
 
-  // count() can vary per driver; head:true gives headers count in some modes.
   const { data, error, count } = await sb
     .from("controller_failures")
     .select("id", { count: "exact" })
