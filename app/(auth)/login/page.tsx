@@ -1,71 +1,66 @@
-// app/(auth)/login/page.tsx
 "use client";
 
-import { useState } from "react";
 import Link from "next/link";
+import { useState } from "react";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-
-  async function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setMsg(null);
-    setBusy(true);
-    try {
-      // TODO: Replace with your auth API call
-      await new Promise((r) => setTimeout(r, 800));
-      setMsg("If this email exists, a sign-in link has been sent.");
-    } catch (e) {
-      setMsg("Something went wrong. Please try again.");
-    } finally {
-      setBusy(false);
-    }
-  }
+  const [pass, setPass] = useState("");
 
   return (
-    <div className="w-full max-w-md rounded-2xl border border-[var(--card-border)] bg-[var(--card)] p-6 shadow-[var(--shadow)]">
-      <div className="text-center">
-        <div className="text-xs text-[color:var(--muted)]">Welcome to</div>
-        <h1 className="text-xl font-semibold tracking-tight">Unlistin</h1>
-      </div>
+    <main>
+      <div className="bg-glow" aria-hidden />
+      <div className="hero">
+        <div className="hero-card glass" style={{ maxWidth: 560 }}>
+          <span className="pill">Welcome back</span>
+          <h1 className="hero-title">Sign in to continue</h1>
+          <p className="sub">Minimal info in, maximum privacy out. No marketing. No trackers.</p>
 
-      <form onSubmit={onSubmit} className="mt-6 space-y-4">
-        <div>
-          <label className="label" htmlFor="email">
-            Work Email
-          </label>
-          <input
-            id="email"
-            type="email"
-            required
-            className="input"
-            placeholder="you@company.com"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
+          <form
+            className="panel"
+            onSubmit={(e) => {
+              e.preventDefault();
+              // plug your real auth here; keeping UI-only to avoid wiring changes
+              window.location.href = "/dashboard";
+            }}
+          >
+            <label className="label" htmlFor="email">Email</label>
+            <input
+              id="email"
+              className="input"
+              placeholder="you@example.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              autoComplete="email"
+              required
+            />
+
+            <div style={{ height: 12 }} />
+
+            <label className="label" htmlFor="password">Password</label>
+            <input
+              id="password"
+              className="input"
+              type="password"
+              placeholder="••••••••"
+              value={pass}
+              onChange={(e) => setPass(e.target.value)}
+              autoComplete="current-password"
+              required
+            />
+
+            <div className="row" style={{ marginTop: 14, justifyContent: "space-between" }}>
+              <button className="btn btn-lg" type="submit">Sign In</button>
+              <Link className="btn btn-ghost btn-lg" href="/">Back home</Link>
+            </div>
+          </form>
+
+          <div className="chips">
+            <span className="chip">CSP & RLS enforced</span>
+            <span className="chip">Short-lived sessions</span>
+          </div>
         </div>
-
-        <button
-          type="submit"
-          disabled={busy}
-          className="btn w-full"
-          aria-busy={busy}
-        >
-          {busy ? "Sending…" : "Continue"}
-        </button>
-
-        {msg ? (
-          <div className="text-sm text-[color:var(--muted)] text-center">{msg}</div>
-        ) : null}
-      </form>
-
-      <div className="mt-4 text-center text-sm">
-        <Link className="text-[color:var(--muted)] hover:underline" href="/">
-          Back to site
-        </Link>
       </div>
-    </div>
+    </main>
   );
 }
