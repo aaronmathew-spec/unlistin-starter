@@ -20,7 +20,7 @@ export default function LoginPage() {
             className="panel"
             onSubmit={(e) => {
               e.preventDefault();
-              // plug your real auth here; keeping UI-only to avoid wiring changes
+              // Plug your real auth here (magic link / OTP).
               window.location.href = "/dashboard";
             }}
           >
@@ -56,7 +56,7 @@ export default function LoginPage() {
           </form>
 
           <div className="chips">
-            <span className="chip">CSP & RLS enforced</span>
+            <span className="chip">CSP &amp; RLS enforced</span>
             <span className="chip">Short-lived sessions</span>
           </div>
         </div>
