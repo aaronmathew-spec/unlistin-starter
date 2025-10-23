@@ -1,4 +1,3 @@
-// app/ops/dispatch/actions.ts
 "use server";
 
 import "server-only";
@@ -10,12 +9,18 @@ import { sendControllerRequest } from "@/lib/dispatch/send";
 export async function actionSendController(fd: FormData) {
   const controllerKey = String(fd.get("controllerKey") || "").trim();
   const controllerName = String(fd.get("controllerName") || controllerKey).trim();
-  const name = String(fd.get("name") || "").trim();
-  const email = String(fd.get("email") || "").trim();
-  const phone = String(fd.get("phone") || "").trim();
-  const locale = (String(fd.get("locale") || "en").trim() === "hi" ? "hi" : "en") as "en" | "hi";
+  const locale = String(fd.get("locale") || "en-IN");
+
+  const subject = {
+    id: (fd.get("subjectId") as string) || null,
+    name: (fd.get("name") as string) || null,
+    email: (fd.get("email") as string) || null,
+    phone: (fd.get("phone") as string) || null,
+    handle: (fd.get("handle") as string) || null,
+  };
+
   const preferred = String(fd.get("preferred") || "").trim(); // "webform" | "email" | "api" | ""
-  const formUrl = String(fd.get("formUrl") || "").trim();
+  const formUrl = (fd.get("formUrl") as string) || null;
 
   if (!controllerKey) {
     redirect(`/ops/dispatch?err=${encodeURIComponent("controllerKey_required")}`);
@@ -24,21 +29,16 @@ export async function actionSendController(fd: FormData) {
   const input: any = {
     controllerKey,
     controllerName,
-    subject: {
-      name: name || undefined,
-      email: email || undefined,
-      phone: phone || undefined,
-    },
+    subject,
     locale,
+    action: "create_request_v1",
+    subjectId: subject.id,
   };
 
   if (preferred === "webform" || preferred === "email" || preferred === "api") {
     input.preferredChannelOverride = preferred;
   }
-  if (formUrl) {
-    // Supported by sendControllerRequest (read safely even if not in .d.ts)
-    input.formUrl = formUrl;
-  }
+  if (formUrl) input.formUrl = formUrl;
 
   const res = await sendControllerRequest(input);
 
@@ -49,6 +49,6 @@ export async function actionSendController(fd: FormData) {
   }
 
   const chan = encodeURIComponent(res.channel);
-  const id = encodeURIComponent((res as any).providerId || (res as any).note || "");
+  const id = encodeURIComponent(res.providerId || res.note || "");
   redirect(`/ops/dispatch?ok=1&channel=${chan}&id=${id}`);
 }
