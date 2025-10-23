@@ -3,37 +3,39 @@ import type { Metadata } from "next";
 import "./globals.css";
 import "./design-system.css";
 import { ToastProvider } from "@/components/providers/ToastProvider";
-import { SITE } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  metadataBase: new URL(SITE.url),
   title: { default: "Unlistin", template: "%s · Unlistin" },
-  description: "Unlistin — requests, coverage, evidence",
-  applicationName: "Unlistin",
-  alternates: { canonical: SITE.url },
-  openGraph: {
-    type: "website",
-    url: SITE.url,
-    siteName: "Unlistin",
-    title: "Unlistin",
-    description: "Unlistin — requests, coverage, evidence",
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: "Unlistin",
-    description: "Unlistin — requests, coverage, evidence",
-  },
-  robots: {
-    index: true,
-    follow: true,
-  },
+  description: "Unlistin — verifiable privacy ops with tamper-evident proof.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body>
-        {children}
+        {/* Top mini-header (brand only) */}
+        <header className="site-header">
+          <a className="brand" href="/">Unlistin</a>
+          <nav className="nav-minimal">
+            <a href="/(app)/dashboard" className="nav-link">Dashboard</a>
+            <a href="/(app)/settings" className="nav-link">Settings</a>
+          </nav>
+        </header>
+
+        <main className="site-main">{children}</main>
+
+        <footer className="site-footer">
+          <div className="footer-col">
+            <div className="brand">Unlistin</div>
+            <div className="muted">&copy; {new Date().getFullYear()} Unlistin, Inc.</div>
+          </div>
+          <div className="footer-col">
+            <a href="/help" className="muted">Help</a>
+            <a href="/policy/privacy" className="muted">Privacy</a>
+            <a href="/policy/terms" className="muted">Terms</a>
+          </div>
+        </footer>
+
         {/* Global toasts (client component) */}
         <ToastProvider />
       </body>
