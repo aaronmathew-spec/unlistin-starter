@@ -1,57 +1,84 @@
-// app/api/ops/dispatch/send/route.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { sendControllerRequest } from "@/lib/dispatch/send";
-import type { ControllerRequestInput } from "@/lib/dispatch/types";
 
-const OPS_SECRET = process.env.SECURE_CRON_SECRET || "";
+const OPS_SECRET = (process.env.SECURE_CRON_SECRET || "").trim();
 
-function forbidden(msg: string) {
-  return NextResponse.json({ ok: false, error: msg }, { status: 403 });
+function bad(status: number, msg: string, extra?: Record<string, unknown>) {
+  return NextResponse.json({ ok: false, error: msg, ...(extra || {}) }, { status });
 }
 
 export async function POST(req: Request) {
-  if (!OPS_SECRET) return forbidden("SECURE_CRON_SECRET not configured");
-  const header = req.headers.get("x-secure-cron") || "";
-  if (header !== OPS_SECRET) return forbidden("Invalid secret");
+  // Ops-only endpoint — protect with secret
+  if (!OPS_SECRET) return bad(500, "SECURE_CRON_SECRET not configured");
+  const sec = (req.headers.get("x-secure-cron") || "").trim();
+  if (sec !== OPS_SECRET) return bad(403, "Invalid secret");
 
-  const body = (await req.json().catch(() => ({}))) as Partial<ControllerRequestInput> & {
-    formUrl?: string;
-  };
+  // Accept JSON or multipart
+  const ct = (req.headers.get("content-type") || "").toLowerCase();
+  let body: any = {};
+  try {
+    if (ct.startsWith("application/json")) {
+      body = await req.json();
+    } else if (
+      ct.startsWith("multipart/form-data") ||
+      ct.startsWith("application/x-www-form-urlencoded")
+    ) {
+      const fd = await req.formData();
+      body = Object.fromEntries(fd.entries());
+      // parse nested JSON-like inputs if needed
+      if (typeof body.subject === "string") {
+        try { body.subject = JSON.parse(body.subject); } catch {}
+      }
+      if (typeof body.draft === "string") {
+        try { body.draft = JSON.parse(body.draft); } catch {}
+      }
+    } else {
+      return bad(415, "unsupported_content_type");
+    }
+  } catch {
+    return bad(400, "invalid_body");
+  }
 
-  // Minimal validation
-  if (!body.controllerKey || !body.controllerName) {
+  const controllerKey = String(body.controllerKey || body.controller_key || "").trim();
+  const controllerName = String(body.controllerName || body.controller_name || controllerKey || "").trim();
+  if (!controllerKey || !controllerName) {
+    return bad(400, "controllerKey and controllerName are required");
+  }
+
+  const res = await sendControllerRequest({
+    controllerKey,
+    controllerName,
+    subject: {
+      id: body.subject?.id ?? null,
+      name: body.subject?.name ?? null,
+      email: body.subject?.email ?? null,
+      phone: body.subject?.phone ?? null,
+      handle: body.subject?.handle ?? null,
+    },
+    locale: String(body.locale || "en-IN"),
+    draft: body.draft
+      ? { subject: body.draft.subject ?? null, bodyText: body.draft.bodyText ?? null }
+      : undefined,
+    formUrl: body.formUrl ?? body.form_url ?? null,
+    action: body.action || "create_request_v1",
+    subjectId: body.subjectId ?? null,
+  });
+
+  if (!res.ok) {
     return NextResponse.json(
-      { ok: false, error: "controllerKey and controllerName are required" },
-      { status: 400 }
+      { ok: false, error: res.error, note: res.note, hint: (res as any).hint ?? null },
+      { status: 500 }
     );
   }
 
-  const input: ControllerRequestInput = {
-    controllerKey: body.controllerKey as ControllerRequestInput["controllerKey"],
-    controllerName: body.controllerName!,
-    subject: {
-      name: body.subject?.name ?? undefined,
-      email: body.subject?.email ?? undefined,
-      phone: body.subject?.phone ?? undefined,
-      // city tolerated if your types include it; otherwise ignored downstream
-      ...(body.subject && "city" in body.subject ? { city: (body.subject as any).city } : {}),
-    } as any,
-    locale: (body.locale as "en" | "hi") || "en",
-    // If your .d.ts does not yet include formUrl, sendControllerRequest will still read it safely.
-    ...(typeof body.formUrl === "string" ? ({ formUrl: body.formUrl } as any) : {}),
-  };
-
-  const res = await sendControllerRequest(input);
-  if (!res.ok) {
-    return NextResponse.json({ ok: false, error: res.error, hint: (res as any).hint }, { status: 500 });
-  }
   return NextResponse.json({
     ok: true,
     channel: res.channel,
-    providerId: (res as any).providerId ?? null,
-    note: (res as any).note,
+    providerId: res.providerId ?? null,
+    idempotent: res.idempotent ?? "new",
+    note: res.note ?? null,
   });
 }
