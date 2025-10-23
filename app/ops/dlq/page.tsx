@@ -1,5 +1,6 @@
 // app/ops/dlq/page.tsx
 import { listDLQ } from "@/lib/ops/dlq";
+import { actionRetryDLQ } from "./actions";
 
 export const dynamic = "force-dynamic";
 
@@ -30,7 +31,6 @@ function safeJsonPreview(value: unknown, max = 140): string {
     return s.length > max ? s.slice(0, max) + "…" : s;
   } catch {
     try {
-      // last resort: coerce
       const s = String(value ?? "-");
       return s.length > max ? s.slice(0, max) + "…" : s;
     } catch {
@@ -44,12 +44,56 @@ function clamp(n: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, n));
 }
 
+function Notice({
+  ok,
+  err,
+  note,
+}: {
+  ok?: boolean;
+  err?: string;
+  note?: string;
+}) {
+  if (ok) {
+    return (
+      <div
+        style={{
+          padding: 12,
+          border: "1px solid #10b981",
+          background: "#ecfdf5",
+          borderRadius: 10,
+          marginTop: 12,
+        }}
+      >
+        ✅ Retry enqueued <span style={{ color: "#065f46" }}>{note || ""}</span>
+      </div>
+    );
+  }
+  if (err) {
+    return (
+      <div
+        style={{
+          padding: 12,
+          border: "1px solid #ef4444",
+          background: "#fef2f2",
+          borderRadius: 10,
+          marginTop: 12,
+        }}
+      >
+        ❌ Retry failed: <b>{err}</b>
+      </div>
+    );
+  }
+  return null;
+}
+
+const FLAG_RETRY = process.env.FLAG_DLQ_RETRY === "1";
+
 export default async function OpsDLQPage({
   searchParams,
 }: {
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
-  // parse filters (kept optional; no DB-side filtering so we don’t change your lib)
+  // parse filters (optional; in-memory so we don’t change your DAL)
   const qChannel =
     typeof searchParams?.channel === "string"
       ? searchParams?.channel.trim()
@@ -58,11 +102,17 @@ export default async function OpsDLQPage({
     typeof searchParams?.controller === "string"
       ? searchParams?.controller.trim()
       : "";
-
   // optional limit control
   const limitRaw =
     typeof searchParams?.limit === "string" ? searchParams?.limit : undefined;
   const limit = limitRaw && !isNaN(+limitRaw) ? clamp(+limitRaw, 1, 1000) : 200;
+
+  // status notice from redirects
+  const ok = searchParams?.ok === "1";
+  const err =
+    typeof searchParams?.err === "string" ? searchParams?.err : undefined;
+  const note =
+    typeof searchParams?.note === "string" ? searchParams?.note : undefined;
 
   let rows = await (async () => {
     try {
@@ -72,7 +122,6 @@ export default async function OpsDLQPage({
     }
   })();
 
-  // light in-memory filter to avoid changing your DAL
   if (qChannel) {
     rows = rows.filter((r) => String(r.channel || "").includes(qChannel));
   }
@@ -104,6 +153,11 @@ export default async function OpsDLQPage({
             <Mono>?controller=truecaller</Mono>{" "}
             <Mono>?limit=500</Mono>
           </div>
+          {!FLAG_RETRY && (
+            <div style={{ marginTop: 6, color: "#9ca3af", fontSize: 12 }}>
+              Set <Mono>FLAG_DLQ_RETRY=1</Mono> to enable retry buttons.
+            </div>
+          )}
         </div>
         <a
           href="/ops/dispatch"
@@ -119,6 +173,8 @@ export default async function OpsDLQPage({
         </a>
       </div>
 
+      <Notice ok={ok} err={err} note={note} />
+
       {/* Table */}
       <div
         style={{
@@ -132,7 +188,7 @@ export default async function OpsDLQPage({
           <table
             style={{
               width: "100%",
-              minWidth: 880,
+              minWidth: 980,
               borderCollapse: "separate",
               borderSpacing: 0,
             }}
@@ -160,6 +216,11 @@ export default async function OpsDLQPage({
                 <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
                   Payload
                 </th>
+                {FLAG_RETRY && (
+                  <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
+                    Actions
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -177,10 +238,7 @@ export default async function OpsDLQPage({
                 const payloadShort = safeJsonPreview(r.payload, 140);
 
                 return (
-                  <tr
-                    key={r.id}
-                    style={{ borderTop: "1px solid #e5e7eb" }}
-                  >
+                  <tr key={r.id} style={{ borderTop: "1px solid #e5e7eb" }}>
                     <td style={{ padding: 12 }}>
                       {new Date(r.created_at).toLocaleString()}
                     </td>
@@ -196,13 +254,35 @@ export default async function OpsDLQPage({
                     <td style={{ padding: 12 }}>
                       <Mono>{payloadShort}</Mono>
                     </td>
+                    {FLAG_RETRY && (
+                      <td style={{ padding: 12 }}>
+                        <form action={actionRetryDLQ}>
+                          <input type="hidden" name="id" value={r.id} />
+                          <button
+                            type="submit"
+                            style={{
+                              padding: "6px 10px",
+                              borderRadius: 8,
+                              border: "1px solid #111827",
+                              background: "#111827",
+                              color: "white",
+                              fontWeight: 600,
+                              cursor: "pointer",
+                            }}
+                            title="Retry this item"
+                          >
+                            Retry
+                          </button>
+                        </form>
+                      </td>
+                    )}
                   </tr>
                 );
               })}
               {rows.length === 0 && (
                 <tr>
                   <td
-                    colSpan={7}
+                    colSpan={FLAG_RETRY ? 8 : 7}
                     style={{
                       padding: 24,
                       textAlign: "center",
@@ -220,8 +300,8 @@ export default async function OpsDLQPage({
 
       {/* Footer */}
       <div style={{ marginTop: 14, fontSize: 12, color: "#6b7280" }}>
-        Coming soon: one-click retry and export. Server helper{" "}
-        <code>retryDLQ(id)</code> is already stubbed.
+        Retry is behind a feature flag. Set{" "}
+        <Mono>FLAG_DLQ_RETRY=1</Mono> to enable.
       </div>
     </div>
   );
