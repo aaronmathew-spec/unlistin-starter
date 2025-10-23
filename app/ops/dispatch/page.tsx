@@ -152,22 +152,23 @@ function groupLatest(rows: DispatchRow[]) {
   return Array.from(byKey.values());
 }
 
+function getFirstParam(
+  v: string | string[] | undefined
+): string | undefined {
+  if (Array.isArray(v)) return v[0];
+  return typeof v === "string" ? v : undefined;
+}
+
 export default async function DispatchConsole({
   searchParams,
 }: {
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
-  const ok = searchParams?.ok === "1";
-  const err =
-    typeof searchParams?.err === "string" ? searchParams?.err : undefined;
-  const hint =
-    typeof searchParams?.hint === "string" ? searchParams?.hint : undefined;
-  const channel =
-    typeof searchParams?.channel === "string"
-      ? searchParams?.channel
-      : undefined;
-  const id =
-    typeof searchParams?.id === "string" ? searchParams?.id : undefined;
+  const ok = getFirstParam(searchParams?.ok) === "1";
+  const err = getFirstParam(searchParams?.err);
+  const hint = getFirstParam(searchParams?.hint);
+  const channel = getFirstParam(searchParams?.channel);
+  const id = getFirstParam(searchParams?.id);
 
   // Fetch recent dispatch audit (server-side)
   // We keep the limit moderate for perf; the UI will show latest per dedupe.
@@ -176,7 +177,6 @@ export default async function DispatchConsole({
     const recent = await listDispatchLog(500);
     latestPerRequest = groupLatest(recent);
   } catch {
-    // Non-fatal: if query helper changes or fails, we don't break the form.
     latestPerRequest = [];
   }
 
@@ -286,75 +286,82 @@ export default async function DispatchConsole({
             overflow: "hidden",
           }}
         >
-          <table
-            style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}
-          >
-            <thead style={{ background: "#f9fafb", textAlign: "left" }}>
-              <tr>
-                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
-                  When
-                </th>
-                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
-                  Controller
-                </th>
-                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
-                  Subject
-                </th>
-                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
-                  Channel
-                </th>
-                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
-                  Provider ID
-                </th>
-                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
-                  Note
-                </th>
-                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
-                  Status
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {latestPerRequest.map((r) => (
-                <tr
-                  key={`${r.dedupe_key}-${r.id}`}
-                  style={{ borderTop: "1px solid #e5e7eb" }}
-                >
-                  <td style={{ padding: 12 }}>
-                    {new Date(r.created_at).toLocaleString()}
-                  </td>
-                  <td style={{ padding: 12 }}>{r.controller_key}</td>
-                  <td style={{ padding: 12 }}>
-                    {[r.subject_name, r.subject_email, r.subject_phone]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </td>
-                  <td style={{ padding: 12 }}>{r.channel || "-"}</td>
-                  <td style={{ padding: 12, fontFamily: "monospace" }}>
-                    {r.provider_id || "-"}
-                  </td>
-                  <td style={{ padding: 12 }}>{r.note || "-"}</td>
-                  <td style={{ padding: 12 }}>
-                    <Badge ok={!!r.ok} />
-                  </td>
-                </tr>
-              ))}
-              {latestPerRequest.length === 0 && (
+          <div style={{ overflowX: "auto" }}>
+            <table
+              style={{
+                width: "100%",
+                minWidth: 720,
+                borderCollapse: "separate",
+                borderSpacing: 0,
+              }}
+            >
+              <thead style={{ background: "#f9fafb", textAlign: "left" }}>
                 <tr>
-                  <td
-                    colSpan={7}
-                    style={{
-                      padding: 24,
-                      textAlign: "center",
-                      color: "#6b7280",
-                    }}
-                  >
-                    No dispatches yet.
-                  </td>
+                  <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
+                    When
+                  </th>
+                  <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
+                    Controller
+                  </th>
+                  <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
+                    Subject
+                  </th>
+                  <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
+                    Channel
+                  </th>
+                  <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
+                    Provider ID
+                  </th>
+                  <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
+                    Note
+                  </th>
+                  <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
+                    Status
+                  </th>
                 </tr>
-              )}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {latestPerRequest.map((r) => (
+                  <tr
+                    key={`${r.dedupe_key}-${r.id}`}
+                    style={{ borderTop: "1px solid #e5e7eb" }}
+                  >
+                    <td style={{ padding: 12 }}>
+                      {new Date(r.created_at).toLocaleString()}
+                    </td>
+                    <td style={{ padding: 12 }}>{r.controller_key}</td>
+                    <td style={{ padding: 12 }}>
+                      {[r.subject_name, r.subject_email, r.subject_phone]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </td>
+                    <td style={{ padding: 12 }}>{r.channel || "-"}</td>
+                    <td style={{ padding: 12, fontFamily: "monospace" }}>
+                      {r.provider_id || "-"}
+                    </td>
+                    <td style={{ padding: 12 }}>{r.note || "-"}</td>
+                    <td style={{ padding: 12 }}>
+                      <Badge ok={!!r.ok} />
+                    </td>
+                  </tr>
+                ))}
+                {latestPerRequest.length === 0 && (
+                  <tr>
+                    <td
+                      colSpan={7}
+                      style={{
+                        padding: 24,
+                        textAlign: "center",
+                        color: "#6b7280",
+                      }}
+                    >
+                      No dispatches yet.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
       {/* ---- /Latest status ---- */}
