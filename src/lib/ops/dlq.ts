@@ -8,7 +8,7 @@ export async function pushDLQ(input: {
   channel: "webform" | "email" | string;
   controller_key?: string | null;
   subject_id?: string | null;
-  payload?: unknown;
+  payload?: unknown;         // redacted job payload is recommended
   error_code?: string | null;
   error_note?: string | null;
   retries?: number;
