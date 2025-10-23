@@ -6,10 +6,13 @@ const SR  = process.env.SUPABASE_SERVICE_ROLE!;
 
 export type BreakerDecision = {
   allow: boolean;
-  reason?: "ok" | "open" | "half_open";
+  reason?: "ok" | "open";
   recentFailures?: number;
 };
 
+/**
+ * If recent failures >= threshold within windowMinutes -> block
+ */
 export async function shouldAllowController(
   controllerKey: string,
   windowMinutes = 15,
@@ -17,18 +20,24 @@ export async function shouldAllowController(
 ): Promise<BreakerDecision> {
   const since = new Date(Date.now() - windowMinutes * 60_000).toISOString();
   const sb = createClient(URL, SR, { auth: { persistSession: false } });
-  const { data, error } = await sb
+
+  // count() can vary per driver; head:true gives headers count in some modes.
+  const { data, error, count } = await sb
     .from("controller_failures")
-    .select("id", { count: "exact", head: true })
+    .select("id", { count: "exact" })
     .eq("controller_key", controllerKey)
     .gte("created_at", since);
 
-  const recent = data ? (data as unknown as any[]).length : 0; // head:true count is sometimes driver-specific
+  const recent = typeof count === "number" ? count : (data?.length ?? 0);
   const allow = error ? true : recent < threshold;
   return { allow, reason: allow ? "ok" : "open", recentFailures: recent };
 }
 
 export async function recordControllerFailure(controllerKey: string, errorCode?: string, note?: string) {
   const sb = createClient(URL, SR, { auth: { persistSession: false } });
-  await sb.from("controller_failures").insert({ controller_key: controllerKey, error_code: errorCode, note });
+  await sb.from("controller_failures").insert({
+    controller_key: controllerKey,
+    error_code: errorCode ?? null,
+    note: note ?? null,
+  });
 }
