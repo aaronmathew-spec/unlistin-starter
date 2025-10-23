@@ -22,7 +22,6 @@ type DashboardResponse = {
 };
 
 /* --------------------------------- Page ---------------------------------- */
-
 export default function HomePage() {
   const [data, setData] = useState<DashboardResponse | null>(null);
   const [exposure, setExposure] = useState<number | null>(null);
@@ -51,8 +50,8 @@ export default function HomePage() {
     }
 
     // exposure
-    if (expRes.status === "fulfilled" && typeof expRes.value?.score === "number") {
-      setExposure(Math.round(expRes.value.score));
+    if (expRes.status === "fulfilled" && typeof (expRes.value as any)?.score === "number") {
+      setExposure(Math.round((expRes.value as any).score));
     } else {
       setExposure(null);
     }
@@ -90,126 +89,103 @@ export default function HomePage() {
   }, [data]);
 
   return (
-    <main className="relative min-h-screen">
-      {/* soft gradient background (CSP-safe) */}
-      <div className="pointer-events-none absolute inset-0 -z-10">
-        <div className="absolute inset-0 bg-[radial-gradient(60%_60%_at_50%_-10%,rgba(99,102,241,.10),rgba(255,255,255,0))]" />
-        <div
-          className="absolute -top-40 left-1/2 h-[620px] w-[980px] -translate-x-1/2 rounded-full blur-3xl opacity-25"
-          style={{ background: "linear-gradient(90deg,#A78BFA,#60A5FA,#34D399)" }}
-        />
+    <main>
+      {/* HERO */}
+      <div className="hero">
+        <div className="hero-card">
+          <span className="pill">Verifiable Privacy Ops</span>
+          <h1>Remove personal data — with proofs, follow-ups, and global coverage.</h1>
+          <p className="sub">
+            Unlistin acts as your privacy fiduciary: we dispatch deletion requests, chase SLAs,
+            and produce tamper-evident evidence bundles for audits—globally.
+          </p>
+
+          <div className="row" style={{ marginTop: 14 }}>
+            <Link href="/scan/quick" className="btn">Run Quick Scan</Link>
+            <Link href="/ops/proofs/verify" className="btn btn-outline">Verify Bundle</Link>
+            <Link href="/billing" className="btn btn-ghost">Plans & Billing</Link>
+          </div>
+
+          <p className="lead" style={{ marginTop: 8, fontSize: 12 }}>
+            Quick Scan inputs are transient. Only redacted previews & signed evidence are retained.
+          </p>
+        </div>
+
+        {/* “At a glance” KPIs panel */}
+        <div className="card" style={{ borderRadius: 20 }}>
+          <div className="h3">At a glance</div>
+          <div className="divider" />
+          <div className="row" style={{ gap: 12, alignItems: "stretch", flexWrap: "wrap" }}>
+            {(metrics ?? []).map((m) => (
+              <Kpi
+                key={m.title}
+                title={m.title}
+                primary={m.primary}
+                sub={m.sub}
+                href={m.href}
+                loading={loading}
+              />
+            ))}
+          </div>
+          <div style={{ marginTop: 10, color: "var(--muted)", fontSize: 12 }}>
+            • Strict allowlist • Server-only scrape • RLS & pgvector • Signed proof bundles
+          </div>
+        </div>
       </div>
 
-      <div className="mx-auto max-w-7xl px-6 py-8 space-y-10">
-        {/* Header / brand */}
-        <header className="flex items-center justify-between">
+      {/* Exposure & header row below hero */}
+      <div className="container" style={{ marginTop: 18 }}>
+        <div className="row" style={{ justifyContent: "space-between" }}>
           <div>
-            <div className="text-xs text-neutral-500">Unlistin</div>
-            <h1 className="text-2xl md:text-3xl font-semibold tracking-tight">Privacy Control Dashboard</h1>
+            <div className="h2">Privacy Control Dashboard</div>
+            <div className="lead" style={{ marginTop: 4 }}>Your requests, coverage and evidence—centralized.</div>
           </div>
           {typeof exposure === "number" ? <ExposurePill score={exposure} /> : null}
-        </header>
-
-        {/* Hero */}
-        <section className="relative overflow-hidden rounded-3xl border bg-white shadow-[0_16px_60px_rgba(0,0,0,.06)]">
-          <div
-            className="absolute right-[-120px] top-[-100px] h-[320px] w-[320px] rounded-full blur-3xl opacity-20"
-            style={{ background: "linear-gradient(45deg,#F472B6,#A78BFA)" }}
-          />
-          <div className="grid gap-6 p-6 md:grid-cols-2 md:p-10">
-            <div className="space-y-3">
-              <div className="inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs">
-                <span className="h-2 w-2 rounded-full bg-emerald-500" /> RLS, CSP & allowlist enforced
-              </div>
-              <h2 className="text-xl md:text-2xl font-semibold tracking-tight">
-                Remove your personal data from the web —{" "}
-                <span className="bg-gradient-to-r from-indigo-500 via-sky-500 to-emerald-500 bg-clip-text text-transparent">
-                  India-first, AI-assisted
-                </span>
-                .
-              </h2>
-              <p className="text-sm text-neutral-600">
-                Start with a <strong>Quick Scan</strong> (no sign-up, no PII stored). Upgrade to deep, automated removals with proofs and tracking.
-              </p>
-
-              <div className="flex flex-wrap gap-3">
-                <Link href="/scan/quick" className="rounded-xl bg-black px-4 py-2 text-sm font-medium text-white hover:opacity-90">
-                  Run Quick Scan
-                </Link>
-                <Link href="/ai" className="rounded-xl border px-4 py-2 text-sm hover:bg-neutral-50">
-                  Ask the AI assistant
-                </Link>
-                <Link href="/billing" className="rounded-xl border px-4 py-2 text-sm hover:bg-neutral-50">
-                  Plans & Billing
-                </Link>
-              </div>
-
-              <p className="text-xs text-neutral-500">
-                Quick Scan inputs are transient in server runtime. Only redacted previews & evidence URLs are shown.
-              </p>
-            </div>
-
-            {/* Visual KPIs card */}
-            <div className="rounded-2xl border bg-white p-5">
-              <div className="text-sm font-medium">At a glance</div>
-              <div className="mt-3 grid gap-3 sm:grid-cols-3">
-                {(metrics ?? []).map((m) => (
-                  <Kpi key={m.title} title={m.title} primary={m.primary} sub={m.sub} href={m.href} loading={loading} />
-                ))}
-              </div>
-              <div className="mt-4 grid gap-2 text-xs text-neutral-600">
-                <div>• Strict domain allowlist • Server-only scan & scrape • pgvector & RLS</div>
-                <div>• Multilingual concierge (guarded actions) • Evidence & audit trails</div>
-              </div>
-            </div>
-          </div>
-        </section>
+        </div>
 
         {/* Empty state nudge */}
         {!!data && data.requests.total === 0 && (
-          <div className="rounded-2xl border bg-white p-5 flex flex-wrap items-center justify-between">
-            <div className="text-sm text-neutral-700">
+          <div className="panel row" style={{ justifyContent: "space-between", marginTop: 16 }}>
+            <div className="lead" style={{ color: "var(--fg)" }}>
               No requests yet — create your first removal request to get started.
             </div>
-            <Link href="/requests" className="rounded-lg border px-3 py-1.5 text-sm hover:bg-neutral-50">
-              Create a Request
-            </Link>
+            <Link href="/requests" className="btn btn-outline">Create a Request</Link>
           </div>
         )}
 
         {/* Activity */}
-        <section className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-base font-semibold">Recent Activity</h3>
-            <Link className="rounded-lg border px-3 py-1.5 text-sm hover:bg-neutral-50" href="/activity">
-              View all
-            </Link>
+        <section className="section">
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <div className="h3">Recent Activity</div>
+            <Link className="btn btn-ghost" href="/activity">View all</Link>
           </div>
 
           {loading ? (
             <ActivitySkeleton />
           ) : data && data.activity.length > 0 ? (
-            <ul className="space-y-2">
+            <ul style={{ listStyle: "none", padding: 0, margin: "12px 0 0 0", display: "grid", gap: 10 }}>
               {data.activity.map((a) => (
-                <li key={a.id} className="rounded-2xl border bg-white p-4 text-sm flex items-start justify-between">
-                  <div className="pr-4">
-                    <div className="font-medium">
-                      {prettyEntity(a.entity_type)} #{a.entity_id} — {prettyAction(a.action)}
+                <li key={a.id} className="card" style={{ padding: 14 }}>
+                  <div className="row" style={{ alignItems: "start", justifyContent: "space-between" }}>
+                    <div style={{ paddingRight: 12 }}>
+                      <div style={{ fontWeight: 700 }}>
+                        {prettyEntity(a.entity_type)} #{a.entity_id} — {prettyAction(a.action)}
+                      </div>
+                      {a.meta ? (
+                        <pre className="mono" style={{ marginTop: 6, fontSize: 12, color: "var(--muted)", whiteSpace: "pre-wrap" }}>
+                          {JSON.stringify(a.meta, null, 2)}
+                        </pre>
+                      ) : null}
                     </div>
-                    {a.meta ? (
-                      <pre className="mt-1 text-xs text-neutral-600 whitespace-pre-wrap break-words">
-                        {JSON.stringify(a.meta, null, 2)}
-                      </pre>
-                    ) : null}
-                  </div>
-                  <div className="text-xs text-neutral-500 whitespace-nowrap">
-                    {new Date(a.created_at).toLocaleString()}
+                    <div style={{ fontSize: 12, color: "var(--muted)", whiteSpace: "nowrap" }}>
+                      {new Date(a.created_at).toLocaleString()}
+                    </div>
                   </div>
                 </li>
               ))}
             </ul>
           ) : (
-            <div className="rounded-2xl border bg-white p-6 text-sm text-neutral-600">
+            <div className="empty" style={{ marginTop: 12 }}>
               No activity yet. After you run scans and create requests, you’ll see events here.
             </div>
           )}
@@ -220,7 +196,6 @@ export default function HomePage() {
 }
 
 /* ------------------------------ Components ------------------------------- */
-
 function Kpi({
   title,
   primary,
@@ -236,29 +211,29 @@ function Kpi({
 }) {
   if (loading) {
     return (
-      <div className="rounded-xl border bg-white p-4">
-        <div className="h-4 w-24 animate-pulse rounded bg-neutral-200 mb-2" />
-        <div className="h-7 w-16 animate-pulse rounded bg-neutral-200" />
-        <div className="mt-2 h-3 w-40 animate-pulse rounded bg-neutral-100" />
+      <div className="panel" style={{ minWidth: 220 }}>
+        <div style={{ height: 14, width: 96, background: "rgba(255,255,255,.08)", borderRadius: 8, marginBottom: 8 }} />
+        <div style={{ height: 28, width: 72, background: "rgba(255,255,255,.08)", borderRadius: 8 }} />
+        <div style={{ height: 10, width: 160, background: "rgba(255,255,255,.06)", borderRadius: 8, marginTop: 8 }} />
       </div>
     );
   }
   return (
-    <Link href={href || "#"} className="rounded-xl border bg-white p-4 hover:bg-neutral-50 block">
-      <div className="text-xs text-neutral-600">{title}</div>
-      <div className="mt-1 text-2xl font-semibold">{primary}</div>
-      {sub ? <div className="mt-1 text-[11px] leading-4 text-neutral-500">{sub}</div> : null}
+    <Link href={href || "#"} className="panel" style={{ textDecoration: "none", color: "inherit", minWidth: 220 }}>
+      <div style={{ fontSize: 12, color: "var(--muted)" }}>{title}</div>
+      <div style={{ marginTop: 4, fontSize: 24, fontWeight: 800 }}>{primary}</div>
+      {sub ? <div style={{ marginTop: 4, fontSize: 12, color: "var(--muted)" }}>{sub}</div> : null}
     </Link>
   );
 }
 
 function ActivitySkeleton() {
   return (
-    <div className="space-y-2">
+    <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
       {[0, 1, 2, 3].map((i) => (
-        <div key={i} className="rounded-2xl border bg-white p-4">
-          <div className="h-4 w-48 animate-pulse rounded bg-neutral-200 mb-2" />
-          <div className="h-3 w-72 animate-pulse rounded bg-neutral-100" />
+        <div key={i} className="panel">
+          <div style={{ height: 16, width: 220, background: "rgba(255,255,255,.08)", borderRadius: 8, marginBottom: 8 }} />
+          <div style={{ height: 12, width: 320, background: "rgba(255,255,255,.06)", borderRadius: 8 }} />
         </div>
       ))}
     </div>
@@ -266,19 +241,19 @@ function ActivitySkeleton() {
 }
 
 function ExposurePill({ score }: { score: number }) {
-  const color =
-    score >= 75 ? "bg-red-100 text-red-700 border-red-200" :
-    score >= 40 ? "bg-amber-100 text-amber-700 border-amber-200" :
-                  "bg-emerald-100 text-emerald-700 border-emerald-200";
+  const style = (() => {
+    if (score >= 75) return { background: "rgba(239,68,68,.12)", color: "#ef4444", border: "1px solid rgba(239,68,68,.2)" };
+    if (score >= 40) return { background: "rgba(245,158,11,.12)", color: "#f59e0b", border: "1px solid rgba(245,158,11,.2)" };
+    return { background: "rgba(16,185,129,.12)", color: "#10b981", border: "1px solid rgba(16,185,129,.2)" };
+  })();
   return (
-    <span className={`px-3 py-1 rounded-full text-sm font-medium border ${color}`}>
+    <span style={{ ...style, padding: "6px 10px", borderRadius: 999, fontWeight: 600, fontSize: 13 }}>
       Exposure: {score}
     </span>
   );
 }
 
 /* ------------------------------- Utilities ------------------------------- */
-
 function prettyEntity(t: Act["entity_type"]) {
   switch (t) {
     case "request": return "Request";
@@ -287,8 +262,13 @@ function prettyEntity(t: Act["entity_type"]) {
     case "file": return "File";
   }
 }
-
 function prettyAction(a: Act["action"]) {
   switch (a) {
     case "create": return "Created";
-    case "update": return "
+    case "update": return "Updated";
+    case "status": return "Status Changed";
+    case "delete": return "Deleted";
+    case "upload": return "Uploaded";
+    case "download": return "Downloaded";
+  }
+}
