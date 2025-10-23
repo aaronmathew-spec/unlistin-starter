@@ -23,12 +23,21 @@ export default function SettingsPage() {
 
         <section className="panel" style={{ marginTop: 16 }}>
           <label className="label">Display name</label>
-          <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" />
+          <input
+            className="input"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Your name"
+          />
 
           <div style={{ height: 12 }} />
 
           <label className="label">Locale</label>
-          <select className="input" value={locale} onChange={(e) => setLocale(e.target.value)}>
+          <select
+            className="input"
+            value={locale}
+            onChange={(e) => setLocale(e.target.value)}
+          >
             <option value="en">English</option>
             <option value="hi">हिन्दी</option>
             <option value="es">Español</option>
@@ -49,8 +58,16 @@ export default function SettingsPage() {
           </div>
 
           <div className="row" style={{ marginTop: 16, justifyContent: "flex-end", gap: 8 }}>
-            <button className="btn btn-ghost" type="button" onClick={() => window.location.reload()}>Cancel</button>
-            <button className="btn" type="button" onClick={() => alert("Saved (wire to API later)")}>Save changes</button>
+            <button className="btn btn-ghost" type="button" onClick={() => window.location.reload()}>
+              Cancel
+            </button>
+            <button
+              className="btn"
+              type="button"
+              onClick={() => alert("Saved (wire to API later)")}
+            >
+              Save changes
+            </button>
           </div>
         </section>
 
