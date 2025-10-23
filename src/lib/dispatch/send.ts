@@ -8,30 +8,38 @@ import {
 } from "@/lib/guards/circuit-breaker";
 import { pushDLQ } from "@/lib/ops/dlq";
 
-// ---- Minimal adapters to your existing webform job enqueue API ----
-// If you already have these in another path, update the import accordingly.
-import { enqueueWebformJob } from "@/src/lib/webform/queue"; // <- confirm path
-// import { enqueueWebformJob } from "@/lib/webform/queue"; // (alternative)
+// ---- Adapter to your webform queue API ----
+// NOTE: use "@/lib/webform/queue" (not "@/src/...").
+import { enqueueWebformJob } from "@/lib/webform/queue";
 
 type Locale = string;
 
+// Use optional string | undefined for smoother interop with callers
 type SubjectProfile = {
-  id?: string | null;
-  name?: string | null;
-  email?: string | null;
-  phone?: string | null;
-  handle?: string | null;
+  id?: string;
+  name?: string;
+  email?: string;
+  phone?: string;
+  handle?: string;
 };
 
 type SendInput = {
-  controllerKey: "generic" | "truecaller" | "naukri" | "olx" | "foundit" | "shine" | "timesjobs" | string;
+  controllerKey:
+    | "generic"
+    | "truecaller"
+    | "naukri"
+    | "olx"
+    | "foundit"
+    | "shine"
+    | "timesjobs"
+    | string;
   controllerName: string;
   subject: SubjectProfile;
   locale?: Locale;
   draft?: { subject?: string; bodyText?: string };
   formUrl?: string;
   action?: string; // used for idempotency (default: create_request_v1)
-  subjectId?: string; // if you have a canonical subjectId
+  subjectId?: string; // canonical subjectId if available
 };
 
 type SendResult = {
@@ -48,7 +56,13 @@ function stableIdempotencyKey(input: SendInput): string {
   const s = input.subject || {};
   // Prefer canonical subject ID, then email, phone, handle, then name.
   const subjectIdent =
-    (input.subjectId || s.id || s.email || s.phone || s.handle || s.name || "anon").toString();
+    (input.subjectId ||
+      s.id ||
+      s.email ||
+      s.phone ||
+      s.handle ||
+      s.name ||
+      "anon").toString();
   return `${input.controllerKey}:${subjectIdent}:${action}`;
 }
 
@@ -80,7 +94,7 @@ export async function sendDispatch(input: SendInput): Promise<SendResult> {
     };
   }
 
-  // 3) Dispatch flow — try webform first (you can add email/SMS branches similarly)
+  // 3) Dispatch via webform (extend with email/SMS branches as needed)
   try {
     const wf = await enqueueWebformJob({
       controllerKey: input.controllerKey,
@@ -94,12 +108,14 @@ export async function sendDispatch(input: SendInput): Promise<SendResult> {
       },
       locale: (input.locale || "en-IN") as Locale,
       draft: input.draft
-        ? { subject: input.draft.subject ?? "", bodyText: input.draft.bodyText ?? "" }
+        ? {
+            subject: input.draft.subject ?? "",
+            bodyText: input.draft.bodyText ?? "",
+          }
         : undefined,
       formUrl: input.formUrl ?? undefined,
     });
 
-    // If your enqueue returns a job object, keep a friendly note
     const note = wf && (wf as any).id ? `enqueued:${(wf as any).id}` : null;
 
     return {
@@ -112,10 +128,15 @@ export async function sendDispatch(input: SendInput): Promise<SendResult> {
     };
   } catch (e: any) {
     const msg = String(e?.message || e);
-    // 4) Record breaker failure
-    await recordControllerFailure(input.controllerKey, "webform_enqueue_failed", msg);
 
-    // 5) DLQ immediately if you consider enqueue a hard fail
+    // 4) Record breaker failure
+    await recordControllerFailure(
+      input.controllerKey,
+      "webform_enqueue_failed",
+      msg
+    );
+
+    // 5) DLQ immediately if enqueue is a hard fail
     await pushDLQ({
       channel: "webform",
       controller_key: input.controllerKey,
@@ -144,5 +165,14 @@ export async function sendDispatch(input: SendInput): Promise<SendResult> {
   }
 }
 
-// Keep a default export for compatibility if other modules import default.
-export default sendDispatch;
+/**
+ * Compatibility export for call-sites that do:
+ *   import { sendControllerRequest } from "@/lib/dispatch/send";
+ * and for default-imports:
+ *   import sendControllerRequest from "@/lib/dispatch/send";
+ */
+export const sendControllerRequest = sendDispatch;
+export default sendControllerRequest;
+
+// (Optional) Re-export types if useful elsewhere
+export type { SendInput, SendResult, SubjectProfile, Locale };
