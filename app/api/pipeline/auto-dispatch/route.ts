@@ -24,7 +24,7 @@ function bad(status: number, msg: string, extra?: Record<string, unknown>) {
  *   "controllerKey": "truecaller",
  *   "controllerName": "Truecaller",
  *   "subject": { "name": "Rahul", "email": "rahul@example.com", "phone": "+91..." },
- *   "locale": "en-IN",
+ *   "locale": "en-IN" | "hi-IN" | "en" | "hi",
  *   "idempotencyKey": "optional-external-key"
  * }
  */
@@ -54,12 +54,19 @@ export async function POST(req: Request) {
     handle: body.subject?.handle ?? null,
   };
 
-  const locale = String(body.locale || "en-IN");
+  // Derive both a short locale for keys/logs and a full locale for dispatch
+  const rawLocale = String(body.locale || "").toLowerCase();
+  const localeShort: "en" | "hi" =
+    rawLocale.startsWith("hi") ? "hi" : "en"; // default to "en"
+  const sendLocale =
+    rawLocale && (rawLocale === "en" || rawLocale === "hi")
+      ? (rawLocale === "hi" ? "hi-IN" : "en-IN")
+      : (rawLocale || (localeShort === "hi" ? "hi-IN" : "en-IN"));
 
   // Prefer explicit idempotencyKey if provided
   const idemKey =
     (body.idempotencyKey && String(body.idempotencyKey).trim()) ||
-    makeDedupeKey({ controllerKey, subject, locale });
+    makeDedupeKey({ controllerKey, subject, locale: localeShort });
 
   const already = await wasRecentlyDispatched(idemKey);
   if (already) {
@@ -67,7 +74,7 @@ export async function POST(req: Request) {
       dedupeKey: idemKey,
       controllerKey,
       subject,
-      locale,
+      locale: localeShort,
       channel: "api",
       ok: true,
       note: "idempotent_skip:existing",
@@ -81,7 +88,7 @@ export async function POST(req: Request) {
     controllerKey,
     controllerName,
     subject,
-    locale,
+    locale: sendLocale, // pass full string to the dispatcher
     draft: body.draft
       ? { subject: body.draft.subject ?? null, bodyText: body.draft.bodyText ?? null }
       : undefined,
@@ -97,7 +104,7 @@ export async function POST(req: Request) {
     dedupeKey: idemKey,
     controllerKey,
     subject,
-    locale,
+    locale: localeShort, // logs/keys keep the short form
     channel,
     ok: res.ok,
     providerId: res.ok ? (res.providerId ?? null) : null,
