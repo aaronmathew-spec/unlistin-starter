@@ -15,6 +15,6 @@ export async function ensureIdempotent(key: string, note?: string): Promise<"ok"
   if (!error) return "ok";
   const msg = String(error.message || "").toLowerCase();
   if (msg.includes("duplicate") || msg.includes("unique")) return "exists";
-  // Be conservative: if insert failed for any other reason, treat as exists to avoid double-processing
+  // Be conservative on unexpected insert errors to avoid double-processing.
   return "exists";
 }
