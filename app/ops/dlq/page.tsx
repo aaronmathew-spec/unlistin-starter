@@ -131,6 +131,14 @@ export default async function OpsDLQPage({
     );
   }
 
+  // Build an Export CSV link that mirrors current filters/limit.
+  // /api/ops/dlq/list now supports ?format=csv (see route code below).
+  const csvHref = `/api/ops/dlq/list?format=csv&limit=${encodeURIComponent(
+    String(limit)
+  )}${qChannel ? `&channel=${encodeURIComponent(qChannel)}` : ""}${
+    qController ? `&controller=${encodeURIComponent(qController)}` : ""
+  }`;
+
   return (
     <div style={{ padding: 24, maxWidth: 1100, margin: "0 auto" }}>
       {/* Header */}
@@ -159,18 +167,34 @@ export default async function OpsDLQPage({
             </div>
           )}
         </div>
-        <a
-          href="/ops/dispatch"
-          style={{
-            textDecoration: "none",
-            border: "1px solid #e5e7eb",
-            padding: "8px 12px",
-            borderRadius: 8,
-            fontWeight: 600,
-          }}
-        >
-          ← Back to Dispatch
-        </a>
+        <div style={{ display: "flex", gap: 8 }}>
+          <a
+            href="/ops/dispatch"
+            style={{
+              textDecoration: "none",
+              border: "1px solid #e5e7eb",
+              padding: "8px 12px",
+              borderRadius: 8,
+              fontWeight: 600,
+            }}
+          >
+            ← Back to Dispatch
+          </a>
+          <a
+            href={csvHref}
+            style={{
+              textDecoration: "none",
+              border: "1px solid #e5e7eb",
+              padding: "8px 12px",
+              borderRadius: 8,
+              fontWeight: 600,
+              background: "#fff",
+            }}
+            title="Download CSV of current view"
+          >
+            ⬇ Export CSV
+          </a>
+        </div>
       </div>
 
       <Notice ok={ok} err={err} note={note} />
