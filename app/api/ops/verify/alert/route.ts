@@ -2,6 +2,7 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
+import { assertOpsSecret } from "@/lib/ops/secure";
 import { createClient } from "@supabase/supabase-js";
 import { sendEmailResend } from "@/lib/email/resend";
 import { renderSimpleEmail } from "@/lib/email/templates/simple";
@@ -15,9 +16,8 @@ import { renderSimpleEmail } from "@/lib/email/templates/simple";
  *       /api/ops/verify/recheck job to do the actual work.
  */
 
-const OPS_SECRET = (process.env.SECURE_CRON_SECRET || "").trim();
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE!;
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE || "";
 const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || "")
   .split(",")
   .map((s) => s.trim())
@@ -31,12 +31,10 @@ const MAX_LINES_PER_GROUP = 20;
 // Common “still pending” statuses; unknowns are grouped as "unknown".
 const PENDING_STATUSES = new Set(["pending", "awaiting", "submitted", "queued", "checking"]);
 
-function forbidden(msg: string) {
-  return NextResponse.json({ ok: false, error: msg }, { status: 403 });
-}
-
 function srv() {
-  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, { auth: { persistSession: false } });
+  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
+    auth: { persistSession: false },
+  });
 }
 
 function baseUrl(req: Request): string {
@@ -50,13 +48,14 @@ function baseUrl(req: Request): string {
 }
 
 export async function POST(req: Request) {
-  if (!OPS_SECRET) return forbidden("secret_not_set");
-  if ((req.headers.get("x-secure-cron") || "").trim() !== OPS_SECRET) return forbidden("invalid_secret");
+  const forbidden = assertOpsSecret(req);
+  if (forbidden) return forbidden;
 
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
     return NextResponse.json({ ok: false, error: "env_missing" }, { status: 500 });
   }
   if (ADMIN_EMAILS.length === 0) {
+    // Soft success: nothing to email
     return NextResponse.json({ ok: true, info: "no_admin_emails_configured" });
   }
 
@@ -114,7 +113,7 @@ export async function POST(req: Request) {
   }
 
   const origin = baseUrl(req);
-  const opsUrl = `${origin}/ops/overview`;
+  const opsUrl = `${origin}/ops/overview`; // adjust if you prefer /ops/dlq or another page
 
   const lines: string[] = [];
   const keys = Object.keys(groups).sort();
