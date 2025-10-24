@@ -1,4 +1,3 @@
-// app/api/ops/verify/recheck/route.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export const runtime = "nodejs";
 
@@ -17,13 +16,11 @@ export async function POST(req: Request) {
   if (forbidden) return forbidden;
 
   type RecheckFn = (opts?: { limit?: number }) => Promise<any>;
-
   let recheckFn: RecheckFn | null = null;
 
   try {
     // Optional import — don’t crash builds if file/exports move
     const mod: any = await import("@/lib/verify/recheck");
-
     recheckFn =
       mod?.runVerificationRecheck ??
       mod?.recheckDueVerifications ??
@@ -42,8 +39,9 @@ export async function POST(req: Request) {
   }
 
   try {
-    // Most helpers accept an optional limit; tune as you like.
-    const out = await recheckFn({ limit: 50 });
+    // Limit can be tuned in env; default 50 keeps the job lightweight.
+    const limit = Number(process.env.VERIFY_RECHECK_LIMIT ?? 50);
+    const out = await recheckFn({ limit });
 
     // Normalize to a stable response shape
     const checked =
