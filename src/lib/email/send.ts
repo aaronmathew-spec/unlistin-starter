@@ -8,34 +8,33 @@
 import * as ResendMod from "@/lib/email/resend";
 import { resolveAuthorizationManifestFor } from "@/src/lib/compliance/authorization-read";
 
-/** 
+/**
  * Minimal, safe local types so we don't depend on whatever "@/lib/email/resend" exports.
- * These cover the fields we touch. The sender can accept more via the index signature.
+ * Relaxed to match existing call-sites (e.g., /api/ops/email/sla/escalate without `from`, with `cc`).
  */
 export type AttachmentLike = {
   filename: string;
-  content: string;        // base64 when we add manifest
+  content: string; // base64 when we add manifest
   contentType?: string;
-  // allow extra keys (e.g., Resend supports 'path', etc.)
   [k: string]: any;
 };
 
 export type SendEmailInput = {
   to: string | string[];
-  from: string;
+  from?: string;                  // relaxed: optional to match existing callers
+  cc?: string | string[];         // explicit support
+  bcc?: string | string[];
   subject: string;
   text?: string;
   html?: string;
   attachments?: AttachmentLike[];
-  // allow extra provider-specific keys without widening TS everywhere
-  [k: string]: any;
+  [k: string]: any;               // allow provider-specific extras
 };
 
 export type SendEmailResult = {
   ok?: boolean;
   id?: string | null;
   error?: string | null;
-  // provider-specific extras
   [k: string]: any;
 };
 
