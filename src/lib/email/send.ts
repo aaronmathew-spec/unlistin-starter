@@ -4,8 +4,7 @@
 // Thin façade over Resend sender. Adds an opt-in variant that appends
 // an authorization-manifest footer and (flag-gated) attaches the manifest JSON.
 
-import {
-  sendEmail as resendSend,
+import resendSend, {
   type SendEmailInput,
   type SendEmailResult,
 } from "@/lib/email/resend";
