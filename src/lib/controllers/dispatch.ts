@@ -1,28 +1,28 @@
 // src/lib/controllers/dispatch.ts
-/* Policy-aware dispatch builder (non-breaking).
-   Chooses channel using the Controller Registry and returns a ready payload.
-   The caller (dispatcher / worker) can execute email or webform accordingly.
-*/
-
 export const runtime = "nodejs";
 
 import type { ControllerKey } from "@/src/lib/controllers/registry";
 import { choosePrimaryChannel } from "@/src/lib/controllers/registry";
 
-// Controller email templates
+// Existing controller templates
 import { buildTruecallerRemovalEmail } from "@/src/lib/email/templates/controllers/truecaller";
 import { buildNaukriRemovalEmail } from "@/src/lib/email/templates/controllers/naukri";
 import { buildOlxRemovalEmail } from "@/src/lib/email/templates/controllers/olx";
 
-// Webform shims (Playwright workers will import/execute these separately)
+// NEW templates
+import { buildFounditRemovalEmail } from "@/src/lib/email/templates/controllers/foundit";
+import { buildShineRemovalEmail } from "@/src/lib/email/templates/controllers/shine";
+import { buildTimesJobsRemovalEmail } from "@/src/lib/email/templates/controllers/timesjobs";
+
+// Webform arg types (existing)
 import type { WebformArgs as TruecallerArgs } from "@/src/lib/controllers/webforms/truecaller";
 import type { WebformArgs as NaukriArgs } from "@/src/lib/controllers/webforms/naukri";
 import type { WebformArgs as OlxArgs } from "@/src/lib/controllers/webforms/olx";
 
-// NEW: jurisdiction normalization
+// Jurisdiction normalization
 import { resolveLawKeyFromRegion } from "@/src/lib/compliance/dsr";
 
-export type RegionKey = string; // e.g., "IN", "EU", "US-CA", or canonical "DPDP_IN" etc.
+export type RegionKey = string;
 
 export type DispatchInput = {
   controller: ControllerKey;
@@ -36,7 +36,7 @@ export type DispatchInput = {
 export type EmailPayload = {
   channel: "email";
   subject: string;
-  body: string; // plain text
+  body: string;
 };
 
 export type WebformPayload =
@@ -46,25 +46,27 @@ export type WebformPayload =
 
 export type BuiltDispatch = EmailPayload | WebformPayload;
 
-/** Narrow unknown string to ControllerKey safely (throw on unexpected) */
 export function asControllerKey(x: string): ControllerKey {
   const v = x as ControllerKey;
-  if (v === "truecaller" || v === "naukri" || v === "olx") return v;
+  if (
+    v === "truecaller" ||
+    v === "naukri" ||
+    v === "olx" ||
+    v === "foundit" ||
+    v === "shine" ||
+    v === "timesjobs"
+  ) {
+    return v;
+  }
   throw new Error(`Unknown controller: ${x}`);
 }
 
-/**
- * Build a concrete, channel-specific dispatch payload using registry policy.
- * This does not send anything; it only returns what should be sent.
- */
 export async function buildDispatchForController(input: DispatchInput): Promise<BuiltDispatch> {
   const key = asControllerKey(input.controller);
   const chosen = await choosePrimaryChannel(key);
-
-  // NEW: normalize region into a canonical LawKey (DPDP_IN/GDPR_EU/CCPA_US_CA)
   const lawKey = resolveLawKeyFromRegion(input.region);
 
-  // Email path
+  // EMAIL path
   if (chosen === "email") {
     switch (key) {
       case "truecaller": {
@@ -95,10 +97,37 @@ export async function buildDispatchForController(input: DispatchInput): Promise<
         });
         return { channel: "email", subject, body };
       }
+      case "foundit": {
+        const { subject, body } = buildFounditRemovalEmail({
+          region: lawKey,
+          subjectFullName: input.subjectFullName,
+          subjectEmail: input.subjectEmail,
+          identifiers: input.identifiers,
+        });
+        return { channel: "email", subject, body };
+      }
+      case "shine": {
+        const { subject, body } = buildShineRemovalEmail({
+          region: lawKey,
+          subjectFullName: input.subjectFullName,
+          subjectEmail: input.subjectEmail,
+          identifiers: input.identifiers,
+        });
+        return { channel: "email", subject, body };
+      }
+      case "timesjobs": {
+        const { subject, body } = buildTimesJobsRemovalEmail({
+          region: lawKey,
+          subjectFullName: input.subjectFullName,
+          subjectEmail: input.subjectEmail,
+          identifiers: input.identifiers,
+        });
+        return { channel: "email", subject, body };
+      }
     }
   }
 
-  // Webform path (fallback or policy-preferred)
+  // WEBFORM path (for controllers that have webforms)
   switch (key) {
     case "truecaller":
       return {
@@ -132,7 +161,10 @@ export async function buildDispatchForController(input: DispatchInput): Promise<
           identifiers: input.identifiers,
         },
       };
+    // foundit/shine/timesjobs are email-first; no webform fallback for now.
     default:
-      throw new Error(`Unsupported controller for webform: ${key satisfies never}`);
+      // For unknown webform path on email-first controllers, fall back to email build above,
+      // but since chosen !== "email" here, treat as unsupported for webform.
+      throw new Error(`Unsupported controller for webform: ${key as never}`);
   }
 }
