@@ -1,6 +1,7 @@
 // app/api/ops/intimate/ingest/route.ts
-// Priority intake for intimate image/deepfake complaints.
-// Records a high-priority job (here we return a stub you can enqueue to your queue).
+// Priority intake for intimate image / deepfake complaints (24h window).
+// Secured by x-secure-cron to avoid public invocation. Initially enqueues a stub ticket.
+
 import { NextResponse } from "next/server";
 import { SLA } from "@/src/lib/sla/policy";
 
@@ -24,23 +25,38 @@ export async function POST(req: Request) {
     const subjectFullName = String(body.subjectFullName || "");
     const subjectEmail = body.subjectEmail ? String(body.subjectEmail) : undefined;
     const evidence = Array.isArray(body.evidence) ? body.evidence : [];
-    const category = String(body.category || "intimate-image"); // or "deepfake"
+    const category = String(body.category || "intimate-image"); // "deepfake" also fine
+    const region = typeof body.region === "string" ? body.region : "IN";
 
     if (!subjectFullName || evidence.length === 0) {
-      return NextResponse.json({ ok: false, error: "missing_required_fields" }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "missing_required_fields" },
+        { status: 400 }
+      );
     }
 
-    // TODO: push to your high-priority queue with SLA clocks; attach authorization manifest if available.
+    // TODO: wire to SQS/Redis high-priority queue, attach authorization manifest (if available).
     const ticketId = `IM-${Date.now()}`;
 
     return NextResponse.json({
       ok: true,
       ticketId,
       priority: "critical",
+      category,
+      region,
       slaHours: SLA.intimateFastLane.ackHours,
-      note: "Queued (stub). Wire this to your SQS/Redis and dispatch with platform specific templates.",
+      note:
+        "Queued (stub). Wire this to your HQ queue and dispatch templates (platform & search layer).",
+      echo: {
+        subjectFullName,
+        subjectEmail: subjectEmail ?? null,
+        evidenceCount: evidence.length,
+      },
     });
   } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message || "exception" }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: e?.message || "exception" },
+      { status: 500 }
+    );
   }
 }
