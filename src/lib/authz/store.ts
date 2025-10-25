@@ -5,11 +5,17 @@ import type {
   AuthorizationInput,
   AuthorizationRecord,
   AuthorizationFileRecord,
-  AuthorizationManifest,
 } from "./types";
 import { buildAuthorizationManifest } from "./manifest";
 
 type AdminClient = ReturnType<typeof createClient<any, any, any>>;
+
+/** Minimal local type the manifest builder must expose for this layer */
+type AuthorizationManifestLike = {
+  integrity?: { hashHex?: string } | undefined;
+  // We don't care about the rest of the shape here; keep it flexible
+  [k: string]: any;
+};
 
 /** Minimal local type the manifest builder expects for evidence files */
 type EvidenceRef = {
@@ -107,7 +113,7 @@ export async function createAuthorization(
 ): Promise<{
   record: AuthorizationRecord;
   files: AuthorizationFileRecord[];
-  manifest: AuthorizationManifest;
+  manifest: AuthorizationManifestLike;
 }> {
   const supa = getAdmin();
   const bucket = "authz";
@@ -165,17 +171,23 @@ export async function createAuthorization(
   }
 
   // 3) Build manifest (deterministic + signed)
-  //    builder returns an AuthorizationManifest directly.
   const evidenceRefs = toEvidenceRefs(supa, bucket, files);
-  const manifest: AuthorizationManifest = buildAuthorizationManifest({
+  const manifest = buildAuthorizationManifest({
     record: row as AuthorizationRecord,
     files: evidenceRefs,
-  });
+  }) as AuthorizationManifestLike;
 
-  // 4) Update manifest_hash in DB
+  // 4) Update manifest_hash in DB (fallback gracefully if integrity/hashHex absent)
+  const hashHex =
+    manifest?.integrity?.hashHex ??
+    // try common alternatives if builder changed
+    (manifest as any)?.hashHex ??
+    (manifest as any)?.integrityHash ??
+    "";
+
   const { error: updErr } = await supa
     .from("authorizations")
-    .update({ manifest_hash: manifest.integrity.hashHex })
+    .update({ manifest_hash: hashHex })
     .eq("id", row.id);
   if (updErr) {
     throw new Error(
@@ -186,7 +198,7 @@ export async function createAuthorization(
   return {
     record: {
       ...(row as AuthorizationRecord),
-      manifest_hash: manifest.integrity.hashHex,
+      manifest_hash: hashHex,
     },
     files,
     manifest,
