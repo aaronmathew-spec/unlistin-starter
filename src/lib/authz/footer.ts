@@ -1,24 +1,47 @@
 // src/lib/authz/footer.ts
-import { getAuthorization } from "@/src/lib/authz/store";
+import { createClient } from "@supabase/supabase-js";
+
+type AuthorizationRow = {
+  id: string;
+  signed_at: string;
+  manifest_hash: string | null;
+};
+
+function admin() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const key = process.env.SUPABASE_SERVICE_ROLE!;
+  return createClient(url, key, { auth: { persistSession: false } });
+}
 
 /**
  * Build a short, human-readable footer that proves we have signed authority.
  * Safe to append to plaintext email bodies.
+ *
+ * Usage:
+ *   const footer = await authorizationFooter(authorizationId);
+ *   const body = `${mainBody}\n${footer}`;
  */
-export async function authorizationFooter(authorizationId: string): Promise<string> {
+export async function authorizationFooter(authorizationId?: string | null): Promise<string> {
+  if (!authorizationId) return "";
+
   try {
-    const got = await getAuthorization(authorizationId);
-    if (!got.record) return "";
+    const supa = admin();
+    const { data, error } = await supa
+      .from("authorizations")
+      .select("id, signed_at, manifest_hash")
+      .eq("id", authorizationId)
+      .maybeSingle<AuthorizationRow>();
 
-    const hash = (got.record.manifest_hash || "").slice(0, 12);
-    const when = new Date(got.record.signed_at).toISOString();
+    if (error || !data) return "";
 
-    // Keep this minimal & compliance-friendly.
+    const hash = (data.manifest_hash ?? "").slice(0, 12);
+    const when = new Date(data.signed_at).toISOString();
+
     return [
       "",
       "--",
       "Authorization:",
-      `  ID: ${authorizationId}`,
+      `  ID: ${data.id}`,
       `  Signed: ${when}`,
       `  Hash: ${hash}`,
     ].join("\n");
