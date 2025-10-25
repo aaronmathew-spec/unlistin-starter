@@ -157,3 +157,6 @@ export function createAuthorizationManifest(input: CreateManifestInput): Authori
     signature,
   };
 }
+
+// 🔧 Back-compat alias so callers importing `buildAuthorizationManifest` keep working.
+export const buildAuthorizationManifest = createAuthorizationManifest;
