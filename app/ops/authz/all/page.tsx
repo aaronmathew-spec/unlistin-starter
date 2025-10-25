@@ -1,54 +1,95 @@
 // app/ops/authz/all/page.tsx
-// Server-rendered list of authorizations (no client JS)
+// Server-rendered list of ALL Authorization records (no client JS)
 
+import React from "react";
 import { listAuthorizations } from "@/src/lib/authz/store";
+import type { AuthorizationRecord } from "@/src/lib/authz/types";
 
 export const dynamic = "force-dynamic";
 
 type SP = Record<string, string | string[] | undefined>;
-function get(sp: SP, k: string) { return String(sp[k] || "").trim(); }
-function mono(v: string) {
-  return <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>{v}</span>;
+
+function get(sp: SP, k: string) {
+  return String(sp[k] || "").trim();
+}
+
+function mono(s: string) {
+  return (
+    <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>
+      {s}
+    </span>
+  );
 }
 
 export default async function Page({ searchParams }: { searchParams: SP }) {
   const q = get(searchParams, "q");
-  const pageNum = Number(get(searchParams, "page")) || 1;
-  const pageSize = 50;
+  const pageNum = Math.max(1, Number(get(searchParams, "page") || "1") || 1);
+  const pageSize = Math.max(1, Math.min(200, Number(get(searchParams, "limit") || "50") || 50));
   const offset = (pageNum - 1) * pageSize;
 
-  const { rows, total } = await listAuthorizations({
+  // Be tolerant to both return shapes:
+  // 1) AuthorizationRecord[]
+  // 2) { rows: AuthorizationRecord[]; total: number }
+  const raw = (await listAuthorizations({
     search: q || null,
     limit: pageSize,
     offset,
-  });
+  } as any)) as any;
 
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const rows: AuthorizationRecord[] = Array.isArray(raw) ? raw : (raw?.rows ?? []);
+  const total: number = Array.isArray(raw)
+    ? raw.length
+    : (typeof raw?.total === "number" ? raw.total : rows.length);
+
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+
+  const mkHref = (p: number) => {
+    const params = new URLSearchParams();
+    if (q) params.set("q", q);
+    params.set("page", String(p));
+    params.set("limit", String(pageSize));
+    return `/ops/authz/all?${params.toString()}`;
+  };
 
   return (
-    <div style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}>
+    <div style={{ padding: 24, maxWidth: 1100, margin: "0 auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
         <div>
-          <h1 style={{ margin: 0 }}>Ops · Authorizations</h1>
+          <h1 style={{ margin: 0 }}>Ops · Authorizations (All)</h1>
           <p style={{ color: "#6b7280", marginTop: 6 }}>
-            Browse saved authorizations and open details / evidence.
+            Browse and search signed authorizations. Click an ID to view details and evidence.
           </p>
         </div>
-        <a
-          href="/ops/authz"
-          style={{
-            textDecoration: "none",
-            border: "1px solid #e5e7eb",
-            padding: "8px 12px",
-            borderRadius: 8,
-            fontWeight: 600,
-          }}
-        >
-          + New Authorization
-        </a>
+        <div style={{ display: "flex", gap: 8 }}>
+          <a
+            href="/ops/authz/new"
+            style={{
+              textDecoration: "none",
+              border: "1px solid #e5e7eb",
+              padding: "8px 12px",
+              borderRadius: 8,
+              fontWeight: 600,
+              background: "white",
+            }}
+          >
+            + New Authorization
+          </a>
+          <a
+            href="/ops"
+            style={{
+              textDecoration: "none",
+              border: "1px solid #e5e7eb",
+              padding: "8px 12px",
+              borderRadius: 8,
+              fontWeight: 600,
+            }}
+          >
+            ← Back to Ops
+          </a>
+        </div>
       </div>
 
-      {/* Search/filter (GET) */}
+      {/* Search form */}
       <form method="GET" style={{ marginTop: 16 }}>
         <div
           style={{
@@ -57,15 +98,30 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
             padding: 12,
             background: "white",
             display: "grid",
-            gridTemplateColumns: "1fr auto",
+            gridTemplateColumns: "1fr 120px 120px 120px",
             gap: 8,
           }}
         >
           <input
             name="q"
             defaultValue={q}
-            placeholder="Search name, email, phone, signer…"
-            style={{ width: "100%", padding: 10, border: "1px solid #e5e7eb", borderRadius: 8 }}
+            placeholder="Search name/email/phone/signer…"
+            style={{ padding: 10, border: "1px solid #e5e7eb", borderRadius: 8 }}
+          />
+          <input
+            name="page"
+            type="number"
+            min={1}
+            defaultValue={pageNum}
+            style={{ padding: 10, border: "1px solid #e5e7eb", borderRadius: 8 }}
+          />
+          <input
+            name="limit"
+            type="number"
+            min={1}
+            max={200}
+            defaultValue={pageSize}
+            style={{ padding: 10, border: "1px solid #e5e7eb", borderRadius: 8 }}
           />
           <button
             type="submit"
@@ -77,12 +133,12 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
               fontWeight: 700,
             }}
           >
-            Search
+            Apply
           </button>
         </div>
       </form>
 
-      {/* Table */}
+      {/* Results table */}
       <div
         style={{
           marginTop: 16,
@@ -100,13 +156,13 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
             fontWeight: 600,
           }}
         >
-          Results ({rows.length} / {total})
+          Results ({rows.length} of {total})
         </div>
         <div style={{ overflowX: "auto" }}>
           <table
             style={{
               width: "100%",
-              minWidth: 960,
+              minWidth: 900,
               borderCollapse: "separate",
               borderSpacing: 0,
             }}
@@ -115,44 +171,40 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
               <tr>
                 <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>ID</th>
                 <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Subject</th>
-                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Email · Phone</th>
-                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Region</th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Contact</th>
                 <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Signer</th>
-                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Signed</th>
-                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Manifest</th>
-                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Open</th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Region</th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Manifest Hash</th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Created</th>
               </tr>
             </thead>
             <tbody>
               {rows.length ? (
                 rows.map((r) => (
-                  <tr key={r.id} style={{ borderTop: "1px solid #e5e7eb" }}>
-                    <td style={{ padding: 12 }}>{mono(r.id)}</td>
-                    <td style={{ padding: 12 }}>{r.subject_full_name}</td>
+                  <tr key={(r as any).id} style={{ borderTop: "1px solid #e5e7eb" }}>
                     <td style={{ padding: 12 }}>
-                      {r.subject_email || "—"} {r.subject_phone ? ` · ${r.subject_phone}` : ""}
-                    </td>
-                    <td style={{ padding: 12 }}>{r.region || "—"}</td>
-                    <td style={{ padding: 12 }}>{r.signer_name || "—"}</td>
-                    <td style={{ padding: 12 }}>
-                      {r.signed_at ? new Date(String(r.signed_at)).toLocaleString() : "—"}
-                    </td>
-                    <td style={{ padding: 12 }}>
-                      {r.manifest_hash ? mono(r.manifest_hash) : "—"}
-                    </td>
-                    <td style={{ padding: 12 }}>
-                      <a
-                        href={`/ops/authz/${r.id}`}
-                        style={{ textDecoration: "none", fontWeight: 600 }}
-                      >
-                        View
+                      <a href={`/ops/authz/${(r as any).id}`} style={{ textDecoration: "none", fontWeight: 700 }}>
+                        {mono((r as any).id)}
                       </a>
+                    </td>
+                    <td style={{ padding: 12 }}>{(r as any).subject_full_name}</td>
+                    <td style={{ padding: 12, whiteSpace: "nowrap" }}>
+                      {(r as any).subject_email ? <>{(r as any).subject_email}</> : "—"}
+                      {(r as any).subject_phone ? <> · {(r as any).subject_phone}</> : null}
+                    </td>
+                    <td style={{ padding: 12 }}>{(r as any).signer_name || "—"}</td>
+                    <td style={{ padding: 12 }}>{(r as any).region || "—"}</td>
+                    <td style={{ padding: 12 }}>
+                      {(r as any).manifest_hash ? mono((r as any).manifest_hash) : "—"}
+                    </td>
+                    <td style={{ padding: 12 }}>
+                      {new Date(String((r as any).created_at || Date.now())).toLocaleString()}
                     </td>
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <td colSpan={8} style={{ padding: 24, textAlign: "center", color: "#6b7280" }}>
+                  <td colSpan={7} style={{ padding: 24, textAlign: "center", color: "#6b7280" }}>
                     No results.
                   </td>
                 </tr>
@@ -160,44 +212,53 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
             </tbody>
           </table>
         </div>
-      </div>
 
-      {/* Pagination */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12 }}>
-        <div style={{ color: "#6b7280", fontSize: 13 }}>
-          Page {pageNum} of {totalPages}
-        </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <a
-            href={`/ops/authz/all?q=${encodeURIComponent(q || "")}&page=${Math.max(1, pageNum - 1)}`}
-            style={{
-              textDecoration: "none",
-              border: "1px solid #e5e7eb",
-              padding: "8px 12px",
-              borderRadius: 8,
-              fontWeight: 600,
-              pointerEvents: pageNum <= 1 ? "none" : undefined,
-              opacity: pageNum <= 1 ? 0.5 : 1,
-              background: "white",
-            }}
-          >
-            ← Prev
-          </a>
-          <a
-            href={`/ops/authz/all?q=${encodeURIComponent(q || "")}&page=${Math.min(totalPages, pageNum + 1)}`}
-            style={{
-              textDecoration: "none",
-              border: "1px solid #e5e7eb",
-              padding: "8px 12px",
-              borderRadius: 8,
-              fontWeight: 600,
-              pointerEvents: pageNum >= totalPages ? "none" : undefined,
-              opacity: pageNum >= totalPages ? 0.5 : 1,
-              background: "white",
-            }}
-          >
-            Next →
-          </a>
+        {/* Pagination */}
+        <div
+          style={{
+            padding: 12,
+            borderTop: "1px solid #e5e7eb",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            background: "#fafafa",
+          }}
+        >
+          <div style={{ color: "#6b7280", fontSize: 12 }}>
+            Page {pageNum} of {pages} · Showing {rows.length} / {total}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <a
+              href={mkHref(Math.max(1, pageNum - 1))}
+              style={{
+                textDecoration: "none",
+                border: "1px solid #e5e7eb",
+                padding: "6px 10px",
+                borderRadius: 8,
+                background: "white",
+                fontWeight: 600,
+                pointerEvents: pageNum <= 1 ? "none" : undefined,
+                opacity: pageNum <= 1 ? 0.5 : 1,
+              }}
+            >
+              ← Prev
+            </a>
+            <a
+              href={mkHref(Math.min(pages, pageNum + 1))}
+              style={{
+                textDecoration: "none",
+                border: "1px solid #e5e7eb",
+                padding: "6px 10px",
+                borderRadius: 8,
+                background: "white",
+                fontWeight: 600,
+                pointerEvents: pageNum >= pages ? "none" : undefined,
+                opacity: pageNum >= pages ? 0.5 : 1,
+              }}
+            >
+              Next →
+            </a>
+          </div>
         </div>
       </div>
     </div>
