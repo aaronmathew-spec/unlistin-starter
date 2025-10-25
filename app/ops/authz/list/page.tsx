@@ -19,14 +19,41 @@ function mono(s: string) {
   );
 }
 
+function includes(hay: string | null | undefined, needle: string) {
+  if (!hay) return false;
+  try {
+    return hay.toLowerCase().includes(needle.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
 export default async function Page({ searchParams }: { searchParams: SP }) {
   const q = get(searchParams, "q");
   const page = Math.max(1, Number(get(searchParams, "page") || "1") || 1);
   const limit = Math.max(1, Math.min(100, Number(get(searchParams, "limit") || "20") || 20));
   const offset = (page - 1) * limit;
 
-  const { rows, total } = await listAuthorizations({ search: q || null, limit, offset });
-  const pages = Math.max(1, Math.ceil(total / limit));
+  // NOTE: matches current store API: listAuthorizations(limit, offset) -> AuthorizationRecord[]
+  const rowsRaw = await listAuthorizations(limit, offset);
+
+  // Optional in-memory filtering if q provided (best-effort; does not affect server pagination)
+  const rows = q
+    ? rowsRaw.filter((r: any) =>
+        includes(r.subject_full_name, q) ||
+        includes(r.subject_email, q) ||
+        includes(r.subject_phone, q) ||
+        includes(r.signer_name, q) ||
+        includes(r.region, q) ||
+        includes(r.id, q)
+      )
+    : rowsRaw;
+
+  // We don't know total from the store; drive pagination heuristically:
+  // - Prev available if page > 1
+  // - Next available if we got a "full page" of results
+  const hasPrev = page > 1;
+  const hasNext = rowsRaw.length === limit;
 
   const mkHref = (p: number) => {
     const params = new URLSearchParams();
@@ -141,7 +168,7 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
             fontWeight: 600,
           }}
         >
-          Results ({rows.length} of {total})
+          Results ({rows.length}{q ? ` filtered` : ""})
         </div>
         <div style={{ overflowX: "auto" }}>
           <table
@@ -165,7 +192,7 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
             </thead>
             <tbody>
               {rows.length ? (
-                rows.map((r) => (
+                rows.map((r: any) => (
                   <tr key={r.id} style={{ borderTop: "1px solid #e5e7eb" }}>
                     <td style={{ padding: 12 }}>
                       <a
@@ -186,7 +213,7 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
                     <td style={{ padding: 12 }}>{r.region || "—"}</td>
                     <td style={{ padding: 12 }}>{r.manifest_hash ? mono(r.manifest_hash) : "—"}</td>
                     <td style={{ padding: 12 }}>
-                      {new Date((r as any).created_at as string).toLocaleString()}
+                      {r.created_at ? new Date(r.created_at as string).toLocaleString() : "—"}
                     </td>
                   </tr>
                 ))
@@ -201,7 +228,7 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
           </table>
         </div>
 
-        {/* Pagination */}
+        {/* Pagination (heuristic) */}
         <div
           style={{
             padding: 12,
@@ -213,7 +240,8 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
           }}
         >
           <div style={{ color: "#6b7280", fontSize: 12 }}>
-            Page {page} of {pages} · Showing {rows.length} / {total}
+            Page {page} · Showing {rows.length}
+            {q ? ` (filtered)` : ""}{rows.length === limit ? " · More may be available" : ""}
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <a
@@ -225,14 +253,14 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
                 borderRadius: 8,
                 background: "white",
                 fontWeight: 600,
-                pointerEvents: page <= 1 ? "none" : undefined,
-                opacity: page <= 1 ? 0.5 : 1,
+                pointerEvents: hasPrev ? undefined : "none",
+                opacity: hasPrev ? 1 : 0.5,
               }}
             >
               ← Prev
             </a>
             <a
-              href={mkHref(Math.min(pages, page + 1))}
+              href={mkHref(page + 1)}
               style={{
                 textDecoration: "none",
                 border: "1px solid #e5e7eb",
@@ -240,8 +268,8 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
                 borderRadius: 8,
                 background: "white",
                 fontWeight: 600,
-                pointerEvents: page >= pages ? "none" : undefined,
-                opacity: page >= pages ? 0.5 : 1,
+                pointerEvents: hasNext ? undefined : "none",
+                opacity: hasNext ? 1 : 0.5,
               }}
             >
               Next →
