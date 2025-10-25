@@ -8,6 +8,7 @@
  * - If policy selects WEBFORM, we proceed to enqueue (same queue adapter).
  * - If policy selects EMAIL (or unsupported controller), we fall back to legacy WEBFORM path
  *   to avoid surprising email sends. (We’ll enable email after contacts are wired.)
+ * - NEW: carries optional authorizationId through payload + DLQ for audit trails.
  */
 
 import { ensureIdempotent } from "@/lib/guards/idempotency";
@@ -58,6 +59,9 @@ type SendInput = {
   formUrl?: string | null;
   action?: string | null; // used for idempotency (default: create_request_v1)
   subjectId?: string | null; // canonical subjectId if available
+
+  /** Optional: authorization reference to carry through for audit */
+  authorizationId?: string | null;
 };
 
 type SendResult = {
@@ -89,6 +93,7 @@ function mapToSendInput(input: ControllerRequestInput | SendInput): SendInput {
       formUrl: (input as any).formUrl ?? null,
       action: (input as any).action ?? "create_request_v1",
       subjectId: (input as any).subjectId ?? null,
+      authorizationId: (input as any).authorizationId ?? null,
     };
   }
   // Fallback (shouldn’t hit, but keeps it safe)
@@ -101,6 +106,7 @@ function mapToSendInput(input: ControllerRequestInput | SendInput): SendInput {
     formUrl: (input as any)?.formUrl ?? null,
     action: (input as any)?.action ?? "create_request_v1",
     subjectId: (input as any)?.subjectId ?? null,
+    authorizationId: (input as any)?.authorizationId ?? null,
   };
 }
 
@@ -144,11 +150,7 @@ async function tryPolicyWebform(input: SendInput): Promise<
 > {
   // asControllerKey returns the widened ControllerKey union.
   // Narrow to the 3 controllers we support for policy-webform adoption.
-  let narrowed:
-    | "truecaller"
-    | "naukri"
-    | "olx"
-    | null = null;
+  let narrowed: "truecaller" | "naukri" | "olx" | null = null;
   try {
     const k = asControllerKey(String(input.controllerKey));
     if (k === "truecaller" || k === "naukri" || k === "olx") {
@@ -248,8 +250,11 @@ export async function sendDispatch(
           }
         : undefined,
       formUrl: norm(input.formUrl),
-      // Policy-derived args are included under an "policyArgs" bag for workers that care.
+      // Policy-derived args are included under a "policyArgs" bag for workers that care.
       policyArgs: policyWf?.args ?? undefined,
+
+      // NEW: pass-through authorization reference (optional)
+      authorizationId: norm(input.authorizationId),
     };
 
     const wf = await enqueueWebformJob(wfPayload as any);
@@ -262,9 +267,7 @@ export async function sendDispatch(
       error: null,
       note,
       idempotent: "new",
-      hint: policyWf
-        ? "Policy-aware webform dispatch"
-        : "Legacy webform dispatch",
+      hint: policyWf ? "Policy-aware webform dispatch" : "Legacy webform dispatch",
     };
   } catch (e: any) {
     const msg = String(e?.message || e);
@@ -288,6 +291,10 @@ export async function sendDispatch(
         formUrl: norm(input.formUrl) ?? null,
         draft: input.draft ?? null,
         action: norm(input.action) ?? "create_request_v1",
+
+        // Carry to DLQ for perfect audit trails
+        authorizationId: norm(input.authorizationId) ?? null,
+        policyArgs: undefined, // not needed in DLQ; keep payload compact (adjust if desired)
       },
       error_code: "enqueue_failed",
       error_note: msg,
