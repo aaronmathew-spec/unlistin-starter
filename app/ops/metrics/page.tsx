@@ -1,6 +1,7 @@
 // app/ops/metrics/page.tsx
 import { listDispatchLog } from "@/lib/dispatch/query";
 
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type Row = Awaited<ReturnType<typeof listDispatchLog>>[number];
@@ -8,6 +9,12 @@ type Row = Awaited<ReturnType<typeof listDispatchLog>>[number];
 function pct(n: number, d: number) {
   if (!d) return "0%";
   return `${Math.round((n / d) * 100)}%`;
+}
+
+function safeLocalDate(input: unknown): string {
+  if (!input) return "-";
+  const t = typeof input === "string" || typeof input === "number" ? new Date(input) : new Date(String(input));
+  return isNaN(t.getTime()) ? "-" : t.toLocaleString();
 }
 
 function Stat({
@@ -145,10 +152,10 @@ export default async function OpsMetricsPage() {
   // By channel
   const perChan = new Map<string, { total: number; ok: number }>();
   for (const r of rows) {
-    const k = r.channel || "unknown";
+    const k = (r as any)?.channel || "unknown";
     const slot = perChan.get(k) || { total: 0, ok: 0 };
     slot.total += 1;
-    if (r.ok) slot.ok += 1;
+    if ((r as any)?.ok) slot.ok += 1;
     perChan.set(k, slot);
   }
   const byChannel = Array.from(perChan.entries())
@@ -164,10 +171,10 @@ export default async function OpsMetricsPage() {
   // By controller
   const perCtrl = new Map<string, { total: number; ok: number }>();
   for (const r of rows) {
-    const k = r.controller_key || "unknown";
+    const k = (r as any)?.controller_key || "unknown";
     const slot = perCtrl.get(k) || { total: 0, ok: 0 };
     slot.total += 1;
-    if (r.ok) slot.ok += 1;
+    if ((r as any)?.ok) slot.ok += 1;
     perCtrl.set(k, slot);
   }
   const byController = Array.from(perCtrl.entries())
@@ -183,14 +190,14 @@ export default async function OpsMetricsPage() {
 
   // Recent errors (last 50)
   const recentErrors = rows
-    .filter((r) => !r.ok)
+    .filter((r) => !(r as any)?.ok)
     .slice(0, 50)
     .map((r) => ({
-      when: new Date(r.created_at).toLocaleString(),
-      controller: r.controller_key || "-",
-      channel: r.channel || "-",
-      providerId: r.provider_id || "-",
-      error: (r.error || r.note || "-") ?? "-",
+      when: safeLocalDate((r as any)?.created_at),
+      controller: (r as any)?.controller_key || "-",
+      channel: (r as any)?.channel || "-",
+      providerId: (r as any)?.provider_id || "-",
+      error: ((r as any)?.error || (r as any)?.note || "-") ?? "-",
     }));
 
   return (
