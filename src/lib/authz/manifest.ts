@@ -84,7 +84,8 @@ type LegacyRecord = {
   permissions?: Permission[] | null;
   expires_in_days?: number | null;
 };
-type LegacyBuildInput = { record: LegacyRecord; files?: EvidenceRef[] | null };
+// `files` may be DB rows (AuthorizationFileRecord[]) or already-normalized EvidenceRef[].
+type LegacyBuildInput = { record: LegacyRecord; files?: unknown[] | null };
 
 function defaultAgent(): Agent {
   return {
@@ -171,6 +172,39 @@ export function createAuthorizationManifest(input: CreateManifestInput): Authori
   };
 }
 
+// --- Coercion helpers for legacy DB "files" rows -> EvidenceRef[] ---
+
+function normalizeKind(v: unknown): EvidenceRef["kind"] {
+  const s = String(v || "").toLowerCase();
+  if (/selfie/.test(s)) return "id_selfie_match";
+  if (/gov|id[_-]?doc|passport|aadhaar|pan/.test(s)) return "id_government";
+  if (/email/.test(s)) return "email_control";
+  if (/phone|otp/.test(s)) return "phone_otp";
+  if (/auth|loa|poa|authority|letter/.test(s)) return "authority_letter";
+  // default to LoA if unknown (safest umbrella)
+  return "authority_letter";
+}
+
+function coerceEvidence(files: unknown[] | null | undefined): EvidenceRef[] {
+  if (!files || !Array.isArray(files)) return [];
+  return files.map((f: any): EvidenceRef => {
+    // Accept already-normalized
+    if (f && typeof f === "object" && typeof f.kind === "string") {
+      return {
+        kind: normalizeKind(f.kind),
+        url: f.url ?? f.public_url ?? f.path ?? null,
+        notes: f.notes ?? f.note ?? null,
+      };
+    }
+    // Map common DB row shapes
+    const kind =
+      normalizeKind(f?.kind ?? f?.category ?? f?.purpose ?? f?.type ?? "authority_letter");
+    const url = f?.url ?? f?.public_url ?? f?.path ?? null;
+    const notes = f?.notes ?? f?.note ?? null;
+    return { kind, url, notes };
+  });
+}
+
 /**
  * Back-compat wrapper so callers can pass EITHER:
  *   - the new structured CreateManifestInput, OR
@@ -203,7 +237,7 @@ export function buildAuthorizationManifest(
       },
       region,
       permissions,
-      evidence: files || [],
+      evidence: coerceEvidence(files),
       expiresInDays,
       agent: null,
     });
