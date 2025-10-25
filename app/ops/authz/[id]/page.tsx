@@ -14,10 +14,9 @@ function mono(s: string) {
 }
 
 // Build a public URL for a file path in the "authz" bucket.
-// Assumes the bucket is public. Falls back to "#" if base URL is unset.
+// We assume the bucket is public (as in the intake flow).
 function publicUrlFor(path: string): string {
   const base = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-  if (!base) return "#";
   // Example: https://<proj>.supabase.co/storage/v1/object/public/authz/<path>
   return `${base}/storage/v1/object/public/authz/${path}`;
 }
@@ -35,18 +34,32 @@ export default async function Page({ params }: { params: { id: string } }) {
             View the subject’s authorization, manifest hash, and uploaded evidence.
           </p>
         </div>
-        <a
-          href="/ops/authz" // <- point to the generator page you already have
-          style={{
-            textDecoration: "none",
-            border: "1px solid #e5e7eb",
-            padding: "8px 12px",
-            borderRadius: 8,
-            fontWeight: 600,
-          }}
-        >
-          ← New Authorization
-        </a>
+        <div style={{ display: "flex", gap: 8 }}>
+          <a
+            href="/ops/authz/new"
+            style={{
+              textDecoration: "none",
+              border: "1px solid #e5e7eb",
+              padding: "8px 12px",
+              borderRadius: 8,
+              fontWeight: 600,
+            }}
+          >
+            ← New Authorization
+          </a>
+          <a
+            href="/ops/authz/list"
+            style={{
+              textDecoration: "none",
+              border: "1px solid #e5e7eb",
+              padding: "8px 12px",
+              borderRadius: 8,
+              fontWeight: 600,
+            }}
+          >
+            List
+          </a>
+        </div>
       </div>
 
       {!record ? (
@@ -106,7 +119,7 @@ export default async function Page({ params }: { params: { id: string } }) {
                 <div style={{ fontWeight: 700, marginTop: 2 }}>
                   {record.region ? record.region : "—"}
                 </div>
-              </div>
+              </div }
               <div>
                 <div style={{ fontSize: 12, color: "#6b7280" }}>Signer</div>
                 <div style={{ fontWeight: 700, marginTop: 2 }}>
@@ -116,7 +129,7 @@ export default async function Page({ params }: { params: { id: string } }) {
               <div>
                 <div style={{ fontSize: 12, color: "#6b7280" }}>Signed At</div>
                 <div style={{ fontWeight: 700, marginTop: 2 }}>
-                  {record.signed_at ? new Date(String(record.signed_at)).toLocaleString() : "—"}
+                  {record.signed_at ? new Date(record.signed_at as unknown as string).toLocaleString() : "—"}
                 </div>
               </div>
             </div>
@@ -208,6 +221,50 @@ export default async function Page({ params }: { params: { id: string } }) {
                 </tbody>
               </table>
             </div>
+          </div>
+
+          {/* Attach evidence */}
+          <div
+            style={{
+              marginTop: 16,
+              border: "1px solid #e5e7eb",
+              borderRadius: 12,
+              background: "white",
+              padding: 16,
+            }}
+          >
+            <div style={{ fontWeight: 600, marginBottom: 8 }}>Attach Evidence</div>
+            <form method="POST" action={`/ops/authz/${id}/attach`} encType="multipart/form-data">
+              <input
+                type="file"
+                name="files"
+                multiple
+                style={{
+                  padding: 8,
+                  border: "1px solid #e5e7eb",
+                  borderRadius: 8,
+                  background: "white",
+                  width: "100%",
+                }}
+              />
+              <div style={{ textAlign: "right", marginTop: 8 }}>
+                <button
+                  type="submit"
+                  style={{
+                    padding: "10px 14px",
+                    borderRadius: 8,
+                    border: "1px solid #e5e7eb",
+                    background: "white",
+                    fontWeight: 700,
+                  }}
+                >
+                  Upload & Recompute Manifest
+                </button>
+              </div>
+            </form>
+            <p style={{ color: "#6b7280", marginTop: 6 }}>
+              Upload LoA, ID, or other proofs. We’ll store them and refresh the authorization’s manifest hash.
+            </p>
           </div>
         </>
       )}
