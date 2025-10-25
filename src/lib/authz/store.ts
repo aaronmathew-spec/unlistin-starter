@@ -13,7 +13,7 @@ type AdminClient = ReturnType<typeof createClient<any, any, any>>;
 /** Minimal local type the manifest builder must expose for this layer */
 type AuthorizationManifestLike = {
   integrity?: { hashHex?: string } | undefined;
-  // We don't care about the rest of the shape here; keep it flexible
+  // Keep flexible; we don't depend on the rest of the shape here.
   [k: string]: any;
 };
 
@@ -80,8 +80,9 @@ function inferEvidenceKind(
     name.includes("passport") ||
     name.includes("gov") ||
     name.includes("id")
-  )
+  ) {
     return "id_government";
+  }
   if (name.includes("selfie")) return "id_selfie_match";
 
   if (mime.includes("image")) {
@@ -163,10 +164,9 @@ export async function createAuthorization(
       .select("*")
       .single();
 
-    if (ferr || !frow)
-      throw new Error(
-        `authz_file_insert_failed:${ferr?.message || "unknown"}`,
-      );
+    if (ferr || !frow) {
+      throw new Error(`authz_file_insert_failed:${ferr?.message || "unknown"}`);
+    }
     files.push(frow as AuthorizationFileRecord);
   }
 
@@ -180,7 +180,7 @@ export async function createAuthorization(
   // 4) Update manifest_hash in DB (fallback gracefully if integrity/hashHex absent)
   const hashHex =
     manifest?.integrity?.hashHex ??
-    // try common alternatives if builder changed
+    // try common alternatives if builder changes shape
     (manifest as any)?.hashHex ??
     (manifest as any)?.integrityHash ??
     "";
@@ -190,16 +190,11 @@ export async function createAuthorization(
     .update({ manifest_hash: hashHex })
     .eq("id", row.id);
   if (updErr) {
-    throw new Error(
-      `authz_manifest_hash_update_failed:${updErr.message}`,
-    );
+    throw new Error(`authz_manifest_hash_update_failed:${updErr.message}`);
   }
 
   return {
-    record: {
-      ...(row as AuthorizationRecord),
-      manifest_hash: hashHex,
-    },
+    record: { ...(row as AuthorizationRecord), manifest_hash: hashHex },
     files,
     manifest,
   };
@@ -226,5 +221,43 @@ export async function getAuthorization(id: string): Promise<{
   return {
     record: row as AuthorizationRecord,
     files: (frows || []) as AuthorizationFileRecord[],
+  };
+}
+
+/** Ops helper: list authorizations with simple search & paging (non-breaking) */
+export async function listAuthorizations(opts?: {
+  limit?: number;
+  offset?: number;
+  search?: string | null; // optional email/name/phone/signer search
+}): Promise<{ rows: AuthorizationRecord[]; total: number }> {
+  const supa = getAdmin();
+  const limit = Math.max(1, Math.min(200, opts?.limit ?? 50));
+  const offset = Math.max(0, opts?.offset ?? 0);
+  const search = (opts?.search || "").trim();
+
+  let q = supa
+    .from("authorizations")
+    .select("*", { count: "exact" })
+    .order("created_at", { ascending: false });
+
+  if (search) {
+    // Basic case-insensitive search across key columns
+    q = q
+      .ilike("subject_full_name", `%${search}%`)
+      .or(
+        [
+          `subject_email.ilike.%${search}%`,
+          `subject_phone.ilike.%${search}%`,
+          `signer_name.ilike.%${search}%`,
+        ].join(","),
+      );
+  }
+
+  const { data, count, error } = await q.range(offset, offset + limit - 1);
+  if (error) throw new Error(`authz_list_failed:${error.message}`);
+
+  return {
+    rows: (data || []) as AuthorizationRecord[],
+    total: count ?? 0,
   };
 }
