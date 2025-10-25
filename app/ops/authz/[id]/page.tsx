@@ -1,6 +1,7 @@
 // app/ops/authz/[id]/page.tsx
 // Server-rendered Authorization viewer (no client JS needed)
 
+import React from "react";
 import { getAuthorization } from "@/src/lib/authz/store";
 
 export const dynamic = "force-dynamic";
@@ -119,7 +120,7 @@ export default async function Page({ params }: { params: { id: string } }) {
                 <div style={{ fontWeight: 700, marginTop: 2 }}>
                   {record.region ? record.region : "—"}
                 </div>
-              </div }
+              </div>
               <div>
                 <div style={{ fontSize: 12, color: "#6b7280" }}>Signer</div>
                 <div style={{ fontWeight: 700, marginTop: 2 }}>
@@ -129,7 +130,7 @@ export default async function Page({ params }: { params: { id: string } }) {
               <div>
                 <div style={{ fontSize: 12, color: "#6b7280" }}>Signed At</div>
                 <div style={{ fontWeight: 700, marginTop: 2 }}>
-                  {record.signed_at ? new Date(record.signed_at as unknown as string).toLocaleString() : "—"}
+                  {record.signed_at ? new Date(String(record.signed_at)).toLocaleString() : "—"}
                 </div>
               </div>
             </div>
@@ -196,8 +197,8 @@ export default async function Page({ params }: { params: { id: string } }) {
                       return (
                         <tr key={f.id} style={{ borderTop: "1px solid #e5e7eb" }}>
                           <td style={{ padding: 12 }}>{mono(f.path)}</td>
-                          <td style={{ padding: 12 }}>{f.mime}</td>
-                          <td style={{ padding: 12 }}>{f.bytes}</td>
+                          <td style={{ padding: 12 }}>{(f as any).mime || "—"}</td>
+                          <td style={{ padding: 12 }}>{(f as any).bytes ?? "—"}</td>
                           <td style={{ padding: 12 }}>
                             <a
                               href={url}
