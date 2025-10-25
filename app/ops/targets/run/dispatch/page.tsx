@@ -3,8 +3,6 @@
 // Reads search params, resolves item names via the plan API, calls the cron-guarded
 // dispatch API with SECURE_CRON_SECRET header, and renders a results table.
 
-import { NextResponse } from "next/server";
-
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -23,12 +21,6 @@ type SubjectInput = {
   subjectId?: string | null;
   handles?: string[] | null;
 };
-
-function parseBool(s?: string | null): boolean {
-  if (!s) return false;
-  const v = String(s).trim().toLowerCase();
-  return v === "1" || v === "true" || v === "on" || v === "yes";
-}
 
 function splitCSV(s?: string | null): string[] {
   if (!s) return [];
@@ -78,12 +70,6 @@ function pickItems(all: PlanItem[], keys: string[]): { key: string; name: string
   });
 }
 
-function normStr(v?: string | null): string | null {
-  if (v === undefined || v === null) return null;
-  const s = String(v).trim();
-  return s.length ? s : null;
-}
-
 async function dispatchFanout(args: {
   subject: SubjectInput;
   items: { key: string; name: string }[];
@@ -118,19 +104,20 @@ async function dispatchFanout(args: {
     },
     body: JSON.stringify(payload),
     cache: "no-store",
-  }).catch((e) => ({
-    ok: false,
-    json: async () => ({ ok: false, error: `fetch_error:${String(e)}` }),
-  } as Response));
+  }).catch(() => null);
 
-  if (!("ok" in res) || !res.ok) {
-    // @ts-expect-error safe cast
-    const body = typeof res.json === "function" ? await res.json() : { ok: false, error: "dispatch_failed" };
-    return {
-      ok: false,
-      error: (body && body.error) || "dispatch_failed",
-      results: [],
-    };
+  if (!res) {
+    return { ok: false, error: "fetch_failed", results: [] as any[] };
+  }
+  if (!res.ok) {
+    let err: string | undefined;
+    try {
+      const body = (await res.json()) as { error?: string };
+      err = body?.error;
+    } catch {
+      // ignore
+    }
+    return { ok: false, error: err ?? "dispatch_failed", results: [] as any[] };
   }
 
   const json = await res.json();
@@ -167,8 +154,19 @@ export default async function Page({
     return (
       <div style={{ padding: 24, maxWidth: 1100, margin: "0 auto" }}>
         <h1 style={{ margin: 0 }}>Ops · Dispatch Results</h1>
-        <p style={{ color: "#6b7280" }}>Missing <code>fullName</code>. Please go back and generate a plan.</p>
-        <a href="/ops/targets" style={{ textDecoration: "none", border: "1px solid #e5e7eb", padding: "8px 12px", borderRadius: 8, fontWeight: 600 }}>
+        <p style={{ color: "#6b7280" }}>
+          Missing <code>fullName</code>. Please go back and generate a plan.
+        </p>
+        <a
+          href="/ops/targets"
+          style={{
+            textDecoration: "none",
+            border: "1px solid #e5e7eb",
+            padding: "8px 12px",
+            borderRadius: 8,
+            fontWeight: 600,
+          }}
+        >
           ← Back to Matrix
         </a>
       </div>
@@ -193,7 +191,7 @@ export default async function Page({
   const result = await dispatchFanout({ subject, items });
 
   // 3) Render
-  const summary = result && (result as any).ok
+  const summary = (result as any)?.ok
     ? {
         ok: true,
         total: (result as any).total,
@@ -232,9 +230,10 @@ export default async function Page({
           <div style={{ textAlign: "right" }}>
             <div style={{ fontSize: 13, color: "#6b7280" }}>Context</div>
             <div style={{ marginTop: 2 }}>
-              {summary.ok ? (
+              {(summary as any).ok ? (
                 <>
-                  Region {mono((summary as any).region)} · Locale {mono((summary as any).locale)} · Total {mono(String((summary as any).total))}
+                  Region {mono((summary as any).region)} · Locale {mono((summary as any).locale)} · Total{" "}
+                  {mono(String((summary as any).total))}
                 </>
               ) : (
                 <span style={{ color: "#b91c1c" }}>Error: {(summary as any).error}</span>
@@ -245,7 +244,15 @@ export default async function Page({
       </div>
 
       {/* Table */}
-      <div style={{ marginTop: 16, border: "1px solid #e5e7eb", borderRadius: 12, overflow: "hidden", background: "white" }}>
+      <div
+        style={{
+          marginTop: 16,
+          border: "1px solid #e5e7eb",
+          borderRadius: 12,
+          overflow: "hidden",
+          background: "white",
+        }}
+      >
         <div style={{ padding: 12, borderBottom: "1px solid #e5e7eb", background: "#f9fafb", fontWeight: 600 }}>
           Results
         </div>
@@ -264,7 +271,7 @@ export default async function Page({
               </tr>
             </thead>
             <tbody>
-              {summary.ok && Array.isArray((result as any)?.results) && (result as any).results.length ? (
+              {(result as any)?.ok && Array.isArray((result as any)?.results) && (result as any).results.length ? (
                 (result as any).results.map((r: any) => (
                   <tr key={r.key} style={{ borderTop: "1px solid #e5e7eb" }}>
                     <td style={{ padding: 12 }}>{r.name}</td>
@@ -280,7 +287,7 @@ export default async function Page({
               ) : (
                 <tr>
                   <td colSpan={8} style={{ padding: 24, textAlign: "center", color: "#6b7280" }}>
-                    {summary.ok ? "No items." : "No results due to error."}
+                    {(result as any)?.ok ? "No items." : "No results due to error."}
                   </td>
                 </tr>
               )}
