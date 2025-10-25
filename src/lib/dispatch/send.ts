@@ -133,7 +133,7 @@ function regionFromLocale(locale?: string | null): string {
  * Try to use the policy-aware builder ONLY for the webform path.
  * - Supported keys: truecaller, naukri, olx
  * - If builder returns an EMAIL channel, we ignore it for now (safety) and return null.
- * - If unknown controller, return null (fallback to legacy webform).
+ * - If unknown/unsupported controller, return null (fallback to legacy webform).
  */
 async function tryPolicyWebform(input: SendInput): Promise<
   | {
@@ -142,19 +142,29 @@ async function tryPolicyWebform(input: SendInput): Promise<
     }
   | null
 > {
-  let key: "truecaller" | "naukri" | "olx";
+  // asControllerKey returns the widened ControllerKey union.
+  // Narrow to the 3 controllers we support for policy-webform adoption.
+  let narrowed:
+    | "truecaller"
+    | "naukri"
+    | "olx"
+    | null = null;
   try {
-    key = asControllerKey(String(input.controllerKey));
+    const k = asControllerKey(String(input.controllerKey));
+    if (k === "truecaller" || k === "naukri" || k === "olx") {
+      narrowed = k;
+    } else {
+      return null; // not one of the supported webform-adoption controllers
+    }
   } catch {
-    return null; // unsupported controller; use legacy fallback
+    return null; // unknown controller; use legacy fallback
   }
 
-  // Build using policy with a region derived from locale
   const region = regionFromLocale(input.locale || "en-IN");
   let built: BuiltDispatch;
   try {
     built = await buildDispatchForController({
-      controller: key,
+      controller: narrowed,
       region,
       subjectFullName: norm(input.subject?.name),
       subjectEmail: norm(input.subject?.email),
@@ -173,7 +183,6 @@ async function tryPolicyWebform(input: SendInput): Promise<
     return null;
   }
 
-  // Return the policy-made webform args (worker/enqueue can use them directly or ignore extras).
   return {
     controller: (built as any).controller as "truecaller" | "naukri" | "olx",
     args: (built as any).args ?? {},
