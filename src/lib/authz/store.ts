@@ -6,6 +6,7 @@ import type {
   AuthorizationRecord,
   AuthorizationFileRecord,
   AuthorizationManifest,
+  EvidenceRef,
 } from "./types";
 import { buildAuthorizationManifest } from "./manifest";
 
@@ -15,7 +16,9 @@ function getAdmin(): AdminClient {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE;
   if (!url || !key) {
-    throw new Error("supabase_admin_missing: please set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE");
+    throw new Error(
+      "supabase_admin_missing: please set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE",
+    );
   }
   return createClient(url, key, { auth: { persistSession: false } });
 }
@@ -25,22 +28,75 @@ async function putFile(
   bucket: string,
   path: string,
   bytes: Uint8Array,
-  mime: string
+  mime: string,
 ) {
-  const { data, error } = await supa.storage.from(bucket).upload(path, bytes, {
-    contentType: mime,
-    upsert: false,
-  });
+  const { data, error } = await supa.storage
+    .from(bucket)
+    .upload(path, bytes, {
+      contentType: mime,
+      upsert: false,
+    });
   if (error) throw new Error(`storage_upload_failed:${error.message}`);
-  return data.path;
+  return data.path; // storage path (not public URL)
+}
+
+function filePublicUrl(
+  supa: AdminClient,
+  bucket: string,
+  path: string,
+): string {
+  const { data } = supa.storage.from(bucket).getPublicUrl(path);
+  return data.publicUrl;
 }
 
 function decodeBase64(b64: string): Uint8Array {
   return Buffer.from(b64, "base64");
 }
 
+/** Infer an EvidenceRef.kind from filename or mime if not explicitly stored. */
+function inferEvidenceKind(
+  file: Pick<AuthorizationFileRecord, "path"> & { mime?: string | null },
+): EvidenceRef["kind"] {
+  const name = (file.path || "").toLowerCase();
+  const mime = (file.mime || "").toLowerCase();
+
+  // Minimal heuristics
+  if (
+    name.includes("aadhaar") ||
+    name.includes("passport") ||
+    name.includes("gov") ||
+    name.includes("id")
+  )
+    return "id_government";
+  if (name.includes("selfie")) return "id_selfie_match";
+
+  if (mime.includes("image")) {
+    if (name.includes("selfie")) return "id_selfie_match";
+    return "id_government";
+  }
+
+  // Default to LoA if not sure
+  return "authority_letter";
+}
+
+/** Map DB file rows to EvidenceRef[] expected by the manifest builder. */
+function toEvidenceRefs(
+  supa: AdminClient,
+  bucket: string,
+  files: AuthorizationFileRecord[],
+): EvidenceRef[] {
+  return files.map((f) => {
+    const url = filePublicUrl(supa, bucket, f.path);
+    const label = f.path.split("/").pop() || f.path;
+    const kind = inferEvidenceKind(f as any);
+    return { kind, label, url };
+  });
+}
+
 /** Create authorization + files + manifest */
-export async function createAuthorization(input: AuthorizationInput): Promise<{
+export async function createAuthorization(
+  input: AuthorizationInput,
+): Promise<{
   record: AuthorizationRecord;
   files: AuthorizationFileRecord[];
   manifest: AuthorizationManifest;
@@ -82,32 +138,52 @@ export async function createAuthorization(input: AuthorizationInput): Promise<{
 
     const { data: frow, error: ferr } = await supa
       .from("authorization_files")
-      .insert([{ authorization_id: row.id, path: storedPath, mime: a.mime, bytes: bytes.byteLength }])
+      .insert([
+        {
+          authorization_id: row.id,
+          path: storedPath,
+          mime: a.mime,
+          bytes: bytes.byteLength,
+        },
+      ])
       .select("*")
       .single();
 
-    if (ferr || !frow) throw new Error(`authz_file_insert_failed:${ferr?.message || "unknown"}`);
+    if (ferr || !frow)
+      throw new Error(
+        `authz_file_insert_failed:${ferr?.message || "unknown"}`,
+      );
     files.push(frow as AuthorizationFileRecord);
   }
 
-  // 3) Build manifest (deterministic + signed)
-  const manifest = buildAuthorizationManifest({
+  // 3) Build manifest bundle (deterministic + signed)
+  //    IMPORTANT: builder expects EvidenceRef[], not raw DB rows.
+  const evidenceRefs = toEvidenceRefs(supa, bucket, files);
+  const bundle = buildAuthorizationManifest({
     record: row as AuthorizationRecord,
-    files,
+    files: evidenceRefs,
   });
+  // bundle.manifest (AuthorizationManifest)
+  // bundle.integrity.hashHex (stable content hash)
 
-  // 4) Update manifest_hash
+  // 4) Update manifest_hash in DB
   const { error: updErr } = await supa
     .from("authorizations")
-    .update({ manifest_hash: manifest.integrity.hashHex })
+    .update({ manifest_hash: bundle.integrity.hashHex })
     .eq("id", row.id);
-  if (updErr) throw new Error(`authz_manifest_hash_update_failed:${updErr.message}`);
+  if (updErr)
+    throw new Error(
+      `authz_manifest_hash_update_failed:${updErr.message}`,
+    );
 
   return {
-  record: { ...(row as AuthorizationRecord), manifest_hash: manifest.integrity.hashHex },
-  files,
-  manifest,
-};
+    record: {
+      ...(row as AuthorizationRecord),
+      manifest_hash: bundle.integrity.hashHex,
+    },
+    files,
+    manifest: bundle.manifest,
+  };
 }
 
 export async function getAuthorization(id: string): Promise<{
@@ -115,7 +191,11 @@ export async function getAuthorization(id: string): Promise<{
   files: AuthorizationFileRecord[];
 }> {
   const supa = getAdmin();
-  const { data: row, error } = await supa.from("authorizations").select("*").eq("id", id).single();
+  const { data: row, error } = await supa
+    .from("authorizations")
+    .select("*")
+    .eq("id", id)
+    .single();
   if (error || !row) return { record: null, files: [] };
 
   const { data: frows } = await supa
