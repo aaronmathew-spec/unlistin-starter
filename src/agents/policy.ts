@@ -44,7 +44,10 @@ function artifactsFor(key: string): VerificationArtifacts {
 }
 
 /** Build human-readable KYC/identity hints from meta.identity */
-function identityHintsFor(key: string, meta?: { wantsName?: boolean; wantsEmail?: boolean; wantsPhone?: boolean; wantsIdDoc?: boolean }): string[] {
+function identityHintsFor(
+  key: string,
+  meta?: { wantsName?: boolean; wantsEmail?: boolean; wantsPhone?: boolean; wantsIdDoc?: boolean },
+): string[] {
   const k = (key || "").toLowerCase();
   const wantsName = meta?.wantsName ?? true;
   const wantsEmail = meta?.wantsEmail ?? true;
@@ -109,4 +112,12 @@ export function getControllerPolicy(controllerKey: string): ControllerPolicy {
     verificationArtifacts: artifactsFor(key),
     identity: { hints: identityHintsFor(key, (meta as any)?.identity) },
   };
+}
+
+/**
+ * Registry compatibility: some modules import `synthesizePolicyForController`
+ * from "@/src/agents/policy". Export it as the async, DB-aware builder.
+ */
+export async function synthesizePolicyForController(controllerKey: string): Promise<ControllerPolicy> {
+  return getRuntimePolicy(controllerKey);
 }
