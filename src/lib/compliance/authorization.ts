@@ -1,13 +1,19 @@
 // src/lib/compliance/authorization.ts
 // DPDP-aligned authorization & KYC artifacts for acting on behalf of a Data Principal.
+// Server-only usage (SUPABASE_SERVICE_ROLE). No client imports.
 
 export const runtime = "nodejs";
 
 import { createClient } from "@supabase/supabase-js";
+import { createHash, randomUUID } from "node:crypto";
 
 type ISODate = string;
 
-export type IdentityDocType = "Aadhaar-last4" | "PAN-last4" | "Passport-last4" | "Other";
+export type IdentityDocType =
+  | "Aadhaar-last4"
+  | "PAN-last4"
+  | "Passport-last4"
+  | "Other";
 
 export type KycArtifact = {
   kind: IdentityDocType;
@@ -18,15 +24,15 @@ export type KycArtifact = {
 export type AuthorizationRecord = {
   id: string; // UUID
   tenantId: string;
-  subjectUserId: string; // internal user id (your auth)
+  subjectUserId: string; // your auth user id
   subjectFullName: string;
   subjectEmail?: string | null;
   subjectPhone?: string | null;
 
   // LoA basics
-  loaSignedUrl: string;     // signed PDF/image URL (Supabase storage or external)
+  loaSignedUrl: string; // Supabase storage or trusted URL
   loaSignedAt: ISODate;
-  loaVersion: string;       // template version
+  loaVersion: string; // template version
 
   // KYC
   kyc: KycArtifact[];
@@ -35,7 +41,7 @@ export type AuthorizationRecord = {
   scopeControllers?: string[] | null;
 
   // Integrity
-  manifestHash: string;     // hex sha256 of canonical manifest JSON
+  manifestHash: string; // sha256 hex of canonical manifest JSON
   createdAt: ISODate;
   updatedAt: ISODate;
 };
@@ -63,15 +69,14 @@ function nowIso(): ISODate {
 }
 
 function sha256Hex(s: string) {
-  // small inline SHA256 using Web Crypto (available in Node 18+)
-  const enc = new TextEncoder().encode(s);
-  // @ts-ignore
-  const d = require("crypto").createHash("sha256").update(enc).digest("hex");
-  return d;
+  return createHash("sha256").update(s).digest("hex");
 }
 
 // Canonical manifest we can attach to outbound requests as proof-of-authorization.
-export function buildAuthorizationManifest(rec: Omit<AuthorizationRecord, "manifestHash" | "createdAt" | "updatedAt">) {
+export function buildAuthorizationManifest(rec: Omit<
+  AuthorizationRecord,
+  "manifestHash" | "createdAt" | "updatedAt" | "id"
+>) {
   const canonical = {
     version: "loa.manifest.v1",
     tenantId: rec.tenantId,
@@ -94,11 +99,16 @@ export function buildAuthorizationManifest(rec: Omit<AuthorizationRecord, "manif
   return { manifest, hash };
 }
 
-export async function putAuthorization(input: PutAuthorizationInput): Promise<AuthorizationRecord> {
+/**
+ * Upsert-style create (simple insert for now). Requires table `authorization`.
+ * If the table does not exist yet, this function will throw at runtime; compile remains green.
+ */
+export async function putAuthorization(
+  input: PutAuthorizationInput
+): Promise<AuthorizationRecord> {
   const sb = supabaseAdmin();
 
   const base = {
-    id: crypto.randomUUID(),
     tenantId: input.tenantId,
     subjectUserId: input.subjectUserId,
     subjectFullName: input.subjectFullName,
@@ -111,16 +121,16 @@ export async function putAuthorization(input: PutAuthorizationInput): Promise<Au
     scopeControllers: input.scopeControllers ?? null,
   } as const;
 
-  const { manifest, hash } = buildAuthorizationManifest(base as any);
+  const { manifest: _manifest, hash } = buildAuthorizationManifest(base as any);
 
   const rec: AuthorizationRecord = {
-    ...(base as any),
+    id: randomUUID(),
+    ...base,
     manifestHash: hash,
     createdAt: nowIso(),
     updatedAt: nowIso(),
   };
 
-  // Persist (expects a table 'authorization'—see SQL migration below)
   const { error } = await sb.from("authorization").insert({
     id: rec.id,
     tenant_id: rec.tenantId,
