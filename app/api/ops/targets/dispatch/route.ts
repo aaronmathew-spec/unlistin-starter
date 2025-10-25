@@ -1,14 +1,9 @@
 // app/api/ops/targets/dispatch/route.ts
-// Cron-guarded fan-out dispatcher for a generated "targets plan".
-// Accepts the payload shown in the /ops/targets/run page's cURL helper.
-// Requires header:  x-secure-cron: <SECURE_CRON_SECRET>
-
 import { NextResponse } from "next/server";
-import sendControllerRequest from "@/src/lib/dispatch/send";
-import { buildDraftForController } from "@/src/lib/email/templates/controllers/draft";
+import sendControllerRequest from "@/lib/dispatch/send";
+import { buildDraftForController } from "@/lib/email/templates/controllers/draft";
 
 export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
 
 type SubjectPayload = {
   fullName: string;
@@ -27,15 +22,12 @@ type DispatchBody = {
   items: ItemPayload[];
 };
 
-function bad(message: string, status = 400) {
-  return NextResponse.json({ ok: false, error: message }, { status });
+function bad(message: string, status = 400, extra: Record<string, unknown> = {}) {
+  return NextResponse.json({ ok: false, error: message, ...extra }, { status });
 }
 
 function hasHeaderSecret(headers: Headers): boolean {
-  const provided =
-    headers.get("x-secure-cron")?.trim() ??
-    headers.get("x-secure-cron-secret")?.trim() ??
-    null;
+  const provided = headers.get("x-secure-cron")?.trim();
   const expected = process.env.SECURE_CRON_SECRET?.trim();
   return !!provided && !!expected && provided === expected;
 }
@@ -46,9 +38,13 @@ function normStr(v?: string | null): string | null {
   return s.length ? s : null;
 }
 
+function log(event: string, payload: Record<string, unknown>) {
+  console.log(JSON.stringify({ ts: new Date().toISOString(), event, ...payload }));
+}
+
 export async function POST(req: Request) {
-  // Guard: secure-cron header
   if (!hasHeaderSecret(req.headers)) {
+    log("targets_dispatch_forbidden", {});
     return bad("unauthorized_cron", 403);
   }
 
@@ -56,11 +52,12 @@ export async function POST(req: Request) {
   try {
     body = (await req.json()) as DispatchBody;
   } catch {
+    log("targets_dispatch_invalid_json", {});
     return bad("invalid_json");
   }
 
-  // Validate minimal shape
   if (!body || !body.subject || !Array.isArray(body.items)) {
+    log("targets_dispatch_invalid_payload", {});
     return bad("invalid_payload");
   }
 
@@ -68,9 +65,7 @@ export async function POST(req: Request) {
   const locale = (normStr(body.locale) || "en-IN") as string;
 
   const subjectFullName = normStr(body.subject.fullName);
-  if (!subjectFullName) {
-    return bad("subject_fullName_required");
-  }
+  if (!subjectFullName) return bad("subject_fullName_required");
 
   const subjectEmail = normStr(body.subject.email);
   const subjectPhone = normStr(body.subject.phone);
@@ -79,23 +74,33 @@ export async function POST(req: Request) {
     ? body.subject.handles.filter((h) => !!normStr(h)).map((h) => String(h))
     : [];
 
-  // Fan-out per item
+  log("targets_dispatch_start", {
+    items: body.items.length,
+    region,
+    locale,
+    subjectId: subjectId || null,
+    hasEmail: !!subjectEmail,
+    hasPhone: !!subjectPhone,
+  });
+
+  const started = Date.now();
+
   const results = await Promise.all(
     body.items.map(async (item) => {
       const controllerKey = String(item.key || "").toLowerCase();
       const controllerName = String(item.name || controllerKey || "Unknown");
 
-      // Build a jurisdiction-aware draft (even for webform-only dispatch)
       const draft = buildDraftForController({
         controllerKey,
         controllerName,
         region,
-        subjectFullName, // safe: guaranteed non-null above
+        subjectFullName,
         subjectEmail,
         subjectPhone,
         links: handles.length ? handles : null,
       });
 
+      const t0 = Date.now();
       try {
         const res = await sendControllerRequest({
           controllerKey,
@@ -108,10 +113,21 @@ export async function POST(req: Request) {
             id: subjectId,
           },
           locale,
-          draft,           // workers can attach this to artifacts or webforms if helpful
-          formUrl: null,   // allow policy/webform to decide defaults
+          draft,
+          formUrl: null,
           action: "create_request_v1",
           subjectId,
+        });
+
+        const elapsed = Date.now() - t0;
+        log("targets_dispatch_item", {
+          key: controllerKey,
+          channel: res.channel,
+          ok: res.ok,
+          providerId: res.providerId || null,
+          error: res.error || null,
+          idempotent: res.idempotent || null,
+          ms: elapsed,
         });
 
         return {
@@ -126,7 +142,13 @@ export async function POST(req: Request) {
           hint: res.hint ?? null,
         };
       } catch (e: unknown) {
+        const elapsed = Date.now() - t0;
         const msg = (e as Error)?.message || String(e);
+        log("targets_dispatch_item_exception", {
+          key: controllerKey,
+          error: msg,
+          ms: elapsed,
+        });
         return {
           key: controllerKey,
           name: controllerName,
@@ -139,10 +161,18 @@ export async function POST(req: Request) {
           hint: "Exception during dispatch attempt",
         };
       }
-    }),
+    })
   );
 
+  const totalElapsed = Date.now() - started;
   const okCount = results.filter((r) => r.ok).length;
+
+  log("targets_dispatch_done", {
+    total: results.length,
+    okCount,
+    failCount: results.length - okCount,
+    ms: totalElapsed,
+  });
 
   return NextResponse.json({
     ok: true,
