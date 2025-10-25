@@ -1,13 +1,14 @@
 // app/api/ops/targets/dispatch/route.ts
 // Cron-guarded fan-out dispatcher for a generated "targets plan".
 // Accepts the payload shown in the /ops/targets/run page's cURL helper.
-// Requires: header `x-secure-cron: <SECURE_CRON_SECRET>`
+// Requires header:  x-secure-cron: <SECURE_CRON_SECRET>
 
 import { NextResponse } from "next/server";
-import sendControllerRequest from "@/lib/dispatch/send";
-import { buildDraftForController } from "@/lib/email/templates/controllers/draft";
+import sendControllerRequest from "@/src/lib/dispatch/send";
+import { buildDraftForController } from "@/src/lib/email/templates/controllers/draft";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 type SubjectPayload = {
   fullName: string;
@@ -31,7 +32,10 @@ function bad(message: string, status = 400) {
 }
 
 function hasHeaderSecret(headers: Headers): boolean {
-  const provided = headers.get("x-secure-cron")?.trim();
+  const provided =
+    headers.get("x-secure-cron")?.trim() ??
+    headers.get("x-secure-cron-secret")?.trim() ??
+    null;
   const expected = process.env.SECURE_CRON_SECRET?.trim();
   return !!provided && !!expected && provided === expected;
 }
@@ -45,7 +49,7 @@ function normStr(v?: string | null): string | null {
 export async function POST(req: Request) {
   // Guard: secure-cron header
   if (!hasHeaderSecret(req.headers)) {
-    return bad("unauthorized_cron");
+    return bad("unauthorized_cron", 403);
   }
 
   let body: DispatchBody;
@@ -59,6 +63,7 @@ export async function POST(req: Request) {
   if (!body || !body.subject || !Array.isArray(body.items)) {
     return bad("invalid_payload");
   }
+
   const region = (normStr(body.region) || "IN") as string;
   const locale = (normStr(body.locale) || "en-IN") as string;
 
@@ -80,13 +85,12 @@ export async function POST(req: Request) {
       const controllerKey = String(item.key || "").toLowerCase();
       const controllerName = String(item.name || controllerKey || "Unknown");
 
-      // Build a jurisdiction-aware draft (even if we currently dispatch webform-first,
-      // this keeps the payload rich for the worker + proof artifacts).
+      // Build a jurisdiction-aware draft (even for webform-only dispatch)
       const draft = buildDraftForController({
         controllerKey,
         controllerName,
         region,
-        subjectFullName,
+        subjectFullName, // safe: guaranteed non-null above
         subjectEmail,
         subjectPhone,
         links: handles.length ? handles : null,
@@ -104,7 +108,7 @@ export async function POST(req: Request) {
             id: subjectId,
           },
           locale,
-          draft,           // workers can attach this in artifacts or webforms if helpful
+          draft,           // workers can attach this to artifacts or webforms if helpful
           formUrl: null,   // allow policy/webform to decide defaults
           action: "create_request_v1",
           subjectId,
@@ -135,7 +139,7 @@ export async function POST(req: Request) {
           hint: "Exception during dispatch attempt",
         };
       }
-    })
+    }),
   );
 
   const okCount = results.filter((r) => r.ok).length;
