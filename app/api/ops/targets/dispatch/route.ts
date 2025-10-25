@@ -1,9 +1,10 @@
 // app/api/ops/targets/dispatch/route.ts
 // Cron-guarded, flag-gated API to turn a plan into real dispatch jobs.
-// Uses existing dispatcher (idempotency + circuit breaker + DLQ). No schema changes.
+// UPDATED: if no draft is provided, we generate per-controller drafts automatically.
 
 import { NextResponse } from "next/server";
 import { dispatchPlanItem, type PlanItem, type SubjectProfile } from "@/src/lib/targets/dispatch";
+import { buildDraftForController } from "@/src/lib/email/templates/controllers/draft";
 
 export const runtime = "nodejs";
 
@@ -21,25 +22,6 @@ function flagEnabled(): boolean {
   return v === "1" || v.toLowerCase() === "true";
 }
 
-/**
- * Body shape:
- * {
- *   "subject": {
- *     "fullName":"Aarav Shah",
- *     "email":"aarav@example.com",
- *     "phone":"+91-98xxxxxxx",
- *     "handles":["instagram:aarav","x:aarav"],
- *     "subjectId":"user_123"
- *   },
- *   "items": [
- *     {"key":"truecaller","name":"Truecaller"},
- *     {"key":"naukri","name":"Naukri"},
- *     {"key":"olx","name":"OLX"}
- *   ],
- *   "locale":"en-IN",
- *   "draft": { "subject":"Data removal request", "bodyText":"Please remove…"}
- * }
- */
 export async function POST(req: Request) {
   const unauthorized = requireCronHeader(req);
   if (unauthorized) return unauthorized;
@@ -49,7 +31,8 @@ export async function POST(req: Request) {
     const subject = (body.subject || {}) as SubjectProfile;
     const items = Array.isArray(body.items) ? (body.items as PlanItem[]) : [];
     const locale: string | null = body.locale ?? "en-IN";
-    const draft = body.draft ?? null;
+    const region: string | null = body.region ?? "IN";
+    const providedDraft = body.draft ?? null;
     const formUrl = body.formUrl ?? null;
     const action = body.action ?? null;
 
@@ -68,13 +51,29 @@ export async function POST(req: Request) {
         results.push({ controllerKey: null, ok: false, error: "invalid_item" });
         continue;
       }
+
+      let draft = providedDraft;
+      if (!draft) {
+        // auto-generate controller-specific draft
+        const d = buildDraftForController({
+          controllerKey: item.key,
+          controllerName: item.name || null,
+          region,
+          subjectFullName: subject.fullName,
+          subjectEmail: subject.email || null,
+          subjectPhone: subject.phone || null,
+          links: subject.handles || null,
+        });
+        draft = { subject: d.subject, bodyText: d.bodyText };
+      }
+
       if (!enabled) {
-        // Dry acknowledgement when flag is off; no dispatch
         results.push({
           controllerKey: item.key,
           ok: true,
           dryRun: true,
           note: "FLAG_PLAN_DISPATCH_ENABLED is not enabled; no job enqueued.",
+          previewDraft: draft,
         });
         continue;
       }
