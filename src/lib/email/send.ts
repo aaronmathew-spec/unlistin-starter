@@ -5,7 +5,7 @@
 // an authorization-manifest footer and (flag-gated) attaches the manifest JSON.
 
 import {
-  sendEmailSafe as resendSend,
+  sendEmail as resendSend,
   type SendEmailInput,
   type SendEmailResult,
 } from "@/lib/email/resend";
@@ -120,7 +120,6 @@ export async function sendEmailWithAuthorization(
       {
         filename: "authorization.manifest.json",
         content: buf.toString("base64"),
-        // Typical email APIs expect base64 + contentType
         contentType: "application/json",
       },
     ];
