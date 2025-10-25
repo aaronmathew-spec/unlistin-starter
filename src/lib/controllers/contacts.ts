@@ -55,7 +55,6 @@ export const CONTROLLER_CONTACTS: Record<ControllerKey, ContactInfo> = {
 // Helper to fetch contacts safely (returns null if unknown).
 export function getControllerContacts(key: string): ContactInfo | null {
   const k = key.toLowerCase() as ControllerKey;
-  // @ts-expect-error narrow at runtime; returns null on unknown keys
   const entry: ContactInfo | undefined = CONTROLLER_CONTACTS[k];
   return entry ?? null;
 }
