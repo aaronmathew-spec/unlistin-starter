@@ -1,0 +1,22 @@
+{
+  "site_id": "truecaller",
+  "intents": ["removal"],
+  "channels": ["webform"],
+  "webform": {
+    "url": "https://www.truecaller.com/privacy-center/request/unlist",
+    "selectors": {
+      "name": "input[name='name']",
+      "email": "input[name='email']",
+      "phone": "input[name='phone']",
+      "submit": "button[type='submit']"
+    },
+    "timeouts": {
+      "navMs": 15000,
+      "idleMs": 2000
+    },
+    "notes": [
+      "Truecaller public unlisting form—requires name/email/phone.",
+      "Use headful only if captcha is detected; otherwise headless is fine."
+    ]
+  }
+}
