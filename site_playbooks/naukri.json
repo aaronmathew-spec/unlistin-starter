@@ -1,0 +1,18 @@
+{
+  "site_id": "naukri",
+  "intents": ["removal"],
+  "channels": ["email"],
+  "email": {
+    "to": ["compliance@naukri.com"],
+    "cc": [],
+    "subject": "Request for removal of personal data - {{fullName}}",
+    "body": [
+      "Hello Naukri Team,",
+      "",
+      "I am {{fullName}} ({{email}} / {{phone}}). I am exercising my data subject rights under {{lawName}} ({{lawKey}}).",
+      "",
+      "Please remove and cease processing my personal data across your systems and apps, including any public profiles or cached copies.",
+      "If further verification is required, please reply specifying exactly what you need.",
+      "",
+      "Identifiers (if applicable):",
+      "{{ident
