@@ -37,3 +37,25 @@ export function normalizePlain(text: string): string {
   const t = (text || "").trim();
   return t.replace(/\n{3,}/g, "\n\n");
 }
+
+/**
+ * Standard signature block for templated emails.
+ * Keep it minimal, readable, and safe for plain-text clients.
+ */
+export function signatureBlock(opts?: {
+  name?: string;
+  email?: string;
+  phone?: string;
+  title?: string;
+  company?: string;
+}): string {
+  const lines: Array<string | null | undefined> = [
+    "Regards,",
+    opts?.name || undefined,
+    opts?.title || undefined,
+    opts?.company || undefined,
+    opts?.email ? `Email: ${opts.email}` : undefined,
+    opts?.phone ? `Phone: ${opts.phone}` : undefined,
+  ];
+  return lineBreaks(...lines);
+}
