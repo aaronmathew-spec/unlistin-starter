@@ -204,6 +204,81 @@ export async function createAuthorization(
   };
 }
 
+/** Attach evidence files to an existing authorization and recompute manifest */
+export async function attachAuthorizationEvidence(params: {
+  id: string;
+  uploads: Array<{ filename: string; mime: string; bytes: Uint8Array }>;
+}): Promise<{
+  record: AuthorizationRecord;
+  files: AuthorizationFileRecord[];
+  manifest: AuthorizationManifestLike;
+}> {
+  const supa = getAdmin();
+  const bucket = "authz";
+
+  // Ensure authz exists
+  const { data: row, error: rowErr } = await supa
+    .from("authorizations")
+    .select("*")
+    .eq("id", params.id)
+    .single();
+  if (rowErr || !row) throw new Error("authz_not_found");
+
+  // Insert files
+  for (const u of params.uploads) {
+    const safeName = u.filename.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const path = `${row.id}/${Date.now()}_${safeName}`;
+    const storedPath = await putFile(supa, bucket, path, u.bytes, u.mime);
+
+    const { error: ferr } = await supa
+      .from("authorization_files")
+      .insert([
+        {
+          authorization_id: row.id,
+          path: storedPath,
+          mime: u.mime,
+          bytes: u.bytes.byteLength,
+        },
+      ])
+      .select()
+      .single();
+    if (ferr) throw new Error(`authz_file_insert_failed:${ferr.message}`);
+  }
+
+  // Pull fresh files and rebuild manifest
+  const { data: frows, error: lerr } = await supa
+    .from("authorization_files")
+    .select("*")
+    .eq("authorization_id", row.id)
+    .order("created_at", { ascending: true });
+  if (lerr) throw new Error(`authz_files_list_failed:${lerr.message}`);
+
+  const files = (frows || []) as AuthorizationFileRecord[];
+  const evidenceRefs = toEvidenceRefs(supa, bucket, files);
+  const manifest = buildAuthorizationManifest({
+    record: row as AuthorizationRecord,
+    files: evidenceRefs,
+  }) as AuthorizationManifestLike;
+
+  const hashHex =
+    manifest?.integrity?.hashHex ??
+    (manifest as any)?.hashHex ??
+    (manifest as any)?.integrityHash ??
+    "";
+
+  const { error: updErr } = await supa
+    .from("authorizations")
+    .update({ manifest_hash: hashHex })
+    .eq("id", row.id);
+  if (updErr) throw new Error(`authz_manifest_hash_update_failed:${updErr.message}`);
+
+  return {
+    record: { ...(row as AuthorizationRecord), manifest_hash: hashHex },
+    files,
+    manifest,
+  };
+}
+
 export async function getAuthorization(id: string): Promise<{
   record: AuthorizationRecord | null;
   files: AuthorizationFileRecord[];
@@ -228,98 +303,30 @@ export async function getAuthorization(id: string): Promise<{
   };
 }
 
-/** NEW: list recent authorizations for Ops UI */
-export async function listAuthorizations(
-  limit = 50,
-  offset = 0,
-): Promise<AuthorizationRecord[]> {
+/** Used by list page */
+export async function listAuthorizations(params: {
+  search: string | null;
+  limit: number;
+  offset: number;
+}): Promise<{ rows: AuthorizationRecord[]; total: number }> {
   const supa = getAdmin();
-  const { data, error } = await supa
-    .from("authorizations")
-    .select("*")
-    .order("created_at", { ascending: false })
-    .range(offset, offset + limit - 1);
 
-  if (error || !data) return [];
-  return data as AuthorizationRecord[];
-}
+  let q = supa.from("authorizations").select("*", { count: "exact" }).order("created_at", { ascending: false });
 
-/** NEW: attach files to an authorization and recompute manifest hash */
-export async function attachAuthorizationFiles(
-  authorizationId: string,
-  artifacts: Array<{ filename: string; mime: string; base64: string }>,
-): Promise<{
-  record: AuthorizationRecord | null;
-  files: AuthorizationFileRecord[];
-  manifest: AuthorizationManifestLike | null;
-}> {
-  const supa = getAdmin();
-  const bucket = "authz";
-
-  // Ensure auth exists
-  const { record } = await getAuthorization(authorizationId);
-  if (!record) {
-    return { record: null, files: [], manifest: null };
+  if (params.search) {
+    const term = `%${params.search}%`;
+    q = q.or(
+      [
+        `subject_full_name.ilike.${term}`,
+        `subject_email.ilike.${term}`,
+        `subject_phone.ilike.${term}`,
+        `signer_name.ilike.${term}`,
+      ].join(","),
+    );
   }
 
-  // Upload & insert rows
-  const inserted: AuthorizationFileRecord[] = [];
-  for (const a of artifacts) {
-    const bytes = decodeBase64(a.base64);
-    const safeName = a.filename.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const path = `${authorizationId}/${Date.now()}_${safeName}`;
-    const storedPath = await putFile(supa, bucket, path, bytes, a.mime);
+  const { data, error, count } = await q.range(params.offset, params.offset + params.limit - 1);
+  if (error) throw new Error(`authz_list_failed:${error.message}`);
 
-    const { data: frow, error: ferr } = await supa
-      .from("authorization_files")
-      .insert([
-        {
-          authorization_id: authorizationId,
-          path: storedPath,
-          mime: a.mime,
-          bytes: bytes.byteLength,
-        },
-      ])
-      .select("*")
-      .single();
-    if (ferr || !frow) {
-      throw new Error(`authz_attach_file_failed:${ferr?.message || "unknown"}`);
-    }
-    inserted.push(frow as AuthorizationFileRecord);
-  }
-
-  // Recompute manifest over *all* files for the authorization
-  const { data: allFiles } = await supa
-    .from("authorization_files")
-    .select("*")
-    .eq("authorization_id", authorizationId)
-    .order("created_at", { ascending: true });
-
-  const files = (allFiles || []) as AuthorizationFileRecord[];
-  const evidenceRefs = toEvidenceRefs(supa, bucket, files);
-
-  const manifest = buildAuthorizationManifest({
-    record: record as AuthorizationRecord,
-    files: evidenceRefs,
-  }) as AuthorizationManifestLike;
-
-  const hashHex =
-    manifest?.integrity?.hashHex ??
-    (manifest as any)?.hashHex ??
-    (manifest as any)?.integrityHash ??
-    "";
-
-  const { error: updErr } = await supa
-    .from("authorizations")
-    .update({ manifest_hash: hashHex })
-    .eq("id", authorizationId);
-  if (updErr) {
-    throw new Error(`authz_manifest_rehash_failed:${updErr.message}`);
-  }
-
-  return {
-    record: { ...record, manifest_hash: hashHex },
-    files,
-    manifest,
-  };
+  return { rows: (data || []) as AuthorizationRecord[], total: count || 0 };
 }
