@@ -1,12 +1,19 @@
 // app/api/subject/authorization/route.ts
+// Creates an authorization record, uploads artifacts, builds a manifest, and returns everything.
+// Relies on src/lib/authz/store.ts (createAuthorization / getAuthorization).
+
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createAuthorization, getAuthorization } from "@/src/lib/authz/store";
 
-// Optional simple guard (you can tighten this later with a key)
-function assertAllowed(req: Request) {
-  // Example: only allow POST/GET server-side
-  // Optionally check a header like x-internal-key if you want
+export const runtime = "nodejs";        // Buffer used in store.ts; ensure Node runtime
+export const dynamic = "force-dynamic"; // avoid caching surprises for POST/GET
+
+// Optional simple guard (tighten later with a shared secret if needed)
+function assertAllowed(_req: Request) {
+  // Example: check a header
+  // const key = _req.headers.get("x-internal-key");
+  // return key && key === process.env.INTERNAL_API_KEY;
   return true;
 }
 
@@ -53,13 +60,11 @@ export async function POST(req: Request) {
       manifest_hash: res.record.manifest_hash,
       record: res.record,
       files: res.files,
-      manifest: res.manifest, // contains integrity.hashHex at minimum
+      manifest: res.manifest, // includes .integrity.hashHex (already used to update record)
     });
   } catch (e: any) {
-    return NextResponse.json(
-      { ok: false, error: String(e?.message || e) },
-      { status: 500 }
-    );
+    const msg = String(e?.message || e);
+    return NextResponse.json({ ok: false, error: "authz_create_failed", note: msg }, { status: 500 });
   }
 }
 
@@ -74,15 +79,15 @@ export async function GET(req: Request) {
     if (!id) {
       return NextResponse.json({ ok: false, error: "missing_id" }, { status: 400 });
     }
+
     const { record, files } = await getAuthorization(id);
     if (!record) {
       return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
     }
+
     return NextResponse.json({ ok: true, record, files });
   } catch (e: any) {
-    return NextResponse.json(
-      { ok: false, error: String(e?.message || e) },
-      { status: 500 }
-    );
+    const msg = String(e?.message || e);
+    return NextResponse.json({ ok: false, error: "authz_fetch_failed", note: msg }, { status: 500 });
   }
 }
