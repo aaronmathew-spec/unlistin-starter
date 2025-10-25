@@ -6,11 +6,23 @@ import type {
   AuthorizationRecord,
   AuthorizationFileRecord,
   AuthorizationManifest,
-  EvidenceRef,
 } from "./types";
 import { buildAuthorizationManifest } from "./manifest";
 
 type AdminClient = ReturnType<typeof createClient<any, any, any>>;
+
+/** Minimal local type the manifest builder expects for evidence files */
+type EvidenceRef = {
+  kind:
+    | "id_government"
+    | "id_selfie_match"
+    | "authority_letter"
+    | "purchase_receipt"
+    | "email_control"
+    | "phone_otp";
+  label: string;
+  url: string;
+};
 
 function getAdmin(): AdminClient {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -55,7 +67,7 @@ function decodeBase64(b64: string): Uint8Array {
 
 /** Infer an EvidenceRef.kind from filename or mime if not explicitly stored. */
 function inferEvidenceKind(
-  file: Pick<AuthorizationFileRecord, "path"> & { mime?: string | null },
+  file: Pick<AuthorizationFileRecord, "path" | "mime">,
 ): EvidenceRef["kind"] {
   const name = (file.path || "").toLowerCase();
   const mime = (file.mime || "").toLowerCase();
@@ -88,7 +100,7 @@ function toEvidenceRefs(
   return files.map((f) => {
     const url = filePublicUrl(supa, bucket, f.path);
     const label = f.path.split("/").pop() || f.path;
-    const kind = inferEvidenceKind(f as any);
+    const kind = inferEvidenceKind({ path: f.path, mime: (f as any).mime });
     return { kind, label, url };
   });
 }
