@@ -14,9 +14,10 @@ function mono(s: string) {
 }
 
 // Build a public URL for a file path in the "authz" bucket.
-// We assume the bucket is public (as in the intake flow).
+// Assumes the bucket is public. Falls back to "#" if base URL is unset.
 function publicUrlFor(path: string): string {
   const base = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+  if (!base) return "#";
   // Example: https://<proj>.supabase.co/storage/v1/object/public/authz/<path>
   return `${base}/storage/v1/object/public/authz/${path}`;
 }
@@ -35,7 +36,7 @@ export default async function Page({ params }: { params: { id: string } }) {
           </p>
         </div>
         <a
-          href="/ops/authz/new"
+          href="/ops/authz" // <- point to the generator page you already have
           style={{
             textDecoration: "none",
             border: "1px solid #e5e7eb",
@@ -115,7 +116,7 @@ export default async function Page({ params }: { params: { id: string } }) {
               <div>
                 <div style={{ fontSize: 12, color: "#6b7280" }}>Signed At</div>
                 <div style={{ fontWeight: 700, marginTop: 2 }}>
-                  {record.signed_at ? new Date(record.signed_at as unknown as string).toLocaleString() : "—"}
+                  {record.signed_at ? new Date(String(record.signed_at)).toLocaleString() : "—"}
                 </div>
               </div>
             </div>
