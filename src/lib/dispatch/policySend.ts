@@ -35,7 +35,7 @@ export async function sendControllerRequest(input: SendControllerInput): Promise
     identifiers: input.identifiers,
   });
 
-  const executed = await executeBuiltDispatch(built, { to: input.to, from: input.from });
+  const executed = await executeBuiltDispatch(built, { to: input.to, from: input.from, controller });
 
   return Object.assign({ built }, executed);
 }
