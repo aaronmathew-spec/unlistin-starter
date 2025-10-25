@@ -2,10 +2,8 @@
 // Server-rendered list of Authorization records (no client JS)
 
 import { listAuthorizations } from "@/src/lib/authz/store";
-import type { AuthorizationRecord } from "@/src/lib/authz/types";
 
 export const dynamic = "force-dynamic";
-export const runtime = "nodejs";
 
 type SP = Record<string, string | string[] | undefined>;
 
@@ -27,21 +25,29 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
   const limit = Math.max(1, Math.min(100, Number(get(searchParams, "limit") || "20") || 20));
   const offset = (page - 1) * limit;
 
-  // Call the *current* store API (single options object).
-  // It may return either:
-  //   { rows: AuthorizationRecord[]; total: number }
-  // or (legacy) AuthorizationRecord[]
-  const res: any = await listAuthorizations({
-    search: q || null,
-    limit,
-    offset,
-  } as any);
+  // NOTE: matches current store API: listAuthorizations(limit, offset) -> AuthorizationRecord[]
+  const rowsRaw = await listAuthorizations(limit, offset);
 
-  const rows: AuthorizationRecord[] = Array.isArray(res) ? res : (res?.rows ?? []);
-  // Fallback total: if the store ever returns just an array, we estimate total as (offset + rows.length)
-  const total: number = typeof res?.total === "number" ? res.total : offset + rows.length;
+  // Optional in-memory filtering if q provided (best-effort; does not affect server pagination)
+  const rows = q
+    ? rowsRaw.filter((r) => {
+        const hay = [
+          r.subject_full_name || "",
+          r.subject_email || "",
+          r.subject_phone || "",
+          r.signer_name || "",
+          r.region || "",
+          r.manifest_hash || "",
+        ]
+          .join(" ")
+          .toLowerCase();
+        return hay.includes(q.toLowerCase());
+      })
+    : rowsRaw;
 
-  const pages = Math.max(1, Math.ceil(total / limit));
+  // We don’t know total count in this paged API; show a best-effort label.
+  const total = rows.length + (page > 1 ? (page - 1) * limit : 0);
+  const pages = Math.max(1, page + (rows.length === limit ? 1 : 0));
 
   const mkHref = (p: number) => {
     const params = new URLSearchParams();
@@ -50,6 +56,14 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
     params.set("limit", String(limit));
     return `/ops/authz/list?${params.toString()}`;
   };
+
+  const exportHref = (() => {
+    const params = new URLSearchParams();
+    if (q) params.set("q", q);
+    params.set("limit", String(limit));
+    params.set("offset", String(offset));
+    return `/ops/authz/list/export?${params.toString()}`;
+  })();
 
   return (
     <div style={{ padding: 24, maxWidth: 1100, margin: "0 auto" }}>
@@ -73,6 +87,19 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
             }}
           >
             + New Authorization
+          </a>
+          <a
+            href={exportHref}
+            style={{
+              textDecoration: "none",
+              border: "1px solid #e5e7eb",
+              padding: "8px 12px",
+              borderRadius: 8,
+              fontWeight: 600,
+              background: "white",
+            }}
+          >
+            ⭳ Export CSV
           </a>
           <a
             href="/ops"
@@ -156,7 +183,7 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
             fontWeight: 600,
           }}
         >
-          Results ({rows.length} of {total})
+          Results ({rows.length} shown)
         </div>
         <div style={{ overflowX: "auto" }}>
           <table
@@ -228,7 +255,7 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
           }}
         >
           <div style={{ color: "#6b7280", fontSize: 12 }}>
-            Page {page} of {pages} · Showing {rows.length} / {total}
+            Page {page} of {pages} · Showing {rows.length} (best-effort)
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <a
