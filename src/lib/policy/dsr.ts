@@ -1,8 +1,14 @@
 // src/lib/policy/dsr.ts
 // Canonical runtime matrix for Data Subject Requests by jurisdiction.
-// Add/extend as you go; this is intentionally explicit & typed.
+// Extended to include `key` and `name` for template compatibility (non-breaking).
 
-export type LawKey = "DPDP_IN" | "GDPR_EU" | "CCPA_US" | "LGPD_BR" | "PDPA_SG" | "APPI_JP";
+export type LawKey =
+  | "DPDP_IN"
+  | "GDPR_EU"
+  | "CCPA_US"
+  | "LGPD_BR"
+  | "PDPA_SG"
+  | "APPI_JP";
 
 export type RequestType =
   | "erasure"
@@ -10,8 +16,8 @@ export type RequestType =
   | "rectification"
   | "restrict_processing"
   | "objection"
-  | "do_not_sell"        // CCPA/CPRA
-  | "do_not_share"       // CCPA/CPRA
+  | "do_not_sell" // CCPA/CPRA
+  | "do_not_share" // CCPA/CPRA
   | "data_portability";
 
 export type EvidenceKind =
@@ -24,20 +30,43 @@ export type EvidenceKind =
 
 export type Channel = "email" | "webform" | "portal_api";
 
-export type PolicyEntry = {
-  law: LawKey;
-  jurisdiction: string;          // human label
-  requestTypes: RequestType[];
-  defaultSLA_days: number;       // verification SLA to re-check
-  escalation_after_days: number; // open grievance / escalate
-  channelsPreferred: Channel[];  // preferred order
-  requiredEvidence: EvidenceKind[];
-  legalCitations: string[];      // human-readable refs
-  languageHints?: string[];      // acceptable langs for the controller
+export type SlaSpec = {
+  acknowledgeHours?: number; // optional fine-grain per request kind
+  resolveDays?: number; // optional fine-grain per request kind
 };
 
+export type PolicyEntry = {
+  // --- New: compatibility fields used by templates/UI ---
+  key: LawKey;          // alias of `law`
+  name: string;         // alias of `jurisdiction`
+
+  // --- Original fields retained (no breaking change) ---
+  law: LawKey;
+  jurisdiction: string; // human label
+  requestTypes: RequestType[];
+  defaultSLA_days: number; // verification SLA to re-check
+  escalation_after_days: number; // open grievance / escalate
+  channelsPreferred: Channel[]; // preferred order
+  requiredEvidence: EvidenceKind[];
+  legalCitations: string[]; // human-readable refs
+  languageHints?: string[]; // acceptable langs for the controller
+
+  // Optional: region mapping (ISO codes or pseudo regions)
+  regions?: string[];
+  // Optional: per-request overrides if you ever want them
+  byRequest?: Partial<Record<RequestType, SlaSpec>>;
+};
+
+function makeEntry(e: Omit<PolicyEntry, "key" | "name"> & { law: LawKey; jurisdiction: string }): PolicyEntry {
+  return {
+    key: e.law,
+    name: e.jurisdiction,
+    ...e,
+  };
+}
+
 export const DSR_MATRIX: Record<LawKey, PolicyEntry> = {
-  DPDP_IN: {
+  DPDP_IN: makeEntry({
     law: "DPDP_IN",
     jurisdiction: "India (DPDP 2023)",
     requestTypes: ["erasure", "access", "rectification", "restrict_processing", "data_portability"],
@@ -50,22 +79,40 @@ export const DSR_MATRIX: Record<LawKey, PolicyEntry> = {
       "Data Principal rights — Sections 11–12",
     ],
     languageHints: ["en", "hi"],
-  },
-  GDPR_EU: {
+    regions: ["IN"],
+    byRequest: {
+      erasure: { acknowledgeHours: 48, resolveDays: 30 },
+      access: { acknowledgeHours: 48, resolveDays: 30 },
+      rectification: { acknowledgeHours: 48, resolveDays: 30 },
+    },
+  }),
+  GDPR_EU: makeEntry({
     law: "GDPR_EU",
     jurisdiction: "EU/EEA (GDPR)",
-    requestTypes: ["erasure", "access", "rectification", "restrict_processing", "objection", "data_portability"],
+    requestTypes: [
+      "erasure",
+      "access",
+      "rectification",
+      "restrict_processing",
+      "objection",
+      "data_portability",
+    ],
     defaultSLA_days: 30,
     escalation_after_days: 35,
     channelsPreferred: ["webform", "email", "portal_api"],
     requiredEvidence: ["email_control"],
-    legalCitations: [
-      "GDPR Art. 12–23",
-      "Right to erasure — Art. 17",
-    ],
+    legalCitations: ["GDPR Art. 12–23", "Right to erasure — Art. 17"],
     languageHints: ["en", "de", "fr", "es", "it", "nl"],
-  },
-  CCPA_US: {
+    regions: [
+      // EU27 + simplified EEA/UK handling
+      "AT","BE","BG","HR","CY","CZ","DK","EE","FI","FR","DE","GR","HU","IE","IT","LV","LT","LU","MT","NL","PL","PT","RO","SK","SI","ES","SE",
+      "IS","LI","NO","GB",
+    ],
+    byRequest: {
+      erasure: { acknowledgeHours: 72, resolveDays: 30 },
+    },
+  }),
+  CCPA_US: makeEntry({
     law: "CCPA_US",
     jurisdiction: "United States (CCPA/CPRA)",
     requestTypes: ["erasure", "access", "do_not_sell", "do_not_share", "data_portability"],
@@ -78,8 +125,12 @@ export const DSR_MATRIX: Record<LawKey, PolicyEntry> = {
       "California Privacy Rights Act updates",
     ],
     languageHints: ["en", "es"],
-  },
-  LGPD_BR: {
+    regions: ["US","UM","PR","GU","VI","AS"],
+    byRequest: {
+      erasure: { acknowledgeHours: 72, resolveDays: 45 },
+    },
+  }),
+  LGPD_BR: makeEntry({
     law: "LGPD_BR",
     jurisdiction: "Brazil (LGPD)",
     requestTypes: ["erasure", "access", "rectification", "data_portability", "objection"],
@@ -89,8 +140,9 @@ export const DSR_MATRIX: Record<LawKey, PolicyEntry> = {
     requiredEvidence: ["email_control"],
     legalCitations: ["Lei Geral de Proteção de Dados Pessoais, Arts. 18–19"],
     languageHints: ["pt"],
-  },
-  PDPA_SG: {
+    regions: ["BR"],
+  }),
+  PDPA_SG: makeEntry({
     law: "PDPA_SG",
     jurisdiction: "Singapore (PDPA)",
     requestTypes: ["erasure", "access", "rectification", "data_portability"],
@@ -100,8 +152,9 @@ export const DSR_MATRIX: Record<LawKey, PolicyEntry> = {
     requiredEvidence: ["email_control"],
     legalCitations: ["Personal Data Protection Act 2012, Parts V–VI"],
     languageHints: ["en", "zh"],
-  },
-  APPI_JP: {
+    regions: ["SG"],
+  }),
+  APPI_JP: makeEntry({
     law: "APPI_JP",
     jurisdiction: "Japan (APPI)",
     requestTypes: ["erasure", "access", "rectification", "data_portability"],
@@ -111,19 +164,29 @@ export const DSR_MATRIX: Record<LawKey, PolicyEntry> = {
     requiredEvidence: ["email_control"],
     legalCitations: ["Act on the Protection of Personal Information"],
     languageHints: ["ja", "en"],
-  },
+    regions: ["JP"],
+  }),
 };
 
 // Helper: pick the policy by ISO region or explicit key.
-// You can evolve this to map controller.country to a law key.
+// Compatible with callers expecting a PolicyEntry that has `.key` & `.name`.
 export function resolvePolicyByRegion(region: string | LawKey): PolicyEntry | null {
   if (region in DSR_MATRIX) return DSR_MATRIX[region as LawKey];
-  const r = String(region).toLowerCase();
+
+  const r = String(region).trim().toLowerCase();
   if (["in", "india"].includes(r)) return DSR_MATRIX.DPDP_IN;
   if (["eu", "eea", "eur"].includes(r)) return DSR_MATRIX.GDPR_EU;
   if (["us", "usa"].includes(r)) return DSR_MATRIX.CCPA_US;
   if (["br", "brazil"].includes(r)) return DSR_MATRIX.LGPD_BR;
   if (["sg", "singapore"].includes(r)) return DSR_MATRIX.PDPA_SG;
   if (["jp", "japan"].includes(r)) return DSR_MATRIX.APPI_JP;
+
+  // Region code lookup from `regions` (best-effort)
+  for (const entry of Object.values(DSR_MATRIX)) {
+    if (entry.regions && entry.regions.some((c) => c.toLowerCase() === r)) {
+      return entry;
+    }
+  }
+
   return null;
 }
