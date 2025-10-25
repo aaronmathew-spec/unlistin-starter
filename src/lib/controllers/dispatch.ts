@@ -19,7 +19,10 @@ import type { WebformArgs as TruecallerArgs } from "@/src/lib/controllers/webfor
 import type { WebformArgs as NaukriArgs } from "@/src/lib/controllers/webforms/naukri";
 import type { WebformArgs as OlxArgs } from "@/src/lib/controllers/webforms/olx";
 
-export type RegionKey = string; // e.g., "DPDP_IN", "GDPR_EU", or "IN" -> resolve in template
+// NEW: jurisdiction normalization
+import { resolveLawKeyFromRegion } from "@/src/lib/compliance/dsr";
+
+export type RegionKey = string; // e.g., "IN", "EU", "US-CA", or canonical "DPDP_IN" etc.
 
 export type DispatchInput = {
   controller: ControllerKey;
@@ -38,7 +41,7 @@ export type EmailPayload = {
 
 export type WebformPayload =
   | { channel: "webform"; controller: "truecaller"; args: TruecallerArgs }
-  | { channel: "webform"; controller: "naukri"; args: NaukriArgs } // currently email-first; left for parity
+  | { channel: "webform"; controller: "naukri"; args: NaukriArgs }
   | { channel: "webform"; controller: "olx"; args: OlxArgs };
 
 export type BuiltDispatch = EmailPayload | WebformPayload;
@@ -58,12 +61,15 @@ export async function buildDispatchForController(input: DispatchInput): Promise<
   const key = asControllerKey(input.controller);
   const chosen = await choosePrimaryChannel(key);
 
+  // NEW: normalize region into a canonical LawKey (DPDP_IN/GDPR_EU/CCPA_US_CA)
+  const lawKey = resolveLawKeyFromRegion(input.region);
+
   // Email path
   if (chosen === "email") {
     switch (key) {
       case "truecaller": {
         const { subject, body } = buildTruecallerRemovalEmail({
-          region: input.region,
+          region: lawKey,
           subjectFullName: input.subjectFullName,
           subjectEmail: input.subjectEmail,
           subjectPhone: input.subjectPhone,
@@ -73,7 +79,7 @@ export async function buildDispatchForController(input: DispatchInput): Promise<
       }
       case "naukri": {
         const { subject, body } = buildNaukriRemovalEmail({
-          region: input.region,
+          region: lawKey,
           subjectFullName: input.subjectFullName,
           subjectEmail: input.subjectEmail,
           identifiers: input.identifiers,
@@ -82,7 +88,7 @@ export async function buildDispatchForController(input: DispatchInput): Promise<
       }
       case "olx": {
         const { subject, body } = buildOlxRemovalEmail({
-          region: input.region,
+          region: lawKey,
           subjectFullName: input.subjectFullName,
           subjectEmail: input.subjectEmail,
           identifiers: input.identifiers,
@@ -107,7 +113,6 @@ export async function buildDispatchForController(input: DispatchInput): Promise<
         },
       };
     case "naukri":
-      // Currently email-first; webform kept for parity / future
       return {
         channel: "webform",
         controller: "naukri",
@@ -128,7 +133,6 @@ export async function buildDispatchForController(input: DispatchInput): Promise<
         },
       };
     default:
-      // Type narrowing covers all keys; this is defensive
       throw new Error(`Unsupported controller for webform: ${key satisfies never}`);
   }
 }
