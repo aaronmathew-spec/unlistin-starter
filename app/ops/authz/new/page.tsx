@@ -1,89 +1,52 @@
 // app/ops/authz/new/page.tsx
+// Server-rendered "New Authorization" form (no client JS). Posts to our local submit route.
+
 export const dynamic = "force-dynamic";
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div style={{ display: "grid", gap: 6 }}>
-      <div style={{ fontSize: 12, color: "#6b7280" }}>{label}</div>
-      {children}
-    </div>
-  );
-}
+type SP = Record<string, string | string[] | undefined>;
+const get = (sp: SP, k: string) => String(sp[k] || "").trim();
 
-async function createAuthz(formData: FormData) {
-  "use server";
+export default async function Page({ searchParams }: { searchParams: SP }) {
+  const region = (get(searchParams, "region") || "IN").toUpperCase();
 
-  const toB64 = async (f: File | null) =>
-    f ? Buffer.from(await f.arrayBuffer()).toString("base64") : null;
-
-  const payload = {
-    subject: {
-      subjectId: (formData.get("subjectId") as string) || null,
-      fullName: (formData.get("fullName") as string) || "",
-      email: (formData.get("email") as string) || null,
-      phone: (formData.get("phone") as string) || null,
-      region: (formData.get("region") as string) || "IN",
-    },
-    signerName: (formData.get("signerName") as string) || "",
-    signedAt: new Date().toISOString(),
-    consentText:
-      (formData.get("consentText") as string) ||
-      "I authorize Unlistin to act on my behalf for data subject requests.",
-    artifacts: [] as Array<{ filename: string; mime: string; base64: string }>,
-  };
-
-  const loa = formData.get("loa") as unknown as File | null;
-  const idDoc = formData.get("idDoc") as unknown as File | null;
-
-  if (loa) {
-    payload.artifacts.push({
-      filename: loa.name,
-      mime: loa.type || "application/octet-stream",
-      base64: (await toB64(loa))!,
-    });
-  }
-  if (idDoc) {
-    payload.artifacts.push({
-      filename: idDoc.name,
-      mime: idDoc.type || "application/octet-stream",
-      base64: (await toB64(idDoc))!,
-    });
-  }
-
-  const res = await fetch("/api/subject/authorization", {
-    method: "POST",
-    body: JSON.stringify(payload),
-    headers: { "content-type": "application/json" },
-    cache: "no-store",
-  });
-
-  if (!res.ok) {
-    const msg = await res.text();
-    return { ok: false, error: `http_${res.status}`, detail: msg };
-  }
-  const j = await res.json();
-  return j;
-}
-
-export default function Page() {
   return (
     <div style={{ padding: 24, maxWidth: 900, margin: "0 auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
         <div>
-          <h1 style={{ margin: 0 }}>Ops · Authorization Intake</h1>
-          <p style={{ color: "#6b7280", marginTop: 6 }}>
-            Upload Letter of Authorization (LoA) and ID evidence. We’ll store files, create the row, and write a signed manifest hash.
+          <h1 style={{ margin: 0 }}>Ops · New Authorization</h1>
+          <p style={{ marginTop: 6, color: "#6b7280" }}>
+            Create an authorization record (LoA & ID upload optional; you can attach later).
           </p>
         </div>
-        <a
-          href="/ops"
-          style={{ textDecoration: "none", border: "1px solid #e5e7eb", padding: "8px 12px", borderRadius: 8, fontWeight: 600 }}
-        >
-          ← Back
-        </a>
+        <div style={{ display: "flex", gap: 8 }}>
+          <a
+            href="/ops/authz/list"
+            style={{
+              textDecoration: "none",
+              border: "1px solid #e5e7eb",
+              padding: "8px 12px",
+              borderRadius: 8,
+              fontWeight: 600,
+            }}
+          >
+            ← List
+          </a>
+          <a
+            href="/ops"
+            style={{
+              textDecoration: "none",
+              border: "1px solid #e5e7eb",
+              padding: "8px 12px",
+              borderRadius: 8,
+              fontWeight: 600,
+            }}
+          >
+            Ops Home
+          </a>
+        </div>
       </div>
 
-      <form action={createAuthz} style={{ marginTop: 16 }} encType="multipart/form-data">
+      <form method="POST" action="/ops/authz/new/submit" style={{ marginTop: 16 }}>
         <div
           style={{
             border: "1px solid #e5e7eb",
@@ -95,40 +58,110 @@ export default function Page() {
             gap: 12,
           }}
         >
-          <Field label="Full Name *">
-            <input name="fullName" required placeholder="Aarav Shah" style={{ padding: 10, border: "1px solid #e5e7eb", borderRadius: 8 }} />
-          </Field>
-          <Field label="Subject ID (optional)">
-            <input name="subjectId" placeholder="user_123" style={{ padding: 10, border: "1px solid #e5e7eb", borderRadius: 8 }} />
-          </Field>
-          <Field label="Email">
-            <input name="email" placeholder="aarav@example.com" style={{ padding: 10, border: "1px solid #e5e7eb", borderRadius: 8 }} />
-          </Field>
-          <Field label="Phone">
-            <input name="phone" placeholder="+91-98xxxxxxx" style={{ padding: 10, border: "1px solid #e5e7eb", borderRadius: 8 }} />
-          </Field>
-          <Field label="Region (ISO)">
-            <input name="region" defaultValue="IN" placeholder="IN" style={{ padding: 10, border: "1px solid #e5e7eb", borderRadius: 8 }} />
-          </Field>
-          <Field label="Signer Name *">
-            <input name="signerName" required placeholder="Aarav Shah" style={{ padding: 10, border: "1px solid #e5e7eb", borderRadius: 8 }} />
-          </Field>
-          <Field label="Consent Text">
+          {/* Subject */}
+          <div>
+            <label style={{ fontSize: 12, color: "#6b7280" }}>Full Name *</label>
+            <input
+              name="fullName"
+              required
+              placeholder="Aarav Shah"
+              style={{ width: "100%", padding: 10, border: "1px solid #e5e7eb", borderRadius: 8 }}
+            />
+          </div>
+          <div>
+            <label style={{ fontSize: 12, color: "#6b7280" }}>Subject ID (optional)</label>
+            <input
+              name="subjectId"
+              placeholder="user_123"
+              style={{ width: "100%", padding: 10, border: "1px solid #e5e7eb", borderRadius: 8 }}
+            />
+          </div>
+          <div>
+            <label style={{ fontSize: 12, color: "#6b7280" }}>Email</label>
+            <input
+              name="email"
+              placeholder="aarav@example.com"
+              style={{ width: "100%", padding: 10, border: "1px solid #e5e7eb", borderRadius: 8 }}
+            />
+          </div>
+          <div>
+            <label style={{ fontSize: 12, color: "#6b7280" }}>Phone</label>
+            <input
+              name="phone"
+              placeholder="+91-98xxxxxxx"
+              style={{ width: "100%", padding: 10, border: "1px solid #e5e7eb", borderRadius: 8 }}
+            />
+          </div>
+          <div>
+            <label style={{ fontSize: 12, color: "#6b7280" }}>Region (ISO)</label>
+            <input
+              name="region"
+              defaultValue={region}
+              placeholder="IN"
+              style={{ width: "100%", padding: 10, border: "1px solid #e5e7eb", borderRadius: 8 }}
+            />
+          </div>
+
+          {/* Signer & consent */}
+          <div>
+            <label style={{ fontSize: 12, color: "#6b7280" }}>Signer Name *</label>
+            <input
+              name="signerName"
+              required
+              placeholder="Ops Agent Name"
+              style={{ width: "100%", padding: 10, border: "1px solid #e5e7eb", borderRadius: 8 }}
+            />
+          </div>
+
+          <div>
+            <label style={{ fontSize: 12, color: "#6b7280" }}>Signed At *</label>
+            <input
+              name="signedAt"
+              required
+              defaultValue={new Date().toISOString()}
+              placeholder="2025-01-01T12:00:00.000Z"
+              style={{ width: "100%", padding: 10, border: "1px solid #e5e7eb", borderRadius: 8 }}
+            />
+          </div>
+
+          <div style={{ gridColumn: "1 / -1" }}>
+            <label style={{ fontSize: 12, color: "#6b7280" }}>Consent Text *</label>
             <textarea
               name="consentText"
-              placeholder="I authorize Unlistin to act on my behalf…"
-              style={{ padding: 10, border: "1px solid #e5e7eb", borderRadius: 8, minHeight: 90 }}
+              required
+              placeholder="I authorize <Your Company> to act on my behalf for ..."
+              rows={6}
+              style={{
+                width: "100%",
+                padding: 10,
+                border: "1px solid #e5e7eb",
+                borderRadius: 8,
+                fontFamily:
+                  "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                fontSize: 12,
+              }}
             />
-          </Field>
-          <div />
-          <Field label="Letter of Authorization (PDF/Image)">
-            <input name="loa" type="file" accept="application/pdf,image/*" />
-          </Field>
-          <Field label="ID Proof (Image/PDF)">
-            <input name="idDoc" type="file" accept="application/pdf,image/*" />
-          </Field>
+          </div>
 
-          <div style={{ gridColumn: "1 / -1", textAlign: "right", marginTop: 8 }}>
+          {/* Optional: evidence URLs to record now (uploads can be attached later in storage UI) */}
+          <div>
+            <label style={{ fontSize: 12, color: "#6b7280" }}>LoA URL (optional)</label>
+            <input
+              name="loaUrl"
+              placeholder="https://files/loa.pdf"
+              style={{ width: "100%", padding: 10, border: "1px solid #e5e7eb", borderRadius: 8 }}
+            />
+          </div>
+          <div>
+            <label style={{ fontSize: 12, color: "#6b7280" }}>ID Doc URL (optional)</label>
+            <input
+              name="idUrl"
+              placeholder="https://files/id.pdf"
+              style={{ width: "100%", padding: 10, border: "1px solid #e5e7eb", borderRadius: 8 }}
+            />
+          </div>
+
+          <div style={{ textAlign: "right", gridColumn: "1 / -1" }}>
             <button
               type="submit"
               style={{
@@ -144,6 +177,10 @@ export default function Page() {
           </div>
         </div>
       </form>
+
+      <p style={{ marginTop: 12, color: "#6b7280" }}>
+        Tip: You can later upload artifacts via your storage UI and re-generate a manifest if needed.
+      </p>
     </div>
   );
 }
