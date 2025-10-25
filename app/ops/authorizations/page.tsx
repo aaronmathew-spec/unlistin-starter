@@ -12,7 +12,7 @@ type Row = {
   region: string | null;
   signer_name: string;
   signed_at: string;
-  manifest_hash: string;
+  manifest_hash: string | null;
   created_at: string;
 };
 
@@ -24,7 +24,9 @@ function admin() {
 
 function mono(v: string) {
   return (
-    <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>{v}</span>
+    <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>
+      {v}
+    </span>
   );
 }
 
