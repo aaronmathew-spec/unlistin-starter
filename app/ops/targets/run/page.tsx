@@ -1,8 +1,8 @@
 // app/ops/targets/run/page.tsx
 // Ops UI: Plan → Preview → (server-only) Dispatch Helper (no client JS)
 
-import { buildDraftForController } from "@/src/lib/email/templates/controllers/draft";
-import { resolvePolicyByRegion } from "@/src/lib/policy/dsr";
+import { buildDraftForController } from "@/lib/email/templates/controllers/draft";
+import { resolvePolicyByRegion } from "@/lib/policy/dsr";
 
 export const dynamic = "force-dynamic";
 
@@ -85,11 +85,14 @@ function toCurlDispatch(args: {
     },
     items: args.items.map((i) => ({ key: i.key, name: i.name })),
   };
+  // Single-quote safe JSON (simple case). If you later embed user-provided single quotes,
+  // consider a here-doc or escaping strategy.
+  const json = JSON.stringify(body).replace(/'/g, "'\"'\"'");
   return [
     `curl -s -X POST https://<your-host>/api/ops/targets/dispatch \\`,
     `  -H "x-secure-cron: $SECURE_CRON_SECRET" \\`,
     `  -H "Content-Type: application/json" \\`,
-    `  -d '${JSON.stringify(body)}' | jq`,
+    `  -d '${json}' | jq`,
   ].join("\n");
 }
 
@@ -114,8 +117,10 @@ export default async function Page({
 
   if (fullName) {
     plan = await fetchPlan({ fullName, email, phone, region, handles, fastLane, subjectId });
+
+    // NOTE: resolvePolicyByRegion returns { law, jurisdiction, ... }
     const law = resolvePolicyByRegion(region);
-    lawLabel = law ? `${law.name} (${law.key})` : null;
+    lawLabel = law ? `${law.jurisdiction} (${law.law})` : null;
 
     drafts = {};
     for (const item of plan) {
