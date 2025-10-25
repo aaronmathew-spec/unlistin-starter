@@ -1,20 +1,53 @@
 // app/ops/authorizations/[id]/page.tsx
-import { getAuthorization } from "@/src/lib/authz/store";
-import { buildAuthorizationManifest } from "@/src/lib/authz/manifest";
+import { createClient } from "@supabase/supabase-js";
 
 export const dynamic = "force-dynamic";
 
+type Authorization = {
+  id: string;
+  subject_full_name: string;
+  subject_email: string | null;
+  subject_phone: string | null;
+  region: string | null;
+  signer_name: string;
+  signed_at: string;
+  manifest_hash: string | null;
+  created_at: string;
+};
+
+type EvidenceFile = {
+  id: string;
+  authorization_id: string;
+  path: string;
+  mime: string;
+  bytes: number;
+  created_at: string;
+};
+
+function admin() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const key = process.env.SUPABASE_SERVICE_ROLE!;
+  return createClient(url, key, { auth: { persistSession: false } });
+}
+
 function mono(v: string) {
   return (
-    <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>{v}</span>
+    <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>
+      {v}
+    </span>
   );
 }
 
 export default async function Page({ params }: { params: { id: string } }) {
-  const { id } = params;
-  const got = await getAuthorization(id);
+  const id = params.id;
 
-  if (!got.record) {
+  const supa = admin();
+  const [{ data: authRow }, { data: files }] = await Promise.all([
+    supa.from("authorizations").select("*").eq("id", id).maybeSingle<Authorization>(),
+    supa.from("authorization_files").select("*").eq("authorization_id", id).order("created_at", { ascending: false }),
+  ]);
+
+  if (!authRow) {
     return (
       <div style={{ padding: 24 }}>
         <h1>Authorization</h1>
@@ -23,10 +56,24 @@ export default async function Page({ params }: { params: { id: string } }) {
     );
   }
 
-  const manifest = buildAuthorizationManifest({
-    record: got.record,
-    files: got.files,
-  });
+  // Simple manifest preview (what you’d typically sign/verify)
+  const manifest = {
+    id: authRow.id,
+    subject: {
+      name: authRow.subject_full_name,
+      email: authRow.subject_email,
+      phone: authRow.subject_phone,
+      region: authRow.region,
+    },
+    signer: authRow.signer_name,
+    signed_at: authRow.signed_at,
+    content_hash: authRow.manifest_hash,
+    evidence: (files ?? []).map((f: EvidenceFile) => ({
+      path: f.path,
+      mime: f.mime,
+      bytes: f.bytes,
+    })),
+  };
 
   return (
     <div style={{ padding: 24, maxWidth: 900, margin: "0 auto" }}>
@@ -56,31 +103,30 @@ export default async function Page({ params }: { params: { id: string } }) {
         }}
       >
         <div style={{ fontSize: 13, color: "#6b7280" }}>ID</div>
-        <div style={{ marginTop: 2 }}>{mono(got.record.id)}</div>
+        <div style={{ marginTop: 2 }}>{mono(authRow.id)}</div>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12, marginTop: 12 }}>
           <div>
             <div style={{ fontSize: 13, color: "#6b7280" }}>Subject</div>
             <div style={{ marginTop: 2 }}>
-              {got.record.subject_full_name} · {(got.record.subject_email ?? "—")} /{" "}
-              {(got.record.subject_phone ?? "—")}
+              {authRow.subject_full_name} · {(authRow.subject_email ?? "—")} / {(authRow.subject_phone ?? "—")}
             </div>
           </div>
           <div>
             <div style={{ fontSize: 13, color: "#6b7280" }}>Region</div>
-            <div style={{ marginTop: 2 }}>{got.record.region ?? "—"}</div>
+            <div style={{ marginTop: 2 }}>{authRow.region ?? "—"}</div>
           </div>
           <div>
             <div style={{ fontSize: 13, color: "#6b7280" }}>Signer</div>
-            <div style={{ marginTop: 2 }}>{got.record.signer_name}</div>
+            <div style={{ marginTop: 2 }}>{authRow.signer_name}</div>
           </div>
           <div>
             <div style={{ fontSize: 13, color: "#6b7280" }}>Signed At</div>
-            <div style={{ marginTop: 2 }}>{new Date(got.record.signed_at).toLocaleString()}</div>
+            <div style={{ marginTop: 2 }}>{new Date(authRow.signed_at).toLocaleString()}</div>
           </div>
           <div>
             <div style={{ fontSize: 13, color: "#6b7280" }}>Content Hash</div>
-            <div style={{ marginTop: 2 }}>{mono(got.record.manifest_hash || "")}</div>
+            <div style={{ marginTop: 2 }}>{mono(authRow.manifest_hash || "")}</div>
           </div>
         </div>
       </div>
@@ -95,9 +141,9 @@ export default async function Page({ params }: { params: { id: string } }) {
         }}
       >
         <div style={{ fontWeight: 600, marginBottom: 6 }}>Evidence Files</div>
-        {got.files.length ? (
+        {files && files.length ? (
           <ul style={{ marginTop: 4 }}>
-            {got.files.map((f) => (
+            {files.map((f: EvidenceFile) => (
               <li key={f.id}>
                 {mono(f.path)} — {f.mime} · {f.bytes} bytes
               </li>
