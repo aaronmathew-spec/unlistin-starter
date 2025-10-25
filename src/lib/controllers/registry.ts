@@ -1,5 +1,5 @@
 // src/lib/controllers/registry.ts
-/* Controller Registry: central policy, rate limits, and channel prefs.
+/* Controller Registry: central policy, rate limits, channel prefs, and contacts.
    Non-breaking: pure exports. Dispatcher can opt-in to use these helpers. */
 
 import type { ControllerPolicy } from "@/src/agents/policy";
@@ -30,12 +30,19 @@ export type ChannelPref = {
   apiEnabled: boolean;
 };
 
+// Optional contact directory for email channel + form URL for Ops
+export type Contacts = {
+  emails?: string[];     // privacy/contact emails for the controller (optional)
+  formUrl?: string;      // human-friendly link to the webform, if any
+};
+
 export type ControllerEntry = {
   key: ControllerKey;
   displayName: string;
   rate: RatePolicy;
   channels: ChannelPref;
   quirks: ControllerQuirks;
+  contacts?: Contacts;
   // Optional static defaults (policy will merge DB overrides)
   defaultPolicy?: Partial<ControllerPolicy>;
 };
@@ -50,6 +57,10 @@ const REGISTRY: Record<ControllerKey, ControllerEntry> = {
     rate: { rps: 0.2, burst: 1, concurrency: 1, retryBackoffMs: DEFAULT_BACKOFF },
     channels: { emailEnabled: false, webformEnabled: true, apiEnabled: false },
     quirks: { prefersHumanName: true, hasCaptcha: true, slowForm: true, localeHints: ["en"] },
+    contacts: {
+      // emails intentionally omitted unless verified; use tenant override or pass `to` explicitly
+      formUrl: "https://www.truecaller.com/privacy-center/request/remove",
+    },
     defaultPolicy: { slas: { targetMin: 180 } },
   },
   naukri: {
@@ -58,6 +69,11 @@ const REGISTRY: Record<ControllerKey, ControllerEntry> = {
     rate: { rps: 0.5, burst: 2, concurrency: 2, retryBackoffMs: DEFAULT_BACKOFF },
     channels: { emailEnabled: true, webformEnabled: false, apiEnabled: false },
     quirks: { prefersHumanName: true, localeHints: ["en"] },
+    contacts: {
+      // If you confirm a privacy alias, add it here or override via DB/tenant config
+      // emails: ["privacy@naukri.com"],
+      formUrl: undefined,
+    },
     defaultPolicy: { slas: { targetMin: 180 } },
   },
   olx: {
@@ -66,6 +82,9 @@ const REGISTRY: Record<ControllerKey, ControllerEntry> = {
     rate: { rps: 0.3, burst: 1, concurrency: 1, retryBackoffMs: DEFAULT_BACKOFF },
     channels: { emailEnabled: false, webformEnabled: true, apiEnabled: false },
     quirks: { hasCaptcha: true, slowForm: true, localeHints: ["en"] },
+    contacts: {
+      formUrl: "https://help.olx.com/hc/requests/new",
+    },
     defaultPolicy: { slas: { targetMin: 180 } },
   },
 };
