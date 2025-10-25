@@ -1,8 +1,8 @@
 // app/ops/targets/run/page.tsx
 // Ops UI: Plan → Preview → (server-only) Dispatch Helper (no client JS)
 
-import { buildDraftForController } from "@/lib/email/templates/controllers/draft";
-import { resolvePolicyByRegion } from "@/lib/policy/dsr";
+import { buildDraftForController } from "@/src/lib/email/templates/controllers/draft";
+import { resolvePolicyByRegion } from "@/src/lib/policy/dsr";
 
 export const dynamic = "force-dynamic";
 
@@ -69,6 +69,21 @@ async function fetchPlan(profile: Required<Pick<SubjectInput, "fullName">> & Sub
   return j.ok && Array.isArray(j.plan) ? j.plan : [];
 }
 
+async function checkAuthzExists(subjectId?: string | null): Promise<"yes" | "no" | "unknown"> {
+  if (!subjectId) return "unknown";
+  try {
+    const r = await fetch(`/api/subject/authorization?id=${encodeURIComponent(subjectId)}`, {
+      method: "GET",
+      cache: "no-store",
+    });
+    if (!r.ok) return "no";
+    const j = await r.json();
+    return j?.ok && j?.record ? "yes" : "no";
+  } catch {
+    return "unknown";
+  }
+}
+
 function toCurlDispatch(args: {
   subject: SubjectInput;
   items: PlanItem[];
@@ -85,14 +100,11 @@ function toCurlDispatch(args: {
     },
     items: args.items.map((i) => ({ key: i.key, name: i.name })),
   };
-  // Single-quote safe JSON (simple case). If you later embed user-provided single quotes,
-  // consider a here-doc or escaping strategy.
-  const json = JSON.stringify(body).replace(/'/g, "'\"'\"'");
   return [
     `curl -s -X POST https://<your-host>/api/ops/targets/dispatch \\`,
     `  -H "x-secure-cron: $SECURE_CRON_SECRET" \\`,
     `  -H "Content-Type: application/json" \\`,
-    `  -d '${json}' | jq`,
+    `  -d '${JSON.stringify(body)}' | jq`,
   ].join("\n");
 }
 
@@ -114,14 +126,14 @@ export default async function Page({
   let plan: PlanItem[] = [];
   let drafts: Record<string, { subject: string; bodyText: string }> = {};
   let lawLabel: string | null = null;
+  let authzStatus: "yes" | "no" | "unknown" = "unknown";
 
   if (fullName) {
     plan = await fetchPlan({ fullName, email, phone, region, handles, fastLane, subjectId });
-
-    // NOTE: resolvePolicyByRegion returns { law, jurisdiction, ... }
     const law = resolvePolicyByRegion(region);
     lawLabel = law ? `${law.jurisdiction} (${law.law})` : null;
 
+    // Build email drafts for preview
     drafts = {};
     for (const item of plan) {
       drafts[item.key] = buildDraftForController({
@@ -134,7 +146,43 @@ export default async function Page({
         links: handles.length ? handles : null,
       });
     }
+
+    // Authorization presence chip
+    authzStatus = await checkAuthzExists(subjectId);
   }
+
+  const chip =
+    authzStatus === "yes" ? (
+      <span
+        style={{
+          display: "inline-block",
+          padding: "4px 8px",
+          borderRadius: 9999,
+          fontSize: 12,
+          fontWeight: 600,
+          background: "#ecfdf5",
+          color: "#065f46",
+          border: "1px solid #d1fae5",
+        }}
+      >
+        Authorization on file
+      </span>
+    ) : authzStatus === "no" ? (
+      <span
+        style={{
+          display: "inline-block",
+          padding: "4px 8px",
+          borderRadius: 9999,
+          fontSize: 12,
+          fontWeight: 600,
+          background: "#f3f4f6",
+          color: "#374151",
+          border: "1px solid #e5e7eb",
+        }}
+      >
+        Authorization missing
+      </span>
+    ) : null;
 
   return (
     <div style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}>
@@ -257,7 +305,7 @@ export default async function Page({
         </div>
       </form>
 
-      {/* Render results if we have a fullName (i.e., a query-triggered render) */}
+      {/* Render results */}
       {fullName ? (
         <div style={{ marginTop: 24 }}>
           <div
@@ -275,10 +323,13 @@ export default async function Page({
               </div>
               <div style={{ textAlign: "right" }}>
                 <div style={{ fontSize: 13, color: "#6b7280" }}>Subject</div>
-                <div style={{ marginTop: 2 }}>
-                  {mono(subject.fullName)}{" "}
-                  {subject.email ? <>· {mono(subject.email)}</> : null}{" "}
-                  {subject.phone ? <>· {mono(subject.phone)}</> : null}
+                <div style={{ marginTop: 2, display: "flex", gap: 8, alignItems: "center", justifyContent: "flex-end", flexWrap: "wrap" }}>
+                  <span>
+                    {mono(subject.fullName)}{" "}
+                    {subject.email ? <>· {mono(subject.email)}</> : null}{" "}
+                    {subject.phone ? <>· {mono(subject.phone)}</> : null}
+                  </span>
+                  {chip}
                 </div>
               </div>
             </div>
