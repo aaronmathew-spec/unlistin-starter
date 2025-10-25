@@ -1,26 +1,33 @@
 // app/ops/targets/run/dispatch/page.tsx
-// Server-only proxy page that performs the actual dispatch (injects x-secure-cron)
-// and renders results (no client JS).
+// Server-only results viewer for plan fan-out.
+// Reads search params, resolves item names via the plan API, calls the cron-guarded
+// dispatch API with SECURE_CRON_SECRET header, and renders a results table.
 
+import { NextResponse } from "next/server";
+
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type ResultRow = {
-  controllerKey?: string;
-  ok: boolean;
-  dryRun?: boolean;
-  channel?: string;
-  providerId?: string | null;
-  idempotent?: "new" | "deduped";
-  error?: string | null;
-  note?: string | null;
+type PlanItem = {
+  key: string;
+  name: string;
+  preferredChannel?: string;
+  allowedChannels?: string[];
 };
 
-function mono(v: string) {
-  return (
-    <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>
-      {v}
-    </span>
-  );
+type SubjectInput = {
+  fullName: string;
+  email?: string | null;
+  phone?: string | null;
+  region?: string | null;
+  subjectId?: string | null;
+  handles?: string[] | null;
+};
+
+function parseBool(s?: string | null): boolean {
+  if (!s) return false;
+  const v = String(s).trim().toLowerCase();
+  return v === "1" || v === "true" || v === "on" || v === "yes";
 }
 
 function splitCSV(s?: string | null): string[] {
@@ -31,153 +38,249 @@ function splitCSV(s?: string | null): string[] {
     .filter(Boolean);
 }
 
+function mono(v: string) {
+  return (
+    <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>
+      {v}
+    </span>
+  );
+}
+
+async function fetchPlanForSubject(s: SubjectInput): Promise<PlanItem[]> {
+  const payload = {
+    fullName: s.fullName,
+    email: s.email ?? null,
+    phone: s.phone ?? null,
+    handles: s.handles ?? [],
+    region: s.region ?? "IN",
+    fastLane: false,
+  };
+
+  // Same API your Plan page uses; reuse to get authoritative names/keys.
+  const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL ?? ""}/api/targets/plan`, {
+    // When NEXT_PUBLIC_BASE_URL is empty (local), fall back to relative (Next runtime will resolve).
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+    cache: "no-store",
+  }).catch(() => null);
+
+  if (!res || !res.ok) return [];
+  const j = (await res.json()) as { ok: boolean; plan?: PlanItem[] };
+  return j.ok && Array.isArray(j.plan) ? j.plan : [];
+}
+
+function pickItems(all: PlanItem[], keys: string[]): { key: string; name: string }[] {
+  const map = new Map(all.map((p) => [p.key, p]));
+  return keys.map((k) => {
+    const found = map.get(k);
+    return { key: k, name: found?.name || k };
+  });
+}
+
+function normStr(v?: string | null): string | null {
+  if (v === undefined || v === null) return null;
+  const s = String(v).trim();
+  return s.length ? s : null;
+}
+
+async function dispatchFanout(args: {
+  subject: SubjectInput;
+  items: { key: string; name: string }[];
+}) {
+  const secret = process.env.SECURE_CRON_SECRET?.trim();
+  if (!secret) {
+    return {
+      ok: false,
+      error: "missing_SECURE_CRON_SECRET",
+      results: [] as unknown[],
+    };
+  }
+
+  const payload = {
+    region: args.subject.region ?? "IN",
+    locale: "en-IN",
+    subject: {
+      fullName: args.subject.fullName,
+      email: args.subject.email ?? null,
+      phone: args.subject.phone ?? null,
+      subjectId: args.subject.subjectId ?? null,
+      handles: args.subject.handles ?? [],
+    },
+    items: args.items,
+  };
+
+  const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL ?? ""}/api/ops/targets/dispatch`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-secure-cron": secret,
+    },
+    body: JSON.stringify(payload),
+    cache: "no-store",
+  }).catch((e) => ({
+    ok: false,
+    json: async () => ({ ok: false, error: `fetch_error:${String(e)}` }),
+  } as Response));
+
+  if (!("ok" in res) || !res.ok) {
+    // @ts-expect-error safe cast
+    const body = typeof res.json === "function" ? await res.json() : { ok: false, error: "dispatch_failed" };
+    return {
+      ok: false,
+      error: (body && body.error) || "dispatch_failed",
+      results: [],
+    };
+  }
+
+  const json = await res.json();
+  return json as {
+    ok: boolean;
+    total: number;
+    okCount: number;
+    failCount: number;
+    region: string;
+    locale: string;
+    subject: SubjectInput & { handles: string[] };
+    results: Array<{
+      key: string;
+      name: string;
+      ok: boolean;
+      channel: "webform" | "email" | "noop";
+      providerId: string | null;
+      error: string | null;
+      note: string | null;
+      idempotent: "deduped" | "new" | null;
+      hint: string | null;
+    }>;
+  };
+}
+
 export default async function Page({
   searchParams,
 }: {
   searchParams: Record<string, string | string[] | undefined>;
 }) {
+  // Read subject & keys from query string (sent by /ops/targets/run form)
   const fullName = String(searchParams.fullName || "").trim();
+  if (!fullName) {
+    return (
+      <div style={{ padding: 24, maxWidth: 1100, margin: "0 auto" }}>
+        <h1 style={{ margin: 0 }}>Ops · Dispatch Results</h1>
+        <p style={{ color: "#6b7280" }}>Missing <code>fullName</code>. Please go back and generate a plan.</p>
+        <a href="/ops/targets" style={{ textDecoration: "none", border: "1px solid #e5e7eb", padding: "8px 12px", borderRadius: 8, fontWeight: 600 }}>
+          ← Back to Matrix
+        </a>
+      </div>
+    );
+  }
+
   const email = String(searchParams.email || "").trim() || null;
   const phone = String(searchParams.phone || "").trim() || null;
   const region = (String(searchParams.region || "IN").trim() || "IN").toUpperCase();
   const subjectId = String(searchParams.subjectId || "").trim() || null;
   const handles = splitCSV(String(searchParams.handles || ""));
-  const keys = splitCSV(String(searchParams.keys || ""));
+  const keysCSV = String(searchParams.keys || "").trim();
+  const keys = splitCSV(keysCSV);
 
-  const secret = process.env.SECURE_CRON_SECRET || "";
-  const payload = {
-    region,
-    locale: "en-IN",
-    subject: {
-      fullName,
-      email,
-      phone,
-      subjectId,
-      handles,
-    },
-    items: keys.map((k) => ({ key: k, name: k })),
-  };
+  const subject: SubjectInput = { fullName, email, phone, region, subjectId, handles };
 
-  let status = 200;
-  let api: any = null;
-  try {
-    const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL ?? ""}/api/ops/targets/dispatch`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-secure-cron": secret,
-      },
-      body: JSON.stringify(payload),
-      cache: "no-store",
-    });
-    status = res.status;
-    api = await res.json().catch(async () => ({ text: await res.text() }));
-  } catch (e: any) {
-    status = 500;
-    api = { ok: false, error: String(e?.message || e) };
-  }
+  // 1) Pull plan to get canonical names for keys we’re dispatching
+  const plan = await fetchPlanForSubject(subject);
+  const items = keys.length ? pickItems(plan, keys) : plan.map((p) => ({ key: p.key, name: p.name }));
 
-  const results: ResultRow[] = Array.isArray(api?.results) ? api.results : [];
-  const flagEnabled: boolean = !!api?.flagEnabled;
+  // 2) Dispatch via cron-guarded API (server-to-server)
+  const result = await dispatchFanout({ subject, items });
+
+  // 3) Render
+  const summary = result && (result as any).ok
+    ? {
+        ok: true,
+        total: (result as any).total,
+        okCount: (result as any).okCount,
+        failCount: (result as any).failCount,
+        region: (result as any).region,
+        locale: (result as any).locale,
+      }
+    : { ok: false, error: (result as any)?.error || "unknown_error" };
 
   return (
-    <div style={{ padding: 24, maxWidth: 1100, margin: "0 auto" }}>
+    <div style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
         <div>
           <h1 style={{ margin: 0 }}>Ops · Dispatch Results</h1>
           <p style={{ color: "#6b7280", marginTop: 6 }}>
-            Flag <code>FLAG_PLAN_DISPATCH_ENABLED</code>: {flagEnabled ? "ON (live enqueue)" : "OFF (dry-run)"} · HTTP {status}
+            Server-side fan-out executed via cron-guarded API. Shows per-controller outcome for this subject.
           </p>
         </div>
         <a
-          href="/ops/targets/run"
-          style={{
-            textDecoration: "none",
-            border: "1px solid #e5e7eb",
-            padding: "8px 12px",
-            borderRadius: 8,
-            fontWeight: 600,
-          }}
+          href={`/ops/targets/run?fullName=${encodeURIComponent(fullName)}&email=${encodeURIComponent(email ?? "")}&phone=${encodeURIComponent(phone ?? "")}&region=${encodeURIComponent(region)}&subjectId=${encodeURIComponent(subjectId ?? "")}&handles=${encodeURIComponent(handles.join(","))}`}
+          style={{ textDecoration: "none", border: "1px solid #e5e7eb", padding: "8px 12px", borderRadius: 8, fontWeight: 600 }}
         >
-          ← Back to Run
+          ← Back to Plan
         </a>
       </div>
 
-      {/* Subject */}
-      <div
-        style={{
-          marginTop: 12,
-          border: "1px solid #e5e7eb",
-          borderRadius: 12,
-          background: "white",
-          padding: 12,
-        }}
-      >
-        <div style={{ fontSize: 13, color: "#6b7280" }}>Subject</div>
-        <div style={{ marginTop: 4 }}>
-          {mono(fullName)} {email ? <>· {mono(email)}</> : null} {phone ? <>· {mono(phone)}</> : null} · Region {mono(region)}
+      <div style={{ marginTop: 16, border: "1px solid #e5e7eb", borderRadius: 12, background: "white", padding: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+          <div>
+            <div style={{ fontSize: 13, color: "#6b7280" }}>Subject</div>
+            <div style={{ marginTop: 2 }}>
+              {mono(fullName)} {email ? <>· {mono(email)}</> : null} {phone ? <>· {mono(phone)}</> : null}
+            </div>
+          </div>
+          <div style={{ textAlign: "right" }}>
+            <div style={{ fontSize: 13, color: "#6b7280" }}>Context</div>
+            <div style={{ marginTop: 2 }}>
+              {summary.ok ? (
+                <>
+                  Region {mono((summary as any).region)} · Locale {mono((summary as any).locale)} · Total {mono(String((summary as any).total))}
+                </>
+              ) : (
+                <span style={{ color: "#b91c1c" }}>Error: {(summary as any).error}</span>
+              )}
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Results table */}
-      <div
-        style={{
-          marginTop: 16,
-          border: "1px solid #e5e7eb",
-          borderRadius: 12,
-          overflow: "hidden",
-          background: "white",
-        }}
-      >
-        <div
-          style={{
-            padding: 12,
-            borderBottom: "1px solid #e5e7eb",
-            background: "#f9fafb",
-            fontWeight: 600,
-          }}
-        >
-          Results ({results.length})
+      {/* Table */}
+      <div style={{ marginTop: 16, border: "1px solid #e5e7eb", borderRadius: 12, overflow: "hidden", background: "white" }}>
+        <div style={{ padding: 12, borderBottom: "1px solid #e5e7eb", background: "#f9fafb", fontWeight: 600 }}>
+          Results
         </div>
         <div style={{ overflowX: "auto" }}>
-          <table
-            style={{
-              width: "100%",
-              minWidth: 720,
-              borderCollapse: "separate",
-              borderSpacing: 0,
-            }}
-          >
+          <table style={{ width: "100%", minWidth: 720, borderCollapse: "separate", borderSpacing: 0 }}>
             <thead style={{ textAlign: "left", background: "#fafafa" }}>
               <tr>
                 <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Controller</th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Key</th>
                 <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>OK</th>
-                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>DryRun</th>
                 <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Channel</th>
-                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>ProviderId</th>
-                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Idempotent</th>
-                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Error</th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Provider ID</th>
                 <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Note</th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Error</th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Idempotent</th>
               </tr>
             </thead>
             <tbody>
-              {results.length ? (
-                results.map((r, i) => (
-                  <tr key={i} style={{ borderTop: "1px solid #e5e7eb" }}>
-                    <td style={{ padding: 12 }}>{r.controllerKey ?? "—"}</td>
-                    <td style={{ padding: 12 }}>{String(!!r.ok)}</td>
-                    <td style={{ padding: 12 }}>{r.dryRun ? "true" : "false"}</td>
-                    <td style={{ padding: 12 }}>{r.channel ?? "—"}</td>
-                    <td style={{ padding: 12 }}>{r.providerId ?? "—"}</td>
-                    <td style={{ padding: 12 }}>{r.idempotent ?? "—"}</td>
-                    <td style={{ padding: 12 }}>{r.error ?? "—"}</td>
-                    <td style={{ padding: 12 }}>{r.note ?? "—"}</td>
+              {summary.ok && Array.isArray((result as any)?.results) && (result as any).results.length ? (
+                (result as any).results.map((r: any) => (
+                  <tr key={r.key} style={{ borderTop: "1px solid #e5e7eb" }}>
+                    <td style={{ padding: 12 }}>{r.name}</td>
+                    <td style={{ padding: 12 }}>{mono(r.key)}</td>
+                    <td style={{ padding: 12 }}>{r.ok ? "✓" : "✗"}</td>
+                    <td style={{ padding: 12 }}>{r.channel || "—"}</td>
+                    <td style={{ padding: 12 }}>{r.providerId ? mono(String(r.providerId)) : "—"}</td>
+                    <td style={{ padding: 12 }}>{r.note || "—"}</td>
+                    <td style={{ padding: 12, color: r.error ? "#b91c1c" : undefined }}>{r.error || "—"}</td>
+                    <td style={{ padding: 12 }}>{r.idempotent || "—"}</td>
                   </tr>
                 ))
               ) : (
                 <tr>
                   <td colSpan={8} style={{ padding: 24, textAlign: "center", color: "#6b7280" }}>
-                    No results payload.
+                    {summary.ok ? "No items." : "No results due to error."}
                   </td>
                 </tr>
               )}
@@ -186,30 +289,10 @@ export default async function Page({
         </div>
       </div>
 
-      {/* Raw payload (debug) */}
-      <div
-        style={{
-          marginTop: 16,
-          border: "1px solid #e5e7eb",
-          borderRadius: 12,
-          background: "white",
-          padding: 12,
-        }}
-      >
-        <div style={{ fontWeight: 600, marginBottom: 6 }}>Raw Response</div>
-        <pre
-          style={{
-            whiteSpace: "pre-wrap",
-            fontSize: 12,
-            background: "#f9fafb",
-            padding: 12,
-            borderRadius: 8,
-            border: "1px solid #e5e7eb",
-          }}
-        >
-{JSON.stringify(api, null, 2)}
-        </pre>
-      </div>
+      {/* Quick guidance */}
+      <p style={{ color: "#6b7280", marginTop: 12 }}>
+        If any items failed due to enqueue errors, check <a href="/ops/dlq">DLQ</a> to re-try.
+      </p>
     </div>
   );
 }
