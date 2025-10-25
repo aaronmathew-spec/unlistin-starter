@@ -104,10 +104,10 @@ export async function createAuthorization(input: AuthorizationInput): Promise<{
   if (updErr) throw new Error(`authz_manifest_hash_update_failed:${updErr.message}`);
 
   return {
-    record: { ...(row as AuthorizationRecord), manifest_hash: manifest.contentHash },
-    files,
-    manifest,
-  };
+  record: { ...(row as AuthorizationRecord), manifest_hash: manifest.integrity.hashHex },
+  files,
+  manifest,
+};
 }
 
 export async function getAuthorization(id: string): Promise<{
