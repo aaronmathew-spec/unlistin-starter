@@ -5,14 +5,14 @@
 import type { ControllerPolicy } from "@/src/agents/policy";
 import { synthesizePolicyForController } from "@/src/agents/policy";
 
-export type ControllerKey = "truecaller" | "naukri" | "olx";
+export type ControllerKey = "truecaller" | "naukri" | "olx" | "foundit" | "shine" | "timesjobs";
 
 // Basic rate/concurrency policy used by ops/dispatcher.
 export type RatePolicy = {
-  rps: number;               // max requests per second
-  burst: number;             // token bucket burst
-  concurrency: number;       // max concurrent actions to this controller
-  retryBackoffMs: number[];  // exponential-ish backoff schedule
+  rps: number;
+  burst: number;
+  concurrency: number;
+  retryBackoffMs: number[];
 };
 
 // Quirks can drive worker behavior (timeouts, captcha, etc.)
@@ -32,8 +32,8 @@ export type ChannelPref = {
 
 // Optional contact directory for email channel + form URL for Ops
 export type Contacts = {
-  emails?: string[];     // privacy/contact emails for the controller (optional)
-  formUrl?: string;      // human-friendly link to the webform, if any
+  emails?: string[];
+  formUrl?: string;
 };
 
 export type ControllerEntry = {
@@ -43,11 +43,9 @@ export type ControllerEntry = {
   channels: ChannelPref;
   quirks: ControllerQuirks;
   contacts?: Contacts;
-  // Optional static defaults (policy will merge DB overrides)
   defaultPolicy?: Partial<ControllerPolicy>;
 };
 
-// Safe backoffs: 2s, 5s, 15s, 60s
 const DEFAULT_BACKOFF = [2000, 5000, 15000, 60000];
 
 const REGISTRY: Record<ControllerKey, ControllerEntry> = {
@@ -57,10 +55,7 @@ const REGISTRY: Record<ControllerKey, ControllerEntry> = {
     rate: { rps: 0.2, burst: 1, concurrency: 1, retryBackoffMs: DEFAULT_BACKOFF },
     channels: { emailEnabled: false, webformEnabled: true, apiEnabled: false },
     quirks: { prefersHumanName: true, hasCaptcha: true, slowForm: true, localeHints: ["en"] },
-    contacts: {
-      // emails intentionally omitted unless verified; use tenant override or pass `to` explicitly
-      formUrl: "https://www.truecaller.com/privacy-center/request/remove",
-    },
+    contacts: { formUrl: "https://www.truecaller.com/privacy-center/request/remove" },
     defaultPolicy: { slas: { targetMin: 180 } },
   },
   naukri: {
@@ -69,11 +64,7 @@ const REGISTRY: Record<ControllerKey, ControllerEntry> = {
     rate: { rps: 0.5, burst: 2, concurrency: 2, retryBackoffMs: DEFAULT_BACKOFF },
     channels: { emailEnabled: true, webformEnabled: false, apiEnabled: false },
     quirks: { prefersHumanName: true, localeHints: ["en"] },
-    contacts: {
-      // If you confirm a privacy alias, add it here or override via DB/tenant config
-      // emails: ["privacy@naukri.com"],
-      formUrl: undefined,
-    },
+    contacts: { /* emails: ["privacy@naukri.com"] */ },
     defaultPolicy: { slas: { targetMin: 180 } },
   },
   olx: {
@@ -82,9 +73,34 @@ const REGISTRY: Record<ControllerKey, ControllerEntry> = {
     rate: { rps: 0.3, burst: 1, concurrency: 1, retryBackoffMs: DEFAULT_BACKOFF },
     channels: { emailEnabled: false, webformEnabled: true, apiEnabled: false },
     quirks: { hasCaptcha: true, slowForm: true, localeHints: ["en"] },
-    contacts: {
-      formUrl: "https://help.olx.com/hc/requests/new",
-    },
+    contacts: { formUrl: "https://help.olx.com/hc/requests/new" },
+    defaultPolicy: { slas: { targetMin: 180 } },
+  },
+  foundit: {
+    key: "foundit",
+    displayName: "Foundit (Monster India)",
+    rate: { rps: 0.5, burst: 2, concurrency: 2, retryBackoffMs: DEFAULT_BACKOFF },
+    channels: { emailEnabled: true, webformEnabled: false, apiEnabled: false },
+    quirks: { prefersHumanName: true, localeHints: ["en"] },
+    contacts: { /* emails: ["privacy@foundit.in"] */ },
+    defaultPolicy: { slas: { targetMin: 180 } },
+  },
+  shine: {
+    key: "shine",
+    displayName: "Shine.com",
+    rate: { rps: 0.5, burst: 2, concurrency: 2, retryBackoffMs: DEFAULT_BACKOFF },
+    channels: { emailEnabled: true, webformEnabled: false, apiEnabled: false },
+    quirks: { prefersHumanName: true, localeHints: ["en"] },
+    contacts: { /* emails: ["privacy@shine.com"] */ },
+    defaultPolicy: { slas: { targetMin: 180 } },
+  },
+  timesjobs: {
+    key: "timesjobs",
+    displayName: "TimesJobs",
+    rate: { rps: 0.5, burst: 2, concurrency: 2, retryBackoffMs: DEFAULT_BACKOFF },
+    channels: { emailEnabled: true, webformEnabled: false, apiEnabled: false },
+    quirks: { prefersHumanName: true, localeHints: ["en"] },
+    contacts: { /* emails: ["privacy@timesjobs.com"] */ },
     defaultPolicy: { slas: { targetMin: 180 } },
   },
 };
@@ -97,18 +113,15 @@ export function getControllerEntry(key: ControllerKey): ControllerEntry {
   return REGISTRY[key];
 }
 
-// Async, DB-aware policy resolution for a controller.
+import type { ControllerPolicy } from "@/src/agents/policy";
 export async function getControllerPolicy(key: ControllerKey): Promise<ControllerPolicy | null> {
   return synthesizePolicyForController(key);
 }
 
-// Helper to choose the primary channel from registry + policy.
 export async function choosePrimaryChannel(key: ControllerKey): Promise<"email" | "webform" | "api"> {
   const entry = getControllerEntry(key);
   const policy = await getControllerPolicy(key);
   const policyPreferred = policy?.preferredChannel;
-
-  // If policy prefers a disabled channel, fall back to the first enabled in priority order
   const enabled = [
     entry.channels.emailEnabled ? "email" : null,
     entry.channels.webformEnabled ? "webform" : null,
