@@ -3,14 +3,13 @@
 
 // Thin façade over your Resend sender. Adds an opt-in variant that appends
 // an authorization-manifest footer and (flag-gated) attaches the manifest JSON.
-// This wrapper is resilient to different export shapes from "@/lib/email/resend".
+// Resilient to different export shapes from "@/lib/email/resend" and SAFE during build.
 
 import * as ResendMod from "@/lib/email/resend";
 import { resolveAuthorizationManifestFor } from "@/src/lib/compliance/authorization-read";
 
 /**
- * Minimal, safe local types so we don't depend on whatever "@/lib/email/resend" exports.
- * Relaxed to match existing call-sites (e.g., /api/ops/email/sla/escalate without `from`, with `cc`).
+ * Minimal, safe local types (relaxed to match existing callers).
  */
 export type AttachmentLike = {
   filename: string;
@@ -21,8 +20,8 @@ export type AttachmentLike = {
 
 export type SendEmailInput = {
   to: string | string[];
-  from?: string;                  // relaxed: optional to match existing callers
-  cc?: string | string[];         // explicit support
+  from?: string;                  // optional to match existing callers
+  cc?: string | string[];
   bcc?: string | string[];
   subject: string;
   text?: string;
@@ -38,30 +37,35 @@ export type SendEmailResult = {
   [k: string]: any;
 };
 
-/** Resolve a callable sender from whatever the resend module exports. */
-function getBaseSender(): (input: SendEmailInput) => Promise<SendEmailResult> {
+/** Lazy resolution to avoid throwing during build/import time. */
+let _baseSender: ((input: SendEmailInput) => Promise<SendEmailResult>) | null = null;
+
+function resolveBaseSender(): (input: SendEmailInput) => Promise<SendEmailResult> {
+  if (_baseSender) return _baseSender;
+
   const m: any = ResendMod;
-  const candidate =
-    m.sendEmail ??
-    m.sendEmailSafe ??
-    m.send ??
-    m.default;
+  const candidate = m.sendEmail ?? m.sendEmailSafe ?? m.send ?? m.default;
 
-  if (typeof candidate !== "function") {
-    throw new Error(
-      "email_send_facade_init_failed: No compatible sender exported from '@/lib/email/resend'. Expected one of: sendEmail, sendEmailSafe, send, default."
-    );
+  if (typeof candidate === "function") {
+    _baseSender = candidate as (input: SendEmailInput) => Promise<SendEmailResult>;
+    return _baseSender;
   }
-  return candidate as (input: SendEmailInput) => Promise<SendEmailResult>;
-}
 
-const baseSend = getBaseSender();
+  // Safe fallback: keep builds green and routes loadable.
+  _baseSender = async (_input: SendEmailInput): Promise<SendEmailResult> => ({
+    ok: false,
+    id: null,
+    error: "email_sender_not_configured",
+  });
+  return _baseSender;
+}
 
 /**
  * Plain pass-through (kept for back-compat).
  * Use this if you do NOT want to touch the body or attachments.
  */
 export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult> {
+  const baseSend = resolveBaseSender();
   return baseSend(input);
 }
 
@@ -122,6 +126,7 @@ function buildManifestFooter(ctx: {
 export async function sendEmailWithAuthorization(
   input: SendEmailWithAuthInput,
 ): Promise<SendEmailResult> {
+  const baseSend = resolveBaseSender();
   const auth = input.authorization ?? null;
 
   if (!auth) {
