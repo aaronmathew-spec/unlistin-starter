@@ -53,11 +53,11 @@ export async function POST(req: Request) {
       identifiers,
     });
 
-    // Optional "to" for email path; if omitted, façade uses a neutral placeholder
+    // Optional "to" for email path; if omitted, executor tries registry contacts; if flag disabled & no `to`, returns typed error
     const to = body.to as string | string[] | undefined;
     const from = body.from as string | undefined;
 
-    const executed = await executeBuiltDispatch(built, { to, from });
+    const executed = await executeBuiltDispatch(built, { to, from, controller });
 
     return NextResponse.json({ ok: true, built, executed });
   } catch (e: any) {
