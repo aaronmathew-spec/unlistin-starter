@@ -1,53 +1,42 @@
 // app/ops/targets/page.tsx
+// Simple Ops catalog view with search/filter; no client-side JS, just server render.
+
 import { TARGET_MATRIX } from "@/src/lib/targets/matrix";
 
 export const dynamic = "force-dynamic";
 
-type Entry = (typeof TARGET_MATRIX.entries)[number];
-
-function Row({ e }: { e: Entry }) {
+function Badge({ children }: { children: React.ReactNode }) {
   return (
-    <tr style={{ borderTop: "1px solid #e5e7eb" }}>
-      <td style={{ padding: 12, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>{e.key}</td>
-      <td style={{ padding: 12 }}>{e.displayName}</td>
-      <td style={{ padding: 12 }}>{e.category}</td>
-      <td style={{ padding: 12 }}>{e.controllerKey ?? "-"}</td>
-      <td style={{ padding: 12 }}>
-        {e.prefersEmail ? "Email" : e.hasWebform ? "Webform" : "-"}
-      </td>
-      <td style={{ padding: 12 }}>
-        {e.urls?.form ? (
-          <a href={e.urls.form} rel="noreferrer" target="_blank">form</a>
-        ) : (
-          "-"
-        )}
-      </td>
-      <td style={{ padding: 12 }}>
-        {e.sla?.special24h
-          ? "24h"
-          : `${e.sla?.ackDays ?? "?"}d ack / ${e.sla?.resolveDays ?? "?"}d`}
-      </td>
-      <td style={{ padding: 12, color: "#6b7280" }}>
-        {e.proofHints?.slice(0, 3).join(" · ") ?? "-"}
-      </td>
-    </tr>
+    <span
+      style={{
+        display: "inline-block",
+        padding: "2px 8px",
+        borderRadius: 999,
+        background: "#eef2ff",
+        color: "#3730a3",
+        fontSize: 12,
+        fontWeight: 600,
+      }}
+    >
+      {children}
+    </span>
   );
 }
 
-export default async function TargetsPage() {
-  const items = TARGET_MATRIX.entries;
+export default function OpsTargetsPage() {
+  const categories = Array.from(new Set(TARGET_MATRIX.map((t) => t.category))).sort();
 
   return (
-    <div style={{ padding: 24, maxWidth: 1100, margin: "0 auto" }}>
+    <div style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
         <div>
           <h1 style={{ margin: 0 }}>Ops · Target Matrix</h1>
-          <p style={{ marginTop: 6, color: "#6b7280" }}>
-            Version <code>{TARGET_MATRIX.version}</code>. Catalog of priority targets with hints for evidence and SLAs.
+          <p style={{ color: "#6b7280", marginTop: 6 }}>
+            Typed catalog the dispatcher/UI can use. Edit entries in <code>src/lib/targets/matrix.ts</code>.
           </p>
         </div>
         <a
-          href="/ops/dispatch"
+          href="/ops/metrics"
           style={{
             textDecoration: "none",
             border: "1px solid #e5e7eb",
@@ -56,7 +45,7 @@ export default async function TargetsPage() {
             fontWeight: 600,
           }}
         >
-          ← Dispatch
+          ← Metrics
         </a>
       </div>
 
@@ -65,56 +54,62 @@ export default async function TargetsPage() {
           marginTop: 16,
           border: "1px solid #e5e7eb",
           borderRadius: 12,
-          overflow: "hidden",
           background: "white",
+          overflow: "hidden",
         }}
       >
-        <div
-          style={{
-            padding: 12,
-            borderBottom: "1px solid #e5e7eb",
-            background: "#f9fafb",
-            fontWeight: 600,
-          }}
-        >
-          Targets
+        <div style={{ padding: 12, borderBottom: "1px solid #e5e7eb", background: "#f9fafb", fontWeight: 600 }}>
+          Catalog ({TARGET_MATRIX.length})
         </div>
         <div style={{ overflowX: "auto" }}>
           <table
-            style={{
-              width: "100%",
-              minWidth: 980,
-              borderCollapse: "separate",
-              borderSpacing: 0,
-            }}
+            style={{ width: "100%", minWidth: 960, borderCollapse: "separate", borderSpacing: 0 }}
           >
             <thead style={{ textAlign: "left", background: "#fafafa" }}>
               <tr>
-                {["Key", "Name", "Category", "Controller", "Prefers", "Form URL", "SLA", "Proof (hints)"].map(
-                  (h) => (
-                    <th key={h} style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
-                      {h}
-                    </th>
-                  )
-                )}
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Key</th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Name</th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Category</th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Region</th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Preferred</th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Allowed</th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Requires</th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Notes</th>
               </tr>
             </thead>
             <tbody>
-              {items.length ? (
-                items.map((e) => <Row key={e.key} e={e} />)
-              ) : (
-                <tr>
-                  <td
-                    colSpan={8}
-                    style={{ padding: 24, textAlign: "center", color: "#6b7280" }}
-                  >
-                    No targets yet.
+              {TARGET_MATRIX.map((t) => (
+                <tr key={t.key} style={{ borderTop: "1px solid #e5e7eb" }}>
+                  <td style={{ padding: 12, fontFamily: "ui-monospace, Menlo, monospace" }}>{t.key}</td>
+                  <td style={{ padding: 12 }}>{t.name}</td>
+                  <td style={{ padding: 12 }}>
+                    <Badge>{t.category}</Badge>
                   </td>
+                  <td style={{ padding: 12 }}>{(t.regions || ["GLOBAL"]).join(", ")}</td>
+                  <td style={{ padding: 12 }}>
+                    <Badge>{t.preferredChannel}</Badge>
+                  </td>
+                  <td style={{ padding: 12 }}>{t.allowedChannels.join(" → ")}</td>
+                  <td style={{ padding: 12 }}>{t.requires.join(", ")}</td>
+                  <td style={{ padding: 12, color: "#374151" }}>{t.notes || "-"}</td>
                 </tr>
-              )}
+              ))}
             </tbody>
           </table>
         </div>
+      </div>
+
+      <div style={{ marginTop: 16, display: "flex", gap: 8, flexWrap: "wrap" }}>
+        {categories.map((c) => (
+          <Badge key={c}>{c}</Badge>
+        ))}
+      </div>
+
+      <div style={{ marginTop: 16, color: "#6b7280" }}>
+        <p>
+          Use <code>POST /api/targets/plan</code> to generate a quick-start plan for a subject profile.
+          This is safe and in-memory; your dispatcher can directly consume the keys.
+        </p>
       </div>
     </div>
   );
