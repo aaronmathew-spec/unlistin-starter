@@ -127,11 +127,11 @@ export async function POST(req: Request) {
           key: controllerKey,
           name: controllerName,
           ok: false,
-          channel: "webform" as const,
+          channel: "webform",
           providerId: null,
           error: "dispatch_exception",
           note: msg,
-          idempotent: null as const,
+          idempotent: null,
           hint: "Exception during dispatch attempt",
         };
       }
