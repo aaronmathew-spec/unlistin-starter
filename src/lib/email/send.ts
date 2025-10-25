@@ -1,25 +1,42 @@
 // src/lib/email/send.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-// Thin façade over Resend sender. Adds an opt-in variant that appends
+// Thin façade over your Resend sender. Adds an opt-in variant that appends
 // an authorization-manifest footer and (flag-gated) attaches the manifest JSON.
+// This wrapper is resilient to different export shapes from "@/lib/email/resend".
 
-import resendSend, {
-  type SendEmailInput,
-  type SendEmailResult,
-} from "@/lib/email/resend";
-
+import * as ResendMod from "@/lib/email/resend";
 import { resolveAuthorizationManifestFor } from "@/src/lib/compliance/authorization-read";
 
-/** Re-export base types so call sites can stay concise */
-export type { SendEmailInput, SendEmailResult };
+// Re-export the public types from your resend module for call-site convenience.
+export type SendEmailInput = ResendMod.SendEmailInput;
+export type SendEmailResult = ResendMod.SendEmailResult;
+
+/** Resolve a callable sender from whatever the resend module exports. */
+function getBaseSender(): (input: SendEmailInput) => Promise<SendEmailResult> {
+  const m: any = ResendMod;
+  const candidate =
+    m.sendEmail ??
+    m.sendEmailSafe ??
+    m.send ??
+    m.default;
+
+  if (typeof candidate !== "function") {
+    throw new Error(
+      "email_send_facade_init_failed: No compatible sender exported from '@/lib/email/resend'. Expected one of: sendEmail, sendEmailSafe, send, default."
+    );
+  }
+  return candidate as (input: SendEmailInput) => Promise<SendEmailResult>;
+}
+
+const baseSend = getBaseSender();
 
 /**
  * Plain pass-through (kept for back-compat).
  * Use this if you do NOT want to touch the body or attachments.
  */
 export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult> {
-  return resendSend(input);
+  return baseSend(input);
 }
 
 /**
@@ -83,7 +100,7 @@ export async function sendEmailWithAuthorization(
 
   if (!auth) {
     // Behave like plain sender
-    return resendSend(input);
+    return baseSend(input);
   }
 
   // Attempt to resolve latest authorization + manifest
@@ -94,7 +111,7 @@ export async function sendEmailWithAuthorization(
 
   if (!rec) {
     // No record—send as-is
-    return resendSend(input);
+    return baseSend(input);
   }
 
   const footer = buildManifestFooter({
@@ -106,7 +123,7 @@ export async function sendEmailWithAuthorization(
 
   // Compose updated text (do not touch html here; keep CSP-friendly plain text)
   const updated: SendEmailInput = {
-    ...input,
+    ...(input as SendEmailInput),
     text: (input.text || "").trimEnd() + "\n" + footer + "\n",
   };
 
@@ -124,7 +141,7 @@ export async function sendEmailWithAuthorization(
     ];
   }
 
-  return resendSend(updated);
+  return baseSend(updated);
 }
 
 export default sendEmail;
