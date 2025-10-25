@@ -44,10 +44,7 @@ async function putFile(
 ) {
   const { data, error } = await supa.storage
     .from(bucket)
-    .upload(path, bytes, {
-      contentType: mime,
-      upsert: false,
-    });
+    .upload(path, bytes, { contentType: mime, upsert: false });
   if (error) throw new Error(`storage_upload_failed:${error.message}`);
   return data.path; // storage path (not public URL)
 }
@@ -72,7 +69,6 @@ function inferEvidenceKind(
   const name = (file.path || "").toLowerCase();
   const mime = (file.mime || "").toLowerCase();
 
-  // Minimal heuristics
   if (
     name.includes("aadhaar") ||
     name.includes("passport") ||
@@ -168,33 +164,32 @@ export async function createAuthorization(
     files.push(frow as AuthorizationFileRecord);
   }
 
-  // 3) Build manifest bundle (deterministic + signed)
-  //    IMPORTANT: builder expects EvidenceRef[], not raw DB rows.
+  // 3) Build manifest (deterministic + signed)
+  //    builder returns an AuthorizationManifest directly.
   const evidenceRefs = toEvidenceRefs(supa, bucket, files);
-  const bundle = buildAuthorizationManifest({
+  const manifest: AuthorizationManifest = buildAuthorizationManifest({
     record: row as AuthorizationRecord,
     files: evidenceRefs,
   });
-  // bundle.manifest (AuthorizationManifest)
-  // bundle.integrity.hashHex (stable content hash)
 
   // 4) Update manifest_hash in DB
   const { error: updErr } = await supa
     .from("authorizations")
-    .update({ manifest_hash: bundle.integrity.hashHex })
+    .update({ manifest_hash: manifest.integrity.hashHex })
     .eq("id", row.id);
-  if (updErr)
+  if (updErr) {
     throw new Error(
       `authz_manifest_hash_update_failed:${updErr.message}`,
     );
+  }
 
   return {
     record: {
       ...(row as AuthorizationRecord),
-      manifest_hash: bundle.integrity.hashHex,
+      manifest_hash: manifest.integrity.hashHex,
     },
     files,
-    manifest: bundle.manifest,
+    manifest,
   };
 }
 
