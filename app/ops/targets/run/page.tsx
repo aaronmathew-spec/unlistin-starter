@@ -69,6 +69,7 @@ async function fetchPlan(profile: Required<Pick<SubjectInput, "fullName">> & Sub
   return j.ok && Array.isArray(j.plan) ? j.plan : [];
 }
 
+// Best-effort check: if your API supports lookup by subjectId, this will show a chip.
 async function checkAuthzExists(subjectId?: string | null): Promise<"yes" | "no" | "unknown"> {
   if (!subjectId) return "unknown";
   try {
@@ -130,8 +131,8 @@ export default async function Page({
 
   if (fullName) {
     plan = await fetchPlan({ fullName, email, phone, region, handles, fastLane, subjectId });
-    const law = resolvePolicyByRegion(region);
-    lawLabel = law ? `${law.jurisdiction} (${law.law})` : null;
+    const law = resolvePolicyByRegion(region) as any;
+    lawLabel = law ? `${(law.jurisdiction || law.name || "")} (${law.law || law.key || ""})` : null;
 
     // Build email drafts for preview
     drafts = {};
@@ -147,9 +148,28 @@ export default async function Page({
       });
     }
 
-    // Authorization presence chip
+    // Authorization presence chip (best-effort)
     authzStatus = await checkAuthzExists(subjectId);
   }
+
+  const preferredBadge = (text?: string) =>
+    text ? (
+      <span
+        style={{
+          display: "inline-block",
+          padding: "2px 8px",
+          borderRadius: 999,
+          fontSize: 12,
+          fontWeight: 700,
+          border: "1px solid #e5e7eb",
+          background: "#f3f4f6",
+        }}
+      >
+        {text}
+      </span>
+    ) : (
+      <>—</>
+    );
 
   const chip =
     authzStatus === "yes" ? (
@@ -379,7 +399,7 @@ export default async function Page({
                       <tr key={p.key} style={{ borderTop: "1px solid #e5e7eb" }}>
                         <td style={{ padding: 12 }}>{p.name}</td>
                         <td style={{ padding: 12 }}>{mono(p.key)}</td>
-                        <td style={{ padding: 12 }}>{p.preferredChannel || "—"}</td>
+                        <td style={{ padding: 12 }}>{preferredBadge(p.preferredChannel)}</td>
                         <td style={{ padding: 12 }}>{(p.allowedChannels || []).join(", ") || "—"}</td>
                         <td style={{ padding: 12 }}>{(p.requires || []).join(", ") || "—"}</td>
                       </tr>
