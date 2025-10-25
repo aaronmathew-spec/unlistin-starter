@@ -1,8 +1,5 @@
 // app/ops/targets/run/page.tsx
-// Ops UI: Plan → Preview (server-only, no client JS)
-// This version avoids Server Actions (which require void return types) and instead
-// uses search params (GET) to render the plan and drafts on the server.
-// Dispatch is shown as a cURL you can run from Ops (we'll add a server proxy CTA next).
+// Ops UI: Plan → Preview → (server-only) Dispatch Helper (no client JS)
 
 import { buildDraftForController } from "@/src/lib/email/templates/controllers/draft";
 import { resolvePolicyByRegion } from "@/src/lib/policy/dsr";
@@ -138,9 +135,9 @@ export default async function Page({
     <div style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
         <div>
-          <h1 style={{ margin: 0 }}>Ops · Plan → Preview</h1>
+          <h1 style={{ margin: 0 }}>Ops · Plan → Preview → Dispatch</h1>
           <p style={{ color: "#6b7280", marginTop: 6 }}>
-            Generate a prioritized target plan and preview jurisdiction-aware drafts. Dispatch remains cron/flag gated.
+            Generate a prioritized target plan, preview drafts, and (flag/cron guarded) dispatch — all server-side.
           </p>
         </div>
         <a
@@ -377,33 +374,88 @@ export default async function Page({
             })}
           </div>
 
-          {/* Dispatch helper (cURL) */}
+          {/* Dispatch helpers */}
           <div
             style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+              gap: 12,
               marginTop: 16,
-              border: "1px solid #e5e7eb",
-              borderRadius: 12,
-              background: "white",
-              padding: 12,
             }}
           >
-            <div style={{ fontWeight: 600 }}>Dispatch via API (cron/flag guarded)</div>
-            <p style={{ color: "#6b7280", marginTop: 6 }}>
-              Use this from your terminal (or CI) with <code>SECURE_CRON_SECRET</code> set. When{" "}
-              <code>FLAG_PLAN_DISPATCH_ENABLED</code> is off, the API returns <code>dryRun</code> items.
-            </p>
-            <pre
+            {/* a) One-click server dispatch (navigates to results page) */}
+            <div
               style={{
-                whiteSpace: "pre-wrap",
-                fontSize: 12,
-                background: "#f9fafb",
-                padding: 12,
-                borderRadius: 8,
                 border: "1px solid #e5e7eb",
+                borderRadius: 12,
+                background: "white",
+                padding: 12,
               }}
             >
+              <div style={{ fontWeight: 600, marginBottom: 8 }}>Dispatch Selected (server)</div>
+              <form method="GET" action="/ops/targets/run/dispatch">
+                <input type="hidden" name="fullName" value={subject.fullName} />
+                <input type="hidden" name="email" value={subject.email ?? ""} />
+                <input type="hidden" name="phone" value={subject.phone ?? ""} />
+                <input type="hidden" name="region" value={subject.region ?? "IN"} />
+                <input type="hidden" name="subjectId" value={subject.subjectId ?? ""} />
+                <input type="hidden" name="handles" value={(subject.handles ?? []).join(",")} />
+                <div>
+                  <label style={{ fontSize: 12, color: "#6b7280" }}>Controller keys (comma separated)</label>
+                  <input
+                    name="keys"
+                    defaultValue={plan.map((p) => p.key).join(",")}
+                    style={{ width: "100%", padding: 10, border: "1px solid #e5e7eb", borderRadius: 8 }}
+                    placeholder="truecaller,naukri,olx"
+                  />
+                </div>
+                <div style={{ textAlign: "right", marginTop: 8 }}>
+                  <button
+                    type="submit"
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: 8,
+                      border: "1px solid #e5e7eb",
+                      background: "white",
+                      fontWeight: 700,
+                    }}
+                  >
+                    Dispatch → View Results
+                  </button>
+                </div>
+              </form>
+              <p style={{ color: "#6b7280", marginTop: 8 }}>
+                Uses your server to call the cron-guarded API with <code>x-secure-cron</code>. Honors{" "}
+                <code>FLAG_PLAN_DISPATCH_ENABLED</code> (dry-run vs enqueue).
+              </p>
+            </div>
+
+            {/* b) cURL */}
+            <div
+              style={{
+                border: "1px solid #e5e7eb",
+                borderRadius: 12,
+                background: "white",
+                padding: 12,
+              }}
+            >
+              <div style={{ fontWeight: 600 }}>Dispatch via cURL</div>
+              <p style={{ color: "#6b7280", marginTop: 6 }}>
+                Set <code>SECURE_CRON_SECRET</code> and run from your terminal.
+              </p>
+              <pre
+                style={{
+                  whiteSpace: "pre-wrap",
+                  fontSize: 12,
+                  background: "#f9fafb",
+                  padding: 12,
+                  borderRadius: 8,
+                  border: "1px solid #e5e7eb",
+                }}
+              >
 {toCurlDispatch({ subject, items: plan })}
-            </pre>
+              </pre>
+            </div>
           </div>
         </div>
       ) : null}
