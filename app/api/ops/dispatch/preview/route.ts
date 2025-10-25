@@ -3,7 +3,7 @@
 // Use this to verify channel choice + payload before wiring the live dispatcher.
 
 import { NextResponse } from "next/server";
-import { buildDispatchForController } from "@/src/lib/controllers/dispatch";
+import { buildDispatchForController, asControllerKey } from "@/src/lib/controllers/dispatch";
 
 export const runtime = "nodejs";
 
@@ -22,15 +22,26 @@ export async function POST(req: Request) {
 
   try {
     const body = await req.json().catch(() => ({}));
-    const controller = String(body.controller ?? body.controllerKey ?? "");
+    const controllerRaw = String(body.controller ?? body.controllerKey ?? "");
     const region = String(body.region ?? "DPDP_IN");
     const subjectFullName = body.subjectFullName ? String(body.subjectFullName) : undefined;
     const subjectEmail = body.subjectEmail ? String(body.subjectEmail) : undefined;
     const subjectPhone = body.subjectPhone ? String(body.subjectPhone) : undefined;
     const identifiers = (body.identifiers ?? {}) as Record<string, string | undefined>;
 
-    if (!controller) {
+    if (!controllerRaw) {
       return NextResponse.json({ ok: false, error: "controller_required" }, { status: 400 });
+    }
+
+    // Narrow string -> ControllerKey (throws on unknown)
+    let controller: ReturnType<typeof asControllerKey>;
+    try {
+      controller = asControllerKey(controllerRaw);
+    } catch (e: any) {
+      return NextResponse.json(
+        { ok: false, error: "unknown_controller", detail: e?.message ?? String(e) },
+        { status: 400 },
+      );
     }
 
     const built = await buildDispatchForController({
