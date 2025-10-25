@@ -2,8 +2,10 @@
 // Server-rendered list of Authorization records (no client JS)
 
 import { listAuthorizations } from "@/src/lib/authz/store";
+import type { AuthorizationRecord } from "@/src/lib/authz/types";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 type SP = Record<string, string | string[] | undefined>;
 
@@ -19,41 +21,27 @@ function mono(s: string) {
   );
 }
 
-function includes(hay: string | null | undefined, needle: string) {
-  if (!hay) return false;
-  try {
-    return hay.toLowerCase().includes(needle.toLowerCase());
-  } catch {
-    return false;
-  }
-}
-
 export default async function Page({ searchParams }: { searchParams: SP }) {
   const q = get(searchParams, "q");
   const page = Math.max(1, Number(get(searchParams, "page") || "1") || 1);
   const limit = Math.max(1, Math.min(100, Number(get(searchParams, "limit") || "20") || 20));
   const offset = (page - 1) * limit;
 
-  // NOTE: matches current store API: listAuthorizations(limit, offset) -> AuthorizationRecord[]
-  const rowsRaw = await listAuthorizations(limit, offset);
+  // Call the *current* store API (single options object).
+  // It may return either:
+  //   { rows: AuthorizationRecord[]; total: number }
+  // or (legacy) AuthorizationRecord[]
+  const res: any = await listAuthorizations({
+    search: q || null,
+    limit,
+    offset,
+  } as any);
 
-  // Optional in-memory filtering if q provided (best-effort; does not affect server pagination)
-  const rows = q
-    ? rowsRaw.filter((r: any) =>
-        includes(r.subject_full_name, q) ||
-        includes(r.subject_email, q) ||
-        includes(r.subject_phone, q) ||
-        includes(r.signer_name, q) ||
-        includes(r.region, q) ||
-        includes(r.id, q)
-      )
-    : rowsRaw;
+  const rows: AuthorizationRecord[] = Array.isArray(res) ? res : (res?.rows ?? []);
+  // Fallback total: if the store ever returns just an array, we estimate total as (offset + rows.length)
+  const total: number = typeof res?.total === "number" ? res.total : offset + rows.length;
 
-  // We don't know total from the store; drive pagination heuristically:
-  // - Prev available if page > 1
-  // - Next available if we got a "full page" of results
-  const hasPrev = page > 1;
-  const hasNext = rowsRaw.length === limit;
+  const pages = Math.max(1, Math.ceil(total / limit));
 
   const mkHref = (p: number) => {
     const params = new URLSearchParams();
@@ -168,7 +156,7 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
             fontWeight: 600,
           }}
         >
-          Results ({rows.length}{q ? ` filtered` : ""})
+          Results ({rows.length} of {total})
         </div>
         <div style={{ overflowX: "auto" }}>
           <table
@@ -192,7 +180,7 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
             </thead>
             <tbody>
               {rows.length ? (
-                rows.map((r: any) => (
+                rows.map((r) => (
                   <tr key={r.id} style={{ borderTop: "1px solid #e5e7eb" }}>
                     <td style={{ padding: 12 }}>
                       <a
@@ -213,7 +201,7 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
                     <td style={{ padding: 12 }}>{r.region || "—"}</td>
                     <td style={{ padding: 12 }}>{r.manifest_hash ? mono(r.manifest_hash) : "—"}</td>
                     <td style={{ padding: 12 }}>
-                      {r.created_at ? new Date(r.created_at as string).toLocaleString() : "—"}
+                      {new Date((r as any).created_at as string).toLocaleString()}
                     </td>
                   </tr>
                 ))
@@ -228,7 +216,7 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
           </table>
         </div>
 
-        {/* Pagination (heuristic) */}
+        {/* Pagination */}
         <div
           style={{
             padding: 12,
@@ -240,8 +228,7 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
           }}
         >
           <div style={{ color: "#6b7280", fontSize: 12 }}>
-            Page {page} · Showing {rows.length}
-            {q ? ` (filtered)` : ""}{rows.length === limit ? " · More may be available" : ""}
+            Page {page} of {pages} · Showing {rows.length} / {total}
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <a
@@ -253,14 +240,14 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
                 borderRadius: 8,
                 background: "white",
                 fontWeight: 600,
-                pointerEvents: hasPrev ? undefined : "none",
-                opacity: hasPrev ? 1 : 0.5,
+                pointerEvents: page <= 1 ? "none" : undefined,
+                opacity: page <= 1 ? 0.5 : 1,
               }}
             >
               ← Prev
             </a>
             <a
-              href={mkHref(page + 1)}
+              href={mkHref(Math.min(pages, page + 1))}
               style={{
                 textDecoration: "none",
                 border: "1px solid #e5e7eb",
@@ -268,8 +255,8 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
                 borderRadius: 8,
                 background: "white",
                 fontWeight: 600,
-                pointerEvents: hasNext ? undefined : "none",
-                opacity: hasNext ? 1 : 0.5,
+                pointerEvents: page >= pages ? "none" : undefined,
+                opacity: page >= pages ? 0.5 : 1,
               }}
             >
               Next →
