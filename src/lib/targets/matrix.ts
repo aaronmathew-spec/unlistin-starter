@@ -1,162 +1,219 @@
 // src/lib/targets/matrix.ts
-// Category-driven "Top 50" style target registry used by Ops UI / routing hints.
-// Pure catalog content (NOT executable). Keeps separation from controllers/registry.
+import type { TargetEntry } from "./types";
 
 export const runtime = "nodejs";
 
-export type TargetCategory =
-  | "caller-id"
-  | "big-social"
-  | "india-social"
-  | "messaging"
-  | "search-layer"
-  | "people-brokers"
-  | "creator-db"
-  | "jobs-pro"
-  | "ecom-classifieds"
-  | "dating-matrimony"
-  | "misc-adtech";
-
-export type TargetEntry = {
-  key: string;                 // e.g. "truecaller", "instagram"
-  displayName: string;         // Human name
-  category: TargetCategory;
-  controllerKey?: string;      // If wired to an internal controller
-  prefersEmail?: boolean;
-  hasWebform?: boolean;
-  proofHints?: string[];       // Evidence typically required
-  sla?: { ackDays?: number; resolveDays?: number; special24h?: boolean };
-  urls?: { form?: string; policy?: string };
-  notes?: string;
-};
-
-export type TargetMatrix = {
-  version: string;
-  entries: TargetEntry[];
-};
-
-export const TARGET_MATRIX: TargetMatrix = {
-  version: "2025-10-25.v1",
-  entries: [
-    // Caller-ID / phone directories (high impact for spam/stalking)
-    {
-      key: "truecaller",
-      displayName: "Truecaller",
-      category: "caller-id",
-      controllerKey: "truecaller",
-      hasWebform: true,
-      prefersEmail: false,
-      proofHints: ["phone-last4", "screenshot of listing"],
-      sla: { ackDays: 2, resolveDays: 7 },
-      urls: { form: "https://www.truecaller.com/privacy-center/request/remove" },
+// Practical starter matrix (expand to 50+ progressively).
+export const TARGET_MATRIX: TargetEntry[] = [
+  // Caller-ID / phone directories
+  {
+    key: "truecaller",
+    name: "Truecaller",
+    category: "caller-id",
+    preferredChannel: "webform",
+    allowedChannels: ["webform", "email"],
+    regions: ["IN", "GLOBAL"],
+    requires: ["full-name", "phone", "urls-screenshots"],
+    notes: "Unlisting + spam-label correction. Phone-centric identity.",
+    help: {
+      privacy: "https://www.truecaller.com/privacy-policy",
+      removal: "https://www.truecaller.com/unlisting",
     },
+  },
 
-    // Big Social / UGC (subset; extend as needed)
-    { key: "instagram", displayName: "Instagram", category: "big-social", proofHints: ["post URLs", "screenshots"], sla: { ackDays: 7, resolveDays: 30 } },
-    { key: "facebook", displayName: "Facebook", category: "big-social", proofHints: ["post/profile URLs"], sla: { ackDays: 7, resolveDays: 30 } },
-    { key: "youtube", displayName: "YouTube", category: "big-social", proofHints: ["video URLs", "timestamps"], sla: { ackDays: 7, resolveDays: 30 } },
-    { key: "snapchat", displayName: "Snapchat", category: "big-social", proofHints: ["snap/story links"], sla: { ackDays: 7, resolveDays: 30 } },
-    { key: "x", displayName: "X (Twitter)", category: "big-social", proofHints: ["tweet URLs"], sla: { ackDays: 7, resolveDays: 30 } },
-    { key: "reddit", displayName: "Reddit", category: "big-social", proofHints: ["post/comment links"], sla: { ackDays: 7, resolveDays: 30 } },
-    { key: "linkedin", displayName: "LinkedIn", category: "big-social", proofHints: ["profile link"], sla: { ackDays: 7, resolveDays: 30 } },
-    { key: "pinterest", displayName: "Pinterest", category: "big-social", proofHints: ["pin URLs"], sla: { ackDays: 7, resolveDays: 30 } },
-    { key: "quora", displayName: "Quora", category: "big-social", proofHints: ["question/answer links"], sla: { ackDays: 7, resolveDays: 30 } },
+  // Big social / UGC
+  {
+    key: "instagram",
+    name: "Instagram",
+    category: "big-social",
+    preferredChannel: "webform",
+    allowedChannels: ["webform"],
+    regions: ["GLOBAL"],
+    requires: ["handle", "urls-screenshots"],
+    notes: "Report impersonation/content via Help Center; privacy settings hardening.",
+    help: { privacy: "https://help.instagram.com/" },
+  },
+  {
+    key: "facebook",
+    name: "Facebook",
+    category: "big-social",
+    preferredChannel: "webform",
+    allowedChannels: ["webform"],
+    regions: ["GLOBAL"],
+    requires: ["handle", "urls-screenshots"],
+    help: { privacy: "https://www.facebook.com/help/" },
+  },
+  {
+    key: "youtube",
+    name: "YouTube",
+    category: "big-social",
+    preferredChannel: "webform",
+    allowedChannels: ["webform"],
+    regions: ["GLOBAL"],
+    requires: ["urls-screenshots"],
+    notes: "Copyright/privacy takedowns by form; pair with search de-index.",
+    help: { privacy: "https://support.google.com/youtube/topic/2803240" },
+  },
+  {
+    key: "x",
+    name: "X (Twitter)",
+    category: "big-social",
+    preferredChannel: "webform",
+    allowedChannels: ["webform"],
+    regions: ["GLOBAL"],
+    requires: ["handle", "urls-screenshots"],
+    help: { privacy: "https://help.twitter.com/en" },
+  },
+  {
+    key: "linkedin",
+    name: "LinkedIn",
+    category: "big-social",
+    preferredChannel: "webform",
+    allowedChannels: ["webform", "email"],
+    regions: ["GLOBAL"],
+    requires: ["account-email", "urls-screenshots"],
+    notes: "Profile visibility controls + per-record removal.",
+    help: { privacy: "https://www.linkedin.com/help/linkedin" },
+  },
 
-    // India-first short video & social (subset)
-    { key: "sharechat", displayName: "ShareChat", category: "india-social", proofHints: ["post links"], sla: { ackDays: 7, resolveDays: 30 } },
-    { key: "moj", displayName: "Moj", category: "india-social", proofHints: ["post links"], sla: { ackDays: 7, resolveDays: 30 } },
-    { key: "josh", displayName: "Josh", category: "india-social", proofHints: ["post links"], sla: { ackDays: 7, resolveDays: 30 } },
-    { key: "roposo", displayName: "Roposo", category: "india-social", proofHints: ["post links"], sla: { ackDays: 7, resolveDays: 30 } },
-    { key: "chingari", displayName: "Chingari", category: "india-social", proofHints: ["post links"], sla: { ackDays: 7, resolveDays: 30 } },
-    { key: "mx", displayName: "MX Player Communities", category: "india-social", proofHints: ["post links"], sla: { ackDays: 7, resolveDays: 30 } },
+  // India-first short video & social (seed a few)
+  {
+    key: "sharechat",
+    name: "ShareChat",
+    category: "india-social",
+    preferredChannel: "webform",
+    allowedChannels: ["webform", "email"],
+    regions: ["IN"],
+    requires: ["handle", "urls-screenshots"],
+  },
+  {
+    key: "moj",
+    name: "Moj",
+    category: "india-social",
+    preferredChannel: "webform",
+    allowedChannels: ["webform", "email"],
+    regions: ["IN"],
+    requires: ["handle", "urls-screenshots"],
+  },
 
-    // Messaging/community (public surfaces)
-    { key: "telegram", displayName: "Telegram (public)", category: "messaging", proofHints: ["channel/post links", "hashes"], sla: { ackDays: 2, resolveDays: 15 } },
-    { key: "discord", displayName: "Discord (public)", category: "messaging", proofHints: ["server/channel links"], sla: { ackDays: 2, resolveDays: 15 } },
+  // Messaging/community surfaces
+  {
+    key: "telegram",
+    name: "Telegram",
+    category: "messaging",
+    preferredChannel: "webform",
+    allowedChannels: ["webform", "email"],
+    regions: ["GLOBAL"],
+    requires: ["urls-screenshots"],
+    notes: "Evidence-heavy; channel/admin contacts; hashes/links ideal.",
+  },
 
-    // Search layer (index & cache)
-    { key: "google-search", displayName: "Google Search Removal", category: "search-layer", proofHints: ["URL list", "cached vs live"], sla: { ackDays: 2, resolveDays: 14 } },
-    { key: "bing-search", displayName: "Bing Removal", category: "search-layer", proofHints: ["URL list"], sla: { ackDays: 2, resolveDays: 14 } },
+  // Search layer
+  {
+    key: "google-search",
+    name: "Google Search (Outdated Content / Removal)",
+    category: "search-index",
+    preferredChannel: "webform",
+    allowedChannels: ["webform"],
+    regions: ["GLOBAL"],
+    requires: ["urls-screenshots"],
+  },
+  {
+    key: "bing-search",
+    name: "Bing (Webmaster Removal)",
+    category: "search-index",
+    preferredChannel: "webform",
+    allowedChannels: ["webform"],
+    regions: ["GLOBAL"],
+    requires: ["urls-screenshots"],
+  },
 
-    // People-search / data brokers (subset)
-    { key: "zoominfo", displayName: "ZoomInfo", category: "people-brokers", proofHints: ["profile link/screenshot"], sla: { ackDays: 7, resolveDays: 30 } },
-    { key: "rocketreach", displayName: "RocketReach", category: "people-brokers", proofHints: ["profile link"], sla: { ackDays: 7, resolveDays: 30 } },
-    { key: "pipl", displayName: "Pipl", category: "people-brokers", proofHints: ["profile link"], sla: { ackDays: 7, resolveDays: 30 } },
-    { key: "radaris", displayName: "Radaris", category: "people-brokers", proofHints: ["profile link"], sla: { ackDays: 7, resolveDays: 30 } },
-    { key: "whitepages", displayName: "Whitepages", category: "people-brokers", proofHints: ["profile link"], sla: { ackDays: 7, resolveDays: 30 } },
-    { key: "spokeo", displayName: "Spokeo", category: "people-brokers", proofHints: ["profile link"], sla: { ackDays: 7, resolveDays: 30 } },
-    { key: "beenverified", displayName: "BeenVerified", category: "people-brokers", proofHints: ["profile link"], sla: { ackDays: 7, resolveDays: 30 } },
+  // People-search / data-broker (a few exemplars; verify region acceptance)
+  {
+    key: "zoominfo",
+    name: "ZoomInfo",
+    category: "people-search",
+    preferredChannel: "webform",
+    allowedChannels: ["webform", "email"],
+    regions: ["GLOBAL"],
+    requires: ["full-name", "account-email", "urls-screenshots"],
+  },
+  {
+    key: "rocketreach",
+    name: "RocketReach",
+    category: "people-search",
+    preferredChannel: "webform",
+    allowedChannels: ["webform", "email"],
+    regions: ["GLOBAL"],
+    requires: ["full-name", "account-email", "urls-screenshots"],
+  },
 
-    // Creator discovery / influencer DBs (subset)
-    { key: "hypeauditor", displayName: "HypeAuditor", category: "creator-db", proofHints: ["profile link"], sla: { ackDays: 7, resolveDays: 30 } },
-    { key: "creatoriq", displayName: "CreatorIQ", category: "creator-db", proofHints: ["profile link"], sla: { ackDays: 7, resolveDays: 30 } },
-    { key: "grin", displayName: "Grin", category: "creator-db", proofHints: ["profile link"], sla: { ackDays: 7, resolveDays: 30 } },
-    { key: "upfluence", displayName: "Upfluence", category: "creator-db", proofHints: ["profile link"], sla: { ackDays: 7, resolveDays: 30 } },
+  // Jobs & professional
+  {
+    key: "naukri",
+    name: "Naukri",
+    category: "jobs",
+    preferredChannel: "email",
+    allowedChannels: ["email", "webform"],
+    regions: ["IN"],
+    requires: ["account-email", "full-name", "urls-screenshots"],
+  },
+  {
+    key: "foundit",
+    name: "Foundit (Monster)",
+    category: "jobs",
+    preferredChannel: "email",
+    allowedChannels: ["email", "webform"],
+    regions: ["IN"],
+    requires: ["account-email", "full-name"],
+  },
+  {
+    key: "shine",
+    name: "Shine",
+    category: "jobs",
+    preferredChannel: "email",
+    allowedChannels: ["email", "webform"],
+    regions: ["IN"],
+    requires: ["account-email", "full-name"],
+  },
+  {
+    key: "timesjobs",
+    name: "TimesJobs",
+    category: "jobs",
+    preferredChannel: "email",
+    allowedChannels: ["email", "webform"],
+    regions: ["IN"],
+    requires: ["account-email", "full-name"],
+  },
 
-    // Jobs & professional (wired)
-    {
-      key: "naukri",
-      displayName: "Naukri.com",
-      category: "jobs-pro",
-      controllerKey: "naukri",
-      prefersEmail: true,
-      proofHints: ["account email", "resume URL (if any)"],
-      sla: { ackDays: 7, resolveDays: 30 },
-    },
-    {
-      key: "foundit",
-      displayName: "Foundit (Monster India)",
-      category: "jobs-pro",
-      controllerKey: "foundit",
-      prefersEmail: true,
-      proofHints: ["account email"],
-      sla: { ackDays: 7, resolveDays: 30 },
-    },
-    {
-      key: "shine",
-      displayName: "Shine.com",
-      category: "jobs-pro",
-      controllerKey: "shine",
-      prefersEmail: true,
-      proofHints: ["account email"],
-      sla: { ackDays: 7, resolveDays: 30 },
-    },
-    {
-      key: "timesjobs",
-      displayName: "TimesJobs",
-      category: "jobs-pro",
-      controllerKey: "timesjobs",
-      prefersEmail: true,
-      proofHints: ["account email"],
-      sla: { ackDays: 7, resolveDays: 30 },
-    },
-    {
-      key: "linkedin-jobs",
-      displayName: "LinkedIn (visibility/data)",
-      category: "jobs-pro",
-      proofHints: ["profile link"],
-      sla: { ackDays: 7, resolveDays: 30 },
-    },
-    {
-      key: "olx",
-      displayName: "OLX",
-      category: "ecom-classifieds",
-      controllerKey: "olx",
-      hasWebform: true,
-      proofHints: ["listing URLs"],
-      sla: { ackDays: 2, resolveDays: 14 },
-    },
-    { key: "quikr", displayName: "Quikr", category: "ecom-classifieds", proofHints: ["listing URLs"], sla: { ackDays: 2, resolveDays: 14 } },
+  // Classifieds / commerce
+  {
+    key: "olx",
+    name: "OLX",
+    category: "classifieds",
+    preferredChannel: "webform",
+    allowedChannels: ["webform", "email"],
+    regions: ["IN", "GLOBAL"],
+    requires: ["urls-screenshots", "account-email"],
+  },
+  {
+    key: "amazon",
+    name: "Amazon (public profile/reviews)",
+    category: "commerce",
+    preferredChannel: "webform",
+    allowedChannels: ["webform"],
+    regions: ["GLOBAL"],
+    requires: ["urls-screenshots", "account-email"],
+  },
 
-    // Dating & matrimonial (subset)
-    { key: "tinder", displayName: "Tinder", category: "dating-matrimony", proofHints: ["profile screenshots"], sla: { ackDays: 7, resolveDays: 30 } },
-    { key: "bumble", displayName: "Bumble", category: "dating-matrimony", proofHints: ["profile screenshots"], sla: { ackDays: 7, resolveDays: 30 } },
-    { key: "aisle", displayName: "Aisle", category: "dating-matrimony", proofHints: ["profile screenshots"], sla: { ackDays: 7, resolveDays: 30 } },
-    { key: "shaadi", displayName: "Shaadi", category: "dating-matrimony", proofHints: ["profile link"], sla: { ackDays: 7, resolveDays: 30 } },
-    { key: "bharatmatrimony", displayName: "BharatMatrimony", category: "dating-matrimony", proofHints: ["profile link"], sla: { ackDays: 7, resolveDays: 30 } },
-    { key: "jeevansathi", displayName: "Jeevansathi", category: "dating-matrimony", proofHints: ["profile link"], sla: { ackDays: 7, resolveDays: 30 } },
-
-    // Misc / adtech / lead vendors (placeholder; verify per client)
-    { key: "local-lead-vendors", displayName: "Local consumer data vendors", category: "misc-adtech", notes: "Verify presence & opt-out per case", sla: { ackDays: 7, resolveDays: 30 } },
-  ],
-};
+  // Dating (seed)
+  {
+    key: "tinder",
+    name: "Tinder",
+    category: "dating",
+    preferredChannel: "webform",
+    allowedChannels: ["webform", "email"],
+    regions: ["GLOBAL"],
+    requires: ["handle", "urls-screenshots"],
+  },
+];
