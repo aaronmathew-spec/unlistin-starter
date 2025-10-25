@@ -109,6 +109,7 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
   }
 
   const jsonStr = manifest ? JSON.stringify(manifest, null, 2) : "";
+  const dataUrl = jsonStr ? `data:application/json;charset=utf-8,${encodeURIComponent(jsonStr)}` : "";
 
   return (
     <div style={{ padding: 24, maxWidth: 1100, margin: "0 auto" }}>
@@ -327,9 +328,9 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
           </div>
 
           {!errorMsg && jsonStr ? (
-            <div style={{ marginTop: 8, textAlign: "right" }}>
+            <div style={{ marginTop: 8, display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <a
-                href={`data:application/json;charset=utf-8,${encodeURIComponent(jsonStr)}`}
+                href={dataUrl}
                 download={`authz_${fullName.replace(/\s+/g, "_")}_${region}.json`}
                 style={{
                   textDecoration: "none",
@@ -341,6 +342,21 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
                 }}
               >
                 Download JSON
+              </a>
+              <a
+                href={dataUrl}
+                target="_blank"
+                rel="noreferrer"
+                style={{
+                  textDecoration: "none",
+                  border: "1px solid #e5e7eb",
+                  padding: "8px 12px",
+                  borderRadius: 8,
+                  fontWeight: 600,
+                  background: "white",
+                }}
+              >
+                Open JSON in New Tab
               </a>
             </div>
           ) : null}
