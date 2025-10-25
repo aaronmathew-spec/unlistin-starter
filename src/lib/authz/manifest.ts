@@ -73,6 +73,19 @@ export type CreateManifestInput = {
   agent?: Partial<Agent> | null;
 };
 
+// ---- Legacy compatibility input (as used by store.ts) ----
+type LegacyRecord = {
+  subject_id?: string | null;
+  subject_full_name?: string;
+  subject_email?: string | null;
+  subject_phone?: string | null;
+  handles?: string[] | null;
+  region?: string | null;
+  permissions?: Permission[] | null;
+  expires_in_days?: number | null;
+};
+type LegacyBuildInput = { record: LegacyRecord; files?: EvidenceRef[] | null };
+
 function defaultAgent(): Agent {
   return {
     name: "UnlistIN",
@@ -158,5 +171,44 @@ export function createAuthorizationManifest(input: CreateManifestInput): Authori
   };
 }
 
-// 🔧 Back-compat alias so callers importing `buildAuthorizationManifest` keep working.
-export const buildAuthorizationManifest = createAuthorizationManifest;
+/**
+ * Back-compat wrapper so callers can pass EITHER:
+ *   - the new structured CreateManifestInput, OR
+ *   - the legacy { record, files } shape used in store.ts
+ */
+export function buildAuthorizationManifest(
+  arg: CreateManifestInput | LegacyBuildInput,
+): AuthorizationManifest {
+  if ("record" in (arg as any)) {
+    const rec = (arg as LegacyBuildInput).record || {};
+    const files = (arg as LegacyBuildInput).files || [];
+
+    const subjectFullName = (rec.subject_full_name || "").trim() || "Unknown Subject";
+    const subjectEmail = rec.subject_email ?? null;
+    const subjectPhone = rec.subject_phone ?? null;
+    const subjectId = rec.subject_id ?? null;
+    const handles = rec.handles ?? null;
+    const region = (rec.region || "IN").toUpperCase();
+    const permissions = Array.from(new Set(rec.permissions || ["erasure"])) as Permission[];
+    const expiresInDays =
+      typeof rec.expires_in_days === "number" ? rec.expires_in_days : null;
+
+    return createAuthorizationManifest({
+      subject: {
+        id: subjectId,
+        fullName: subjectFullName,
+        email: subjectEmail,
+        phone: subjectPhone,
+        handles,
+      },
+      region,
+      permissions,
+      evidence: files || [],
+      expiresInDays,
+      agent: null,
+    });
+  }
+
+  // Already in new shape
+  return createAuthorizationManifest(arg as CreateManifestInput);
+}
