@@ -99,7 +99,7 @@ export async function createAuthorization(input: AuthorizationInput): Promise<{
   // 4) Update manifest_hash
   const { error: updErr } = await supa
     .from("authorizations")
-    .update({ manifest_hash: manifest.contentHash })
+    .update({ manifest_hash: manifest.integrity.hashHex })
     .eq("id", row.id);
   if (updErr) throw new Error(`authz_manifest_hash_update_failed:${updErr.message}`);
 
