@@ -10,6 +10,13 @@ import type {
 } from "@/src/lib/controllers/dispatch";
 import { sendEmail, type SendEmailResult } from "@/src/lib/email/send";
 import { enqueueWebformJob } from "@/src/lib/controllers/webforms/enqueue";
+import { getControllerEntry, type ControllerKey } from "@/src/lib/controllers/registry";
+
+const EMAIL_ENABLED =
+  (process.env.FLAG_EMAIL_CHANNEL || "").toLowerCase() === "1" ||
+  (process.env.FLAG_EMAIL_CHANNEL || "").toLowerCase() === "true";
+
+const DEFAULT_FROM = process.env.EMAIL_FROM || "no-reply@yourdomain";
 
 export type ExecuteResult =
   | {
@@ -26,6 +33,7 @@ export type ExecuteResult =
       ok: false;
       channel: "email" | "webform";
       error: string;
+      hint?: string;
     };
 
 function isEmailPayload(x: BuiltDispatch): x is EmailPayload {
@@ -38,13 +46,43 @@ function isWebformPayload(x: BuiltDispatch): x is WebformPayload {
 
 export async function executeBuiltDispatch(
   built: BuiltDispatch,
-  opts?: { to?: string | string[]; from?: string },
+  opts?: {
+    to?: string | string[];
+    from?: string;
+    controller?: ControllerKey; // used to fetch contacts if no `to` is supplied
+  },
 ): Promise<ExecuteResult> {
   try {
     if (isEmailPayload(built)) {
-      // NOTE: You may want to pick "to" from controller registry or tenant config.
-      const to = Array.isArray(opts?.to) || typeof opts?.to === "string" ? opts?.to! : "privacy@example.com";
-      const from = opts?.from || "no-reply@yourdomain";
+      // Resolve recipient(s): explicit `to` wins; else try registry contacts; else fail fast (safe).
+      let to = opts?.to;
+      if (!to && opts?.controller) {
+        const entry = getControllerEntry(opts.controller);
+        if (entry?.contacts?.emails?.length) {
+          to = entry.contacts.emails;
+        }
+      }
+
+      if (!to) {
+        return {
+          ok: false,
+          channel: "email",
+          error: "email_recipient_missing",
+          hint: "Provide `to` or add contacts.emails[] in the registry/tenant config.",
+        };
+      }
+
+      if (!EMAIL_ENABLED && !opts?.to) {
+        // Keep safe default: block implicit sends unless flag enabled or caller explicitly provides `to`.
+        return {
+          ok: false,
+          channel: "email",
+          error: "email_channel_disabled",
+          hint: "Set FLAG_EMAIL_CHANNEL=1 or pass `to` explicitly for controlled sends.",
+        };
+      }
+
+      const from = opts?.from || DEFAULT_FROM;
       const res = await sendEmail({
         to,
         subject: built.subject,
