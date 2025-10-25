@@ -1,80 +1,101 @@
 // src/lib/controllers/registry.ts
-/* Controller Registry Facade
-   - Wraps your existing defaults (lib/controllers/meta.ts),
-     DB overrides (lib/controllers/store.ts),
-     and policy synthesizer (src/agents/policy.ts).
-   - Presents a stable API for the dispatcher and ops.
-*/
-import type { ControllerMeta } from "@/lib/controllers/meta";
-import { getDefaultControllerMeta } from "@/lib/controllers/meta";
-import { loadControllerMeta } from "@/lib/controllers/store";
-import type { ControllerPolicy, Channel } from "@/src/agents/policy";
+/* Controller Registry: central policy, rate limits, and channel prefs.
+   Non-breaking: pure exports. Dispatcher can opt-in to use these helpers. */
+
+import type { ControllerPolicy } from "@/src/agents/policy";
 import { synthesizePolicyForController } from "@/src/agents/policy";
-import { resolvePolicyByRegion, type LawKey } from "@/src/lib/policy/dsr";
 
-export type ControllerKey =
-  | "truecaller"
-  | "naukri"
-  | "olx"
-  | "foundit"
-  | "shine"
-  | "timesjobs"
-  | (string & {}); // allow future
+export type ControllerKey = "truecaller" | "naukri" | "olx";
 
-export type RegistryPolicy = ControllerPolicy & {
-  meta: ControllerMeta | null;
-  // placeholders for future rate & concurrency rules
-  rate?: { rpm?: number; burst?: number };
-  concurrency?: { max?: number };
+// Basic rate/concurrency policy used by ops/dispatcher.
+export type RatePolicy = {
+  rps: number;               // max requests per second
+  burst: number;             // token bucket burst
+  concurrency: number;       // max concurrent actions to this controller
+  retryBackoffMs: number[];  // exponential-ish backoff schedule
 };
 
-export async function getControllerMetaMerged(key: ControllerKey): Promise<ControllerMeta | null> {
-  const base = getDefaultControllerMeta(key);
-  const merged = await loadControllerMeta(key); // DB override
-  // loadControllerMeta already merges defaults; keep fallback just in case:
-  return merged ?? base;
+// Quirks can drive worker behavior (timeouts, captcha, etc.)
+export type ControllerQuirks = {
+  prefersHumanName?: boolean;
+  hasCaptcha?: boolean;
+  slowForm?: boolean;
+  localeHints?: string[];
+};
+
+// Channel preference from registry (policy determines final at runtime).
+export type ChannelPref = {
+  emailEnabled: boolean;
+  webformEnabled: boolean;
+  apiEnabled: boolean;
+};
+
+export type ControllerEntry = {
+  key: ControllerKey;
+  displayName: string;
+  rate: RatePolicy;
+  channels: ChannelPref;
+  quirks: ControllerQuirks;
+  // Optional static defaults (policy will merge DB overrides)
+  defaultPolicy?: Partial<ControllerPolicy>;
+};
+
+// Safe backoffs: 2s, 5s, 15s, 60s
+const DEFAULT_BACKOFF = [2000, 5000, 15000, 60000];
+
+const REGISTRY: Record<ControllerKey, ControllerEntry> = {
+  truecaller: {
+    key: "truecaller",
+    displayName: "Truecaller",
+    rate: { rps: 0.2, burst: 1, concurrency: 1, retryBackoffMs: DEFAULT_BACKOFF },
+    channels: { emailEnabled: false, webformEnabled: true, apiEnabled: false },
+    quirks: { prefersHumanName: true, hasCaptcha: true, slowForm: true, localeHints: ["en"] },
+    defaultPolicy: { slas: { targetMin: 180 } },
+  },
+  naukri: {
+    key: "naukri",
+    displayName: "Naukri.com",
+    rate: { rps: 0.5, burst: 2, concurrency: 2, retryBackoffMs: DEFAULT_BACKOFF },
+    channels: { emailEnabled: true, webformEnabled: false, apiEnabled: false },
+    quirks: { prefersHumanName: true, localeHints: ["en"] },
+    defaultPolicy: { slas: { targetMin: 180 } },
+  },
+  olx: {
+    key: "olx",
+    displayName: "OLX",
+    rate: { rps: 0.3, burst: 1, concurrency: 1, retryBackoffMs: DEFAULT_BACKOFF },
+    channels: { emailEnabled: false, webformEnabled: true, apiEnabled: false },
+    quirks: { hasCaptcha: true, slowForm: true, localeHints: ["en"] },
+    defaultPolicy: { slas: { targetMin: 180 } },
+  },
+};
+
+export function listControllers(): ControllerEntry[] {
+  return Object.values(REGISTRY);
 }
 
-/** Region helper (tenant/subscriber config should map into this eventually) */
-export function resolveLaw(regionOrLaw: string | LawKey) {
-  return resolvePolicyByRegion(regionOrLaw);
+export function getControllerEntry(key: ControllerKey): ControllerEntry {
+  return REGISTRY[key];
 }
 
-/** Main entry: produce a runtime policy (preferred channel + allowed, SLA, artifacts, identity hints). */
-export async function getControllerPolicy(
-  key: ControllerKey,
-  opts?: { region?: string | LawKey }
-): Promise<RegistryPolicy | null> {
-  const meta = await getControllerMetaMerged(key);
-  if (!meta) return null;
-
-  const policy = await synthesizePolicyForController(key);
-  const law = opts?.region ? resolvePolicyByRegion(opts.region) : null;
-
-  // lightweight placeholders—wire real limits later from DB or JSON
-  const rate = { rpm: 30, burst: 10 };
-  const concurrency = { max: 2 };
-
-  return {
-    ...policy,
-    meta,
-    rate,
-    concurrency,
-  };
+// Async, DB-aware policy resolution for a controller.
+export async function getControllerPolicy(key: ControllerKey): Promise<ControllerPolicy | null> {
+  return synthesizePolicyForController(key);
 }
 
-/** Channel picker: respects preferred → allowed fallback (email → webform or webform → email). */
-export function pickNextChannel(
-  preferred: Channel,
-  allowed: Channel[],
-  attempted?: Channel[]
-): Channel | null {
-  const tried = new Set(attempted ?? []);
-  // try preferred first
-  if (!tried.has(preferred) && allowed.includes(preferred)) return preferred;
-  // then any other allowed
-  for (const ch of allowed) {
-    if (!tried.has(ch)) return ch;
-  }
-  return null;
+// Helper to choose the primary channel from registry + policy.
+export async function choosePrimaryChannel(key: ControllerKey): Promise<"email" | "webform" | "api"> {
+  const entry = getControllerEntry(key);
+  const policy = await getControllerPolicy(key);
+  const policyPreferred = policy?.preferredChannel;
+
+  // If policy prefers a disabled channel, fall back to the first enabled in priority order
+  const enabled = [
+    entry.channels.emailEnabled ? "email" : null,
+    entry.channels.webformEnabled ? "webform" : null,
+    entry.channels.apiEnabled ? "api" : null,
+  ].filter(Boolean) as Array<"email" | "webform" | "api">;
+
+  if (policyPreferred && enabled.includes(policyPreferred)) return policyPreferred;
+  return enabled[0] ?? "webform";
 }
