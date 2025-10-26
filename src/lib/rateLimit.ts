@@ -6,15 +6,21 @@
  * ✅ Backward compatible: preserves `checkRate(key)` export
  * ✅ Convenience helpers: `rateLimitByKey`, `tryConsume`, `tooMany`
  *
- * Usage in a server route (runtime = "nodejs"):
- *   import { rateLimitByKey, tooMany } from "@/lib/ratelimit";
- *   const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "0.0.0.0";
- *   const { allowed, remaining, reset } = await rateLimitByKey(`dispatch:${ip}`, { max: 20, windowSec: 60 });
- *   if (!allowed) return tooMany({ remaining, reset });
+ * NOTE: Your repo uses this file name with a capital "L" (`rateLimit.ts`).
+ * If you also have `src/lib/ratelimit.ts`, delete it to avoid duplicate modules.
  */
 
-import { Ratelimit, type LimitResult } from "@upstash/ratelimit";
+import { Ratelimit } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
+
+/** Shape returned by Upstash ratelimit.limit(...) */
+type UpstashLimitResult = {
+  success: boolean;
+  limit: number;
+  remaining: number;
+  reset: number; // epoch seconds
+  pending?: number;
+};
 
 /** Whether Upstash is configured (otherwise, helpers will fail-open / allow). */
 export const limiterEnabled =
@@ -69,21 +75,24 @@ function getLimiter(opts?: { max?: number; windowSec?: number; prefix?: string }
  * Backward-compatible API (kept to avoid breaking existing imports).
  * Default: 60 requests / 60s window per key (configurable via ENV).
  *
- * Returns the raw Upstash LimitResult when enabled, or `{ success: true }` when disabled.
+ * Returns the raw Upstash-like result when enabled, or `{ success: true }` when disabled.
  */
 export async function checkRate(
   key: string,
   opts?: { max?: number; windowSec?: number; prefix?: string }
-): Promise<LimitResult | { success: true }> {
+): Promise<UpstashLimitResult | { success: true }> {
   const limiter = getLimiter(opts);
   if (!limiter) return { success: true };
-  return limiter.limit(key);
+  // Upstash typings don't export a named `LimitResult` in all versions;
+  // we normalize to our local `UpstashLimitResult`.
+  const res = (await limiter.limit(key)) as UpstashLimitResult;
+  return res;
 }
 
 type RateLimitResult = {
   allowed: boolean;
   remaining: number;
-  reset: number; // epoch seconds until the window resets (Upstash returns a UNIX timestamp)
+  reset: number; // epoch seconds until the window resets
   limit?: number;
 };
 
@@ -101,11 +110,15 @@ export async function rateLimitByKey(
   if (!limiter) {
     const now = Math.floor(Date.now() / 1000);
     const windowSec = Math.max(1, Math.floor(opts?.windowSec ?? DEFAULT_WINDOW_SEC));
-    return { allowed: true, remaining: (opts?.max ?? DEFAULT_MAX), reset: now + windowSec, limit: opts?.max ?? DEFAULT_MAX };
+    return {
+      allowed: true,
+      remaining: opts?.max ?? DEFAULT_MAX,
+      reset: now + windowSec,
+      limit: opts?.max ?? DEFAULT_MAX,
+    };
   }
 
-  const res = await limiter.limit(key);
-  // Upstash returns: { success, limit, remaining, reset, pending? }
+  const res = (await limiter.limit(key)) as UpstashLimitResult;
   return {
     allowed: !!res.success,
     remaining: Math.max(0, Number(res.remaining ?? 0)),
@@ -139,7 +152,6 @@ export function tooMany(meta?: Partial<RateLimitResult>) {
     headers: {
       "retry-after": String(retryAfter),
       "content-type": "text/plain; charset=utf-8",
-      // Optional: add some observability hints for logs/CDN
       "x-rate-limit-remaining": String(Math.max(0, Number(meta?.remaining ?? 0))),
       ...(meta?.limit != null ? { "x-rate-limit-limit": String(meta.limit) } : {}),
       "x-rate-limit-reset": String(resetSec),
@@ -152,12 +164,8 @@ export function tooMany(meta?: Partial<RateLimitResult>) {
  * - UPSTASH_REDIS_REST_URL
  * - UPSTASH_REDIS_REST_TOKEN
  *
- * Optional tuning (read here; safe defaults provided):
+ * Optional tuning (safe defaults provided):
  * - RATE_LIMIT_MAX_PER_MIN   (default "60")
  * - RATE_LIMIT_WINDOW_SEC    (default "60")
  * - RATE_LIMIT_PREFIX        (default "unlistin:rl:")
- *
- * Where referenced:
- *  - Defaults are read at module load above (DEFAULT_MAX / DEFAULT_WINDOW_SEC / DEFAULT_PREFIX).
- *  - `getLimiter()` uses these to create the underlying Upstash limiter.
  * ---------------------------------------------------------------------- */
