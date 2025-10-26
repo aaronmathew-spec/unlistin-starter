@@ -1,30 +1,33 @@
 // app/ops/authz/list/export/route.ts
-// CSV export of authorization records (server-only)
-
 import { NextResponse } from "next/server";
 import { listAuthorizations } from "@/src/lib/authz/store";
 
 export const runtime = "nodejs";
 
-function csvEscape(v: unknown) {
-  const s = String(v ?? "");
-  if (s.includes(",") || s.includes("\n") || s.includes('"')) {
-    return `"${s.replace(/"/g, '""')}"`;
-  }
-  return s;
+function toCSVRow(fields: Array<string | number | null | undefined>): string {
+  return fields
+    .map((v) => {
+      if (v === null || v === undefined) return "";
+      const s = String(v);
+      if (/[,"\n]/.test(s)) {
+        return `"${s.replace(/"/g, '""')}"`;
+      }
+      return s;
+    })
+    .join(",");
 }
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
-  const q = searchParams.get("q");
-  const limit = Math.max(1, Math.min(1000, Number(searchParams.get("limit") || "1000") || 1000));
+  const q = (searchParams.get("q") || "").trim() || null;
+  const limit = Math.max(1, Math.min(1000, Number(searchParams.get("limit") || "500") || 500));
+  const offset = Math.max(0, Number(searchParams.get("offset") || "0") || 0);
 
-  // matches store API: object arg returning { rows, total }
-  const { rows } = await listAuthorizations({ search: q || null, limit, offset: 0 });
+  // Use the object signature → we need rows + total for UX if desired
+  const { rows } = await listAuthorizations({ search: q, limit, offset });
 
   const header = [
     "id",
-    "subject_id",
     "subject_full_name",
     "subject_email",
     "subject_phone",
@@ -33,34 +36,31 @@ export async function GET(req: Request) {
     "signed_at",
     "manifest_hash",
     "created_at",
-  ].join(",");
+  ];
 
-  const body = rows
-    .map((r) =>
-      [
-        r.id,
-        (r as any).subject_id ?? "",
-        r.subject_full_name ?? "",
-        r.subject_email ?? "",
-        r.subject_phone ?? "",
-        r.region ?? "",
-        r.signer_name ?? "",
-        (r as any).signed_at ?? "",
-        r.manifest_hash ?? "",
-        (r as any).created_at ?? "",
-      ]
-        .map(csvEscape)
-        .join(","),
-    )
-    .join("\n");
+  const lines = [toCSVRow(header)];
+  for (const r of rows) {
+    lines.push(
+      toCSVRow([
+        (r as any).id,
+        (r as any).subject_full_name,
+        (r as any).subject_email,
+        (r as any).subject_phone,
+        (r as any).region,
+        (r as any).signer_name,
+        (r as any).signed_at,
+        (r as any).manifest_hash,
+        (r as any).created_at,
+      ]),
+    );
+  }
 
-  const csv = `${header}\n${body}\n`;
-
+  const csv = lines.join("\n");
   return new NextResponse(csv, {
     status: 200,
     headers: {
       "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": 'attachment; filename="authorizations.csv"',
+      "Content-Disposition": `attachment; filename="authorizations_export.csv"`,
       "Cache-Control": "no-store",
     },
   });
