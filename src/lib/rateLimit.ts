@@ -6,21 +6,12 @@
  * ✅ Backward compatible: preserves `checkRate(key)` export
  * ✅ Convenience helpers: `rateLimitByKey`, `tryConsume`, `tooMany`
  *
- * NOTE: Your repo uses this file name with a capital "L" (`rateLimit.ts`).
- * If you also have `src/lib/ratelimit.ts`, delete it to avoid duplicate modules.
+ * NOTE: File name uses capital "L" (`rateLimit.ts`). Ensure you don't also have
+ * `src/lib/ratelimit.ts` in the repo to avoid duplicate/conflicting modules.
  */
 
-import { Ratelimit } from "@upstash/ratelimit";
+import { Ratelimit, type RatelimitResponse } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
-
-/** Shape returned by Upstash ratelimit.limit(...) */
-type UpstashLimitResult = {
-  success: boolean;
-  limit: number;
-  remaining: number;
-  reset: number; // epoch seconds
-  pending?: number;
-};
 
 /** Whether Upstash is configured (otherwise, helpers will fail-open / allow). */
 export const limiterEnabled =
@@ -75,17 +66,16 @@ function getLimiter(opts?: { max?: number; windowSec?: number; prefix?: string }
  * Backward-compatible API (kept to avoid breaking existing imports).
  * Default: 60 requests / 60s window per key (configurable via ENV).
  *
- * Returns the raw Upstash-like result when enabled, or `{ success: true }` when disabled.
+ * Returns the raw Upstash `RatelimitResponse` when enabled,
+ * or `{ success: true }` when disabled (NO-OP).
  */
 export async function checkRate(
   key: string,
   opts?: { max?: number; windowSec?: number; prefix?: string }
-): Promise<UpstashLimitResult | { success: true }> {
+): Promise<RatelimitResponse | { success: true }> {
   const limiter = getLimiter(opts);
   if (!limiter) return { success: true };
-  // Upstash typings don't export a named `LimitResult` in all versions;
-  // we normalize to our local `UpstashLimitResult`.
-  const res = (await limiter.limit(key)) as UpstashLimitResult;
+  const res = await limiter.limit(key); // type: RatelimitResponse
   return res;
 }
 
@@ -118,7 +108,7 @@ export async function rateLimitByKey(
     };
   }
 
-  const res = (await limiter.limit(key)) as UpstashLimitResult;
+  const res = await limiter.limit(key); // RatelimitResponse
   return {
     allowed: !!res.success,
     remaining: Math.max(0, Number(res.remaining ?? 0)),
