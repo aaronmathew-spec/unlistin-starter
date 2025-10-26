@@ -4,19 +4,26 @@ import { NextResponse } from "next/server";
 
 /**
  * ==========================
- * Ops access gate (simple & robust)
+ * Paths / constants
  * ==========================
- * Protects /ops/* with an HTTP-only cookie ("ops") that must match OPS_DASHBOARD_TOKEN.
- * - /ops/login is always allowed (to set the cookie).
- * - API security is separate; this only gates pages under /ops.
  */
 const OPS_COOKIE = "ops";
 const OPS_LOGIN_PATH = "/ops/login";
+const CRON_PATH = "/api/ops/targets/dispatch";
 
+/**
+ * ==========================
+ * Route helpers
+ * ==========================
+ */
 function needsOpsGate(pathname: string): boolean {
   if (!pathname.startsWith("/ops")) return false;
   if (pathname === OPS_LOGIN_PATH) return false; // allow the login page itself
   return true;
+}
+
+function isCronPath(pathname: string): boolean {
+  return pathname === CRON_PATH;
 }
 
 /**
@@ -115,8 +122,34 @@ function applySecurityHeaders(res: NextResponse) {
   return res;
 }
 
+/**
+ * ==========================
+ * Middleware
+ * ==========================
+ */
 export function middleware(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
+
+  // ---- Edge guard for cron-only endpoint (header secret) ----
+  if (isCronPath(pathname)) {
+    // Allow preflight for good measure
+    if (req.method === "OPTIONS") {
+      const pre = new NextResponse(null, { status: 204 });
+      return applySecurityHeaders(pre);
+    }
+
+    const expected = (process.env.SECURE_CRON_SECRET || "").trim();
+    const provided = (req.headers.get("x-secure-cron") || "").trim();
+
+    if (!expected || !provided || expected !== provided) {
+      const deny = NextResponse.json(
+        { ok: false, error: "unauthorized_cron" },
+        { status: 401 },
+      );
+      return applySecurityHeaders(deny);
+    }
+    // fall-through to apply headers and continue
+  }
 
   // ---- Ops gate (only for /ops pages) ----
   if (needsOpsGate(pathname)) {
