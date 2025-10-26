@@ -2,6 +2,7 @@
 // Server-rendered list of Authorization records (no client JS)
 
 import { listAuthorizations } from "@/src/lib/authz/store";
+import type { AuthorizationRecord } from "@/src/lib/authz/types";
 
 export const dynamic = "force-dynamic";
 
@@ -25,29 +26,14 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
   const limit = Math.max(1, Math.min(100, Number(get(searchParams, "limit") || "20") || 20));
   const offset = (page - 1) * limit;
 
-  // NOTE: matches current store API: listAuthorizations(limit, offset) -> AuthorizationRecord[]
-  const rowsRaw = await listAuthorizations(limit, offset);
+  // ✅ Current store API: listAuthorizations({ search, limit, offset }) -> { rows, total }
+  const { rows, total } = await listAuthorizations({
+    search: q || null,
+    limit,
+    offset,
+  });
 
-  // Optional in-memory filtering if q provided (best-effort; does not affect server pagination)
-  const rows = q
-    ? rowsRaw.filter((r) => {
-        const hay = [
-          r.subject_full_name || "",
-          r.subject_email || "",
-          r.subject_phone || "",
-          r.signer_name || "",
-          r.region || "",
-          r.manifest_hash || "",
-        ]
-          .join(" ")
-          .toLowerCase();
-        return hay.includes(q.toLowerCase());
-      })
-    : rowsRaw;
-
-  // We don’t know total count in this paged API; show a best-effort label.
-  const total = rows.length + (page > 1 ? (page - 1) * limit : 0);
-  const pages = Math.max(1, page + (rows.length === limit ? 1 : 0));
+  const pages = Math.max(1, Math.ceil(total / limit));
 
   const mkHref = (p: number) => {
     const params = new URLSearchParams();
@@ -56,14 +42,6 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
     params.set("limit", String(limit));
     return `/ops/authz/list?${params.toString()}`;
   };
-
-  const exportHref = (() => {
-    const params = new URLSearchParams();
-    if (q) params.set("q", q);
-    params.set("limit", String(limit));
-    params.set("offset", String(offset));
-    return `/ops/authz/list/export?${params.toString()}`;
-  })();
 
   return (
     <div style={{ padding: 24, maxWidth: 1100, margin: "0 auto" }}>
@@ -87,19 +65,6 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
             }}
           >
             + New Authorization
-          </a>
-          <a
-            href={exportHref}
-            style={{
-              textDecoration: "none",
-              border: "1px solid #e5e7eb",
-              padding: "8px 12px",
-              borderRadius: 8,
-              fontWeight: 600,
-              background: "white",
-            }}
-          >
-            ⭳ Export CSV
           </a>
           <a
             href="/ops"
@@ -183,7 +148,7 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
             fontWeight: 600,
           }}
         >
-          Results ({rows.length} shown)
+          Results ({rows.length} of {total})
         </div>
         <div style={{ overflowX: "auto" }}>
           <table
@@ -207,7 +172,7 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
             </thead>
             <tbody>
               {rows.length ? (
-                rows.map((r) => (
+                rows.map((r: AuthorizationRecord) => (
                   <tr key={r.id} style={{ borderTop: "1px solid #e5e7eb" }}>
                     <td style={{ padding: 12 }}>
                       <a
@@ -217,9 +182,7 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
                         {mono(r.id)}
                       </a>
                     </td>
-                    <td style={{ padding: 12 }}>
-                      {r.subject_full_name}
-                    </td>
+                    <td style={{ padding: 12 }}>{r.subject_full_name}</td>
                     <td style={{ padding: 12, whiteSpace: "nowrap" }}>
                       {r.subject_email ? <>{r.subject_email}</> : "—"}
                       {r.subject_phone ? <> · {r.subject_phone}</> : null}
@@ -255,7 +218,7 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
           }}
         >
           <div style={{ color: "#6b7280", fontSize: 12 }}>
-            Page {page} of {pages} · Showing {rows.length} (best-effort)
+            Page {page} of {pages} · Showing {rows.length} / {total}
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <a
