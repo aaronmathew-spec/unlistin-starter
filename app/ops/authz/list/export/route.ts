@@ -1,6 +1,8 @@
 // app/ops/authz/list/export/route.ts
 // Exports Authorization records as CSV.
-// Matches current store API: listAuthorizations(limit) -> AuthorizationRecord[]
+// Matches current store API:
+//   listAuthorizations({ search: string|null, limit: number, offset: number })
+//   -> { rows: AuthorizationRecord[]; total: number }
 
 import { NextResponse } from "next/server";
 import { listAuthorizations } from "@/src/lib/authz/store";
@@ -17,7 +19,6 @@ function get(sp: SP, k: string) {
 
 function csvEscape(v: unknown): string {
   const s = v === null || v === undefined ? "" : String(v);
-  // Escape double-quotes by doubling them, wrap in quotes if needed
   const needsQuotes = s.includes(",") || s.includes("\n") || s.includes('"');
   const inner = s.replace(/"/g, '""');
   return needsQuotes ? `"${inner}"` : inner;
@@ -59,29 +60,21 @@ function toCsv(rows: AuthorizationRecord[]): string {
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
-  const q = get(searchParams as unknown as SP, "q");
-  const limit = Math.max(1, Math.min(10000, Number(get(searchParams as any, "limit") || "1000") || 1000));
+  const q = get(searchParams as unknown as SP, "q") || null;
+
+  const limit = Math.max(
+    1,
+    Math.min(10000, Number(get(searchParams as any, "limit") || "1000") || 1000),
+  );
   const page = Math.max(1, Number(get(searchParams as any, "page") || "1") || 1);
   const offset = (page - 1) * limit;
 
-  // NOTE: matches current store API (single arg)
-  const rowsRaw = await listAuthorizations(limit);
+  // Use the current store API (object arg)
+  const { rows } = await listAuthorizations({ search: q, limit, offset });
 
-  // Optional filter
-  const rowsFiltered = q
-    ? rowsRaw.filter((r) => {
-        const hay =
-          `${r.subject_full_name} ${r.subject_email ?? ""} ${r.subject_phone ?? ""} ${r.signer_name ?? ""} ${r.region ?? ""}`.toLowerCase();
-        return hay.includes(q.toLowerCase());
-      })
-    : rowsRaw;
-
-  // In-memory paging to keep the UI params consistent
-  const pageSlice = rowsFiltered.slice(offset, offset + limit);
-
-  const csv = toCsv(pageSlice);
-
+  const csv = toCsv(rows);
   const filename = `authz_export_${new Date().toISOString().replace(/[:.]/g, "-")}.csv`;
+
   return new NextResponse(csv, {
     headers: {
       "content-type": "text/csv; charset=utf-8",
