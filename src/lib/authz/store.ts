@@ -132,7 +132,7 @@ export async function createAuthorization(
         signed_at: input.signedAt,
         consent_text: input.consentText,
         manifest_hash: "", // set after we compute it
-      },
+      } as any,
     ])
     .select("*")
     .single();
@@ -158,7 +158,7 @@ export async function createAuthorization(
           path: storedPath,
           mime: a.mime,
           bytes: bytes.byteLength,
-        },
+        } as any,
       ])
       .select("*")
       .single();
@@ -180,13 +180,14 @@ export async function createAuthorization(
   // 4) Update manifest_hash in DB (fallback gracefully if integrity/hashHex absent)
   const hashHex =
     manifest?.integrity?.hashHex ??
+    // try common alternatives if builder changed
     (manifest as any)?.hashHex ??
     (manifest as any)?.integrityHash ??
     "";
 
   const { error: updErr } = await supa
     .from("authorizations")
-    .update({ manifest_hash: hashHex })
+    .update({ manifest_hash: hashHex } as any)
     .eq("id", row.id);
   if (updErr) {
     throw new Error(
@@ -199,81 +200,6 @@ export async function createAuthorization(
       ...(row as AuthorizationRecord),
       manifest_hash: hashHex,
     },
-    files,
-    manifest,
-  };
-}
-
-/** Attach evidence files to an existing authorization and recompute manifest */
-export async function attachAuthorizationEvidence(params: {
-  id: string;
-  uploads: Array<{ filename: string; mime: string; bytes: Uint8Array }>;
-}): Promise<{
-  record: AuthorizationRecord;
-  files: AuthorizationFileRecord[];
-  manifest: AuthorizationManifestLike;
-}> {
-  const supa = getAdmin();
-  const bucket = "authz";
-
-  // Ensure authz exists
-  const { data: row, error: rowErr } = await supa
-    .from("authorizations")
-    .select("*")
-    .eq("id", params.id)
-    .single();
-  if (rowErr || !row) throw new Error("authz_not_found");
-
-  // Insert files
-  for (const u of params.uploads) {
-    const safeName = u.filename.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const path = `${row.id}/${Date.now()}_${safeName}`;
-    const storedPath = await putFile(supa, bucket, path, u.bytes, u.mime);
-
-    const { error: ferr } = await supa
-      .from("authorization_files")
-      .insert([
-        {
-          authorization_id: row.id,
-          path: storedPath,
-          mime: u.mime,
-          bytes: u.bytes.byteLength,
-        },
-      ])
-      .select()
-      .single();
-    if (ferr) throw new Error(`authz_file_insert_failed:${ferr.message}`);
-  }
-
-  // Pull fresh files and rebuild manifest
-  const { data: frows, error: lerr } = await supa
-    .from("authorization_files")
-    .select("*")
-    .eq("authorization_id", row.id)
-    .order("created_at", { ascending: true });
-  if (lerr) throw new Error(`authz_files_list_failed:${lerr.message}`);
-
-  const files = (frows || []) as AuthorizationFileRecord[];
-  const evidenceRefs = toEvidenceRefs(supa, bucket, files);
-  const manifest = buildAuthorizationManifest({
-    record: row as AuthorizationRecord,
-    files: evidenceRefs,
-  }) as AuthorizationManifestLike;
-
-  const hashHex =
-    manifest?.integrity?.hashHex ??
-    (manifest as any)?.hashHex ??
-    (manifest as any)?.integrityHash ??
-    "";
-
-  const { error: updErr } = await supa
-    .from("authorizations")
-    .update({ manifest_hash: hashHex })
-    .eq("id", row.id);
-  if (updErr) throw new Error(`authz_manifest_hash_update_failed:${updErr.message}`);
-
-  return {
-    record: { ...(row as AuthorizationRecord), manifest_hash: hashHex },
     files,
     manifest,
   };
@@ -303,30 +229,68 @@ export async function getAuthorization(id: string): Promise<{
   };
 }
 
-/** Used by list page */
-export async function listAuthorizations(params: {
+/**
+ * listAuthorizations — flexible signature to match different callers.
+ *
+ * Overloads:
+ *   1) listAuthorizations(limit, offset?) => AuthorizationRecord[]
+ *   2) listAuthorizations({ search, limit, offset }) =>
+ *        { rows: AuthorizationRecord[]; total: number }
+ */
+export async function listAuthorizations(
+  limit: number,
+  offset?: number,
+): Promise<AuthorizationRecord[]>;
+export async function listAuthorizations(args: {
   search: string | null;
   limit: number;
   offset: number;
-}): Promise<{ rows: AuthorizationRecord[]; total: number }> {
+}): Promise<{ rows: AuthorizationRecord[]; total: number }>;
+export async function listAuthorizations(
+  a: number | { search: string | null; limit: number; offset: number },
+  b?: number,
+): Promise<AuthorizationRecord[] | { rows: AuthorizationRecord[]; total: number }> {
   const supa = getAdmin();
 
-  let q = supa.from("authorizations").select("*", { count: "exact" }).order("created_at", { ascending: false });
+  // Shape #2 — { search, limit, offset } -> rows + total (for exports and pagers)
+  if (typeof a === "object") {
+    const { search, limit, offset } = a;
+    let q = supa.from("authorizations").select("*", { count: "exact" }).order("created_at", { ascending: false });
 
-  if (params.search) {
-    const term = `%${params.search}%`;
-    q = q.or(
-      [
-        `subject_full_name.ilike.${term}`,
-        `subject_email.ilike.${term}`,
-        `subject_phone.ilike.${term}`,
-        `signer_name.ilike.${term}`,
-      ].join(","),
-    );
+    if (search && search.trim()) {
+      const s = `%${search.trim()}%`;
+      // best-effort OR across common columns
+      q = q.or(
+        [
+          `subject_full_name.ilike.${s}`,
+          `subject_email.ilike.${s}`,
+          `subject_phone.ilike.${s}`,
+          `signer_name.ilike.${s}`,
+          `region.ilike.${s}`,
+          `id.ilike.${s}`,
+        ].join(","),
+      );
+    }
+
+    const { data, error, count } = await q.range(offset, offset + limit - 1);
+    if (error) throw new Error(`authz_list_failed:${error.message}`);
+
+    return {
+      rows: (data || []) as AuthorizationRecord[],
+      total: count ?? (data?.length ?? 0),
+    };
   }
 
-  const { data, error, count } = await q.range(params.offset, params.offset + params.limit - 1);
-  if (error) throw new Error(`authz_list_failed:${error.message}`);
+  // Shape #1 — (limit, offset?) -> rows only (simple listings)
+  const limitNum = Math.max(1, a || 20);
+  const offsetNum = Math.max(0, b || 0);
 
-  return { rows: (data || []) as AuthorizationRecord[], total: count || 0 };
+  const { data, error } = await supa
+    .from("authorizations")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .range(offsetNum, offsetNum + limitNum - 1);
+
+  if (error) throw new Error(`authz_list_failed:${error.message}`);
+  return (data || []) as AuthorizationRecord[];
 }
