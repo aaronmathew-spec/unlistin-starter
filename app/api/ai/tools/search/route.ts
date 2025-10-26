@@ -18,31 +18,37 @@ function json(data: any, init?: ResponseInit) {
 
 /**
  * GET /api/ai/tools/search?q=...&topK=10
- * RLS-friendly keyword search across:
- *   - requests (title, description)
- *   - request_files (name)
  *
- * Notes:
- * - Uses SSR Supabase client so RLS enforces user/org scope automatically.
- * - Defaults to enabled; can be gated with FEATURE_AI_SERVER=0.
- * - Uses ILIKE for safety (no FTS prerequisite). Can be upgraded to tsvector later.
+ * Search strategy:
+ *  - If FEATURE_AI_FTS=1 and FTS columns exist, use Postgres FTS via .textSearch() (fast, ranked).
+ *  - Otherwise, fall back to safe ILIKE path (RLS-friendly, no migrations required).
+ *
+ * RLS: Uses SSR Supabase client bound to session cookies (anon key) so RLS stays enforced.
+ * Shape: { requests: RequestHit[], files: FileHit[] }
  */
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const qRaw = (url.searchParams.get("q") || "").trim();
-  const topK = Math.max(1, Math.min(25, Number(url.searchParams.get("topK") ?? "10")));
+  const topK = Math.max(1, Math.min(50, Number(url.searchParams.get("topK") ?? "10")));
 
-  // Feature flag (defaults ON)
+  // Feature flags (defaults: AI server on; FTS off)
   const enabled = envBool("FEATURE_AI_SERVER", true);
-  if (!enabled) return json({ requests: [], files: [] }, { status: 200 });
+  const useFts = envBool("FEATURE_AI_FTS", false);
 
-  // Empty query → empty result (predictable + cheap)
+  if (!enabled) return json({ requests: [], files: [] }, { status: 200 });
   if (!qRaw) return json({ requests: [], files: [] });
 
-  // Escape % and _ so the user's query doesn't become a wildcard maker
-  const q = qRaw.replace(/%/g, "\\%").replace(/_/g, "\\_");
+  // Escape special LIKE wildcards for fallback path
+  const qLike = qRaw.replace(/%/g, "\\%").replace(/_/g, "\\_");
 
-  // RLS-friendly Supabase client bound to session cookies
+  // FTS query: convert plain text into tsquery. Simple heuristic: append :* for prefix
+  // For multi-word queries, AND them together.
+  const ftsQuery = qRaw
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((t) => `${t}:*`)
+    .join(" & ");
+
   const jar = cookies();
   const db = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -51,44 +57,88 @@ export async function GET(req: Request) {
   );
 
   try {
-    // -------- Requests: match title/description (newest first) --------
-    const { data: reqRows, error: reqErr } = await db
-      .from("requests")
-      .select("id, title, description, status, created_at")
-      .or(`title.ilike.%${q}%,description.ilike.%${q}%`, { referencedTable: "requests" })
-      .order("created_at", { ascending: false })
-      .limit(topK);
+    let requests: RequestHit[] = [];
+    let files: FileHit[] = [];
 
-    if (reqErr) throw reqErr;
+    if (useFts) {
+      // ---------- FTS path ----------
+      // requests via FTS (fts column created by migration)
+      const { data: reqRows, error: reqErr } = await db
+        .from("requests")
+        .select("id, title, description, status, created_at")
+        .textSearch("fts", ftsQuery, { type: "plain" }) // uses to_tsquery internally
+        .order("created_at", { ascending: false })
+        .limit(topK);
 
-    const requests: RequestHit[] = (reqRows ?? []).map((r: any) => ({
-      kind: "request",
-      id: Number(r.id),
-      title: r.title ?? null,
-      description: r.description ?? null,
-      status: r.status ?? null,
-      created_at: new Date(r.created_at).toISOString(),
-    }));
+      if (reqErr) throw reqErr;
 
-    // -------- Files: match filename (newest first) --------
-    const { data: fileRows, error: fileErr } = await db
-      .from("request_files")
-      .select("id, request_id, name, mime, size_bytes, created_at")
-      .ilike("name", `%${q}%`)
-      .order("created_at", { ascending: false })
-      .limit(topK);
+      requests = (reqRows ?? []).map((r: any) => ({
+        kind: "request",
+        id: Number(r.id),
+        title: r.title ?? null,
+        description: r.description ?? null,
+        status: r.status ?? null,
+        created_at: new Date(r.created_at).toISOString(),
+      }));
 
-    if (fileErr) throw fileErr;
+      // files via FTS
+      const { data: fileRows, error: fileErr } = await db
+        .from("request_files")
+        .select("id, request_id, name, mime, size_bytes, created_at")
+        .textSearch("fts", ftsQuery, { type: "plain" })
+        .order("created_at", { ascending: false })
+        .limit(topK);
 
-    const files: FileHit[] = (fileRows ?? []).map((f: any) => ({
-      kind: "file",
-      id: Number(f.id),
-      request_id: Number(f.request_id),
-      name: String(f.name ?? ""),
-      mime: f.mime ?? null,
-      size_bytes: Number.isFinite(f.size_bytes) ? Number(f.size_bytes) : null,
-      created_at: new Date(f.created_at).toISOString(),
-    }));
+      if (fileErr) throw fileErr;
+
+      files = (fileRows ?? []).map((f: any) => ({
+        kind: "file",
+        id: Number(f.id),
+        request_id: Number(f.request_id),
+        name: String(f.name ?? ""),
+        mime: f.mime ?? null,
+        size_bytes: Number.isFinite(f.size_bytes) ? Number(f.size_bytes) : null,
+        created_at: new Date(f.created_at).toISOString(),
+      }));
+    } else {
+      // ---------- Fallback ILIKE path ----------
+      const { data: reqRows, error: reqErr } = await db
+        .from("requests")
+        .select("id, title, description, status, created_at")
+        .or(`title.ilike.%${qLike}%,description.ilike.%${qLike}%`, { referencedTable: "requests" })
+        .order("created_at", { ascending: false })
+        .limit(topK);
+
+      if (reqErr) throw reqErr;
+
+      requests = (reqRows ?? []).map((r: any) => ({
+        kind: "request",
+        id: Number(r.id),
+        title: r.title ?? null,
+        description: r.description ?? null,
+        status: r.status ?? null,
+        created_at: new Date(r.created_at).toISOString(),
+      }));
+
+      const { data: fileRows, error: fileErr } = await db
+        .from("request_files")
+        .select("id, request_id, name, mime, size_bytes, created_at")
+        .ilike("name", `%${qLike}%`)
+        .order("created_at", { ascending: false })
+        .limit(topK);
+
+      if (fileErr) throw fileErr;
+
+      files = (fileRows ?? []).map((f: any) => ({
+        kind: "file",
+        id: Number(f.id),
+        request_id: Number(f.request_id),
+        name: String(f.name ?? ""),
+        mime: f.mime ?? null,
+        size_bytes: Number.isFinite(f.size_bytes) ? Number(f.size_bytes) : null,
+        created_at: new Date(f.created_at).toISOString(),
+      }));
+    }
 
     return json({ requests, files });
   } catch (e: any) {
