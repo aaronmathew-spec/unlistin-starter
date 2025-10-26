@@ -2,7 +2,6 @@
 // Server-rendered list of Authorization records (no client JS)
 
 import { listAuthorizations } from "@/src/lib/authz/store";
-import type { AuthorizationRecord } from "@/src/lib/authz/types";
 
 export const dynamic = "force-dynamic";
 
@@ -26,13 +25,8 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
   const limit = Math.max(1, Math.min(100, Number(get(searchParams, "limit") || "20") || 20));
   const offset = (page - 1) * limit;
 
-  // ✅ Current store API: listAuthorizations({ search, limit, offset }) -> { rows, total }
-  const { rows, total } = await listAuthorizations({
-    search: q || null,
-    limit,
-    offset,
-  });
-
+  // NOTE: matches current store API: listAuthorizations({ search, limit, offset }) -> { rows, total }
+  const { rows, total } = await listAuthorizations({ search: q || null, limit, offset });
   const pages = Math.max(1, Math.ceil(total / limit));
 
   const mkHref = (p: number) => {
@@ -42,6 +36,13 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
     params.set("limit", String(limit));
     return `/ops/authz/list?${params.toString()}`;
   };
+
+  const exportHref = (() => {
+    const params = new URLSearchParams();
+    if (q) params.set("q", q);
+    params.set("limit", String(limit));
+    return `/ops/authz/list/export?${params.toString()}`;
+  })();
 
   return (
     <div style={{ padding: 24, maxWidth: 1100, margin: "0 auto" }}>
@@ -53,6 +54,21 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
           </p>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
+          <a
+            href={exportHref}
+            style={{
+              textDecoration: "none",
+              border: "1px solid #e5e7eb",
+              padding: "8px 12px",
+              borderRadius: 8,
+              fontWeight: 600,
+              background: "white",
+            }}
+            target="_blank"
+            rel="noreferrer"
+          >
+            ⭳ Export CSV
+          </a>
           <a
             href="/ops/authz/new"
             style={{
@@ -154,7 +170,7 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
           <table
             style={{
               width: "100%",
-              minWidth: 900,
+              minWidth: 980,
               borderCollapse: "separate",
               borderSpacing: 0,
             }}
@@ -167,37 +183,76 @@ export default async function Page({ searchParams }: { searchParams: SP }) {
                 <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Signer</th>
                 <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Region</th>
                 <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Manifest Hash</th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Hash Status</th>
                 <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Created</th>
               </tr>
             </thead>
             <tbody>
               {rows.length ? (
-                rows.map((r: AuthorizationRecord) => (
-                  <tr key={r.id} style={{ borderTop: "1px solid #e5e7eb" }}>
-                    <td style={{ padding: 12 }}>
-                      <a
-                        href={`/ops/authz/${r.id}`}
-                        style={{ textDecoration: "none", fontWeight: 700 }}
-                      >
-                        {mono(r.id)}
-                      </a>
-                    </td>
-                    <td style={{ padding: 12 }}>{r.subject_full_name}</td>
-                    <td style={{ padding: 12, whiteSpace: "nowrap" }}>
-                      {r.subject_email ? <>{r.subject_email}</> : "—"}
-                      {r.subject_phone ? <> · {r.subject_phone}</> : null}
-                    </td>
-                    <td style={{ padding: 12 }}>{r.signer_name || "—"}</td>
-                    <td style={{ padding: 12 }}>{r.region || "—"}</td>
-                    <td style={{ padding: 12 }}>{r.manifest_hash ? mono(r.manifest_hash) : "—"}</td>
-                    <td style={{ padding: 12 }}>
-                      {new Date((r as any).created_at as string).toLocaleString()}
-                    </td>
-                  </tr>
-                ))
+                rows.map((r) => {
+                  const hasHash = !!r.manifest_hash && r.manifest_hash.length > 0;
+                  const chip = hasHash ? (
+                    <span
+                      style={{
+                        display: "inline-block",
+                        padding: "2px 8px",
+                        borderRadius: 9999,
+                        fontSize: 12,
+                        fontWeight: 600,
+                        background: "#ecfdf5",
+                        color: "#065f46",
+                        border: "1px solid #d1fae5",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      Hash set
+                    </span>
+                  ) : (
+                    <span
+                      style={{
+                        display: "inline-block",
+                        padding: "2px 8px",
+                        borderRadius: 9999,
+                        fontSize: 12,
+                        fontWeight: 600,
+                        background: "#fff7ed",
+                        color: "#92400e",
+                        border: "1px solid #fed7aa",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      Missing
+                    </span>
+                  );
+
+                  return (
+                    <tr key={r.id} style={{ borderTop: "1px solid #e5e7eb" }}>
+                      <td style={{ padding: 12 }}>
+                        <a
+                          href={`/ops/authz/${r.id}`}
+                          style={{ textDecoration: "none", fontWeight: 700 }}
+                        >
+                          {mono(r.id)}
+                        </a>
+                      </td>
+                      <td style={{ padding: 12 }}>{r.subject_full_name}</td>
+                      <td style={{ padding: 12, whiteSpace: "nowrap" }}>
+                        {r.subject_email ? <>{r.subject_email}</> : "—"}
+                        {r.subject_phone ? <> · {r.subject_phone}</> : null}
+                      </td>
+                      <td style={{ padding: 12 }}>{r.signer_name || "—"}</td>
+                      <td style={{ padding: 12 }}>{r.region || "—"}</td>
+                      <td style={{ padding: 12 }}>{r.manifest_hash ? mono(r.manifest_hash) : "—"}</td>
+                      <td style={{ padding: 12 }}>{chip}</td>
+                      <td style={{ padding: 12 }}>
+                        {new Date((r as any).created_at as string).toLocaleString()}
+                      </td>
+                    </tr>
+                  );
+                })
               ) : (
                 <tr>
-                  <td colSpan={7} style={{ padding: 24, textAlign: "center", color: "#6b7280" }}>
+                  <td colSpan={8} style={{ padding: 24, textAlign: "center", color: "#6b7280" }}>
                     No results.
                   </td>
                 </tr>
