@@ -1,76 +1,92 @@
 // app/ops/authz/list/export/route.ts
+// Exports Authorization records as CSV.
+// Matches current store API: listAuthorizations(limit) -> AuthorizationRecord[]
+
 import { NextResponse } from "next/server";
 import { listAuthorizations } from "@/src/lib/authz/store";
+import type { AuthorizationRecord } from "@/src/lib/authz/types";
 
-function csvEscape(s: string) {
-  const needsQuote = /[",\n]/.test(s);
-  const v = s.replace(/"/g, '""');
-  return needsQuote ? `"${v}"` : v;
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
+type SP = Record<string, string | string[] | undefined>;
+
+function get(sp: SP, k: string) {
+  return String(sp[k] || "").trim();
+}
+
+function csvEscape(v: unknown): string {
+  const s = v === null || v === undefined ? "" : String(v);
+  // Escape double-quotes by doubling them, wrap in quotes if needed
+  const needsQuotes = s.includes(",") || s.includes("\n") || s.includes('"');
+  const inner = s.replace(/"/g, '""');
+  return needsQuotes ? `"${inner}"` : inner;
+}
+
+function toCsv(rows: AuthorizationRecord[]): string {
+  const header = [
+    "id",
+    "subject_full_name",
+    "subject_email",
+    "subject_phone",
+    "region",
+    "signer_name",
+    "signed_at",
+    "manifest_hash",
+    "created_at",
+    "updated_at",
+  ];
+
+  const lines = rows.map((r) =>
+    [
+      r.id,
+      r.subject_full_name,
+      r.subject_email ?? "",
+      r.subject_phone ?? "",
+      r.region ?? "",
+      r.signer_name ?? "",
+      r.signed_at ? String(r.signed_at as unknown as string) : "",
+      r.manifest_hash ?? "",
+      (r as any).created_at ? String((r as any).created_at) : "",
+      (r as any).updated_at ? String((r as any).updated_at) : "",
+    ]
+      .map(csvEscape)
+      .join(","),
+  );
+
+  return [header.join(","), ...lines].join("\n");
 }
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
-  const q = (searchParams.get("q") || "").trim().toLowerCase();
-  const limit = Math.max(1, Math.min(1000, Number(searchParams.get("limit") || "200") || 200));
-  const offset = Math.max(0, Number(searchParams.get("offset") || "0") || 0);
+  const q = get(searchParams as unknown as SP, "q");
+  const limit = Math.max(1, Math.min(10000, Number(get(searchParams as any, "limit") || "1000") || 1000));
+  const page = Math.max(1, Number(get(searchParams as any, "page") || "1") || 1);
+  const offset = (page - 1) * limit;
 
-  // NOTE: matches store API (limit, offset) -> AuthorizationRecord[]
-  const rows = await listAuthorizations(limit, offset);
+  // NOTE: matches current store API (single arg)
+  const rowsRaw = await listAuthorizations(limit);
 
-  const filtered = q
-    ? rows.filter((r) => {
-        const hay = [
-          r.subject_full_name || "",
-          r.subject_email || "",
-          r.subject_phone || "",
-          r.signer_name || "",
-          r.region || "",
-          r.manifest_hash || "",
-        ]
-          .join(" ")
-          .toLowerCase();
-        return hay.includes(q);
+  // Optional filter
+  const rowsFiltered = q
+    ? rowsRaw.filter((r) => {
+        const hay =
+          `${r.subject_full_name} ${r.subject_email ?? ""} ${r.subject_phone ?? ""} ${r.signer_name ?? ""} ${r.region ?? ""}`.toLowerCase();
+        return hay.includes(q.toLowerCase());
       })
-    : rows;
+    : rowsRaw;
 
-  const header = [
-    "id",
-    "subject_id",
-    "subject_full_name",
-    "subject_email",
-    "subject_phone",
-    "signer_name",
-    "region",
-    "manifest_hash",
-    "created_at",
-  ];
+  // In-memory paging to keep the UI params consistent
+  const pageSlice = rowsFiltered.slice(offset, offset + limit);
 
-  const lines = [
-    header.join(","),
-    ...filtered.map((r) =>
-      [
-        r.id,
-        (r as any).subject_id ?? "",
-        r.subject_full_name ?? "",
-        r.subject_email ?? "",
-        r.subject_phone ?? "",
-        r.signer_name ?? "",
-        r.region ?? "",
-        r.manifest_hash ?? "",
-        (r as any).created_at ?? "",
-      ]
-        .map((x) => csvEscape(String(x ?? "")))
-        .join(","),
-    ),
-  ];
+  const csv = toCsv(pageSlice);
 
-  const csv = lines.join("\n");
+  const filename = `authz_export_${new Date().toISOString().replace(/[:.]/g, "-")}.csv`;
   return new NextResponse(csv, {
-    status: 200,
     headers: {
-      "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": `attachment; filename="authorizations_export.csv"`,
-      "Cache-Control": "no-store",
+      "content-type": "text/csv; charset=utf-8",
+      "content-disposition": `attachment; filename="${filename}"`,
+      "cache-control": "no-store",
     },
   });
 }
