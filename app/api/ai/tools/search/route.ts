@@ -17,29 +17,32 @@ function json(data: any, init?: ResponseInit) {
 }
 
 /**
- * GET /api/ai/tools/search?q=...
+ * GET /api/ai/tools/search?q=...&topK=10
  * RLS-friendly keyword search across:
  *   - requests (title, description)
  *   - request_files (name)
  *
  * Notes:
- * - Uses SSR Supabase client so RLS enforces org/user scope.
- * - If you later add tsvector columns, you can swap .ilike/.or for .textSearch.
- * - Feature gated with FEATURE_AI_SERVER (defaults to enabled).
+ * - Uses SSR Supabase client so RLS enforces user/org scope automatically.
+ * - Defaults to enabled; can be gated with FEATURE_AI_SERVER=0.
+ * - Uses ILIKE for safety (no FTS prerequisite). Can be upgraded to tsvector later.
  */
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const q = (url.searchParams.get("q") || "").trim();
+  const qRaw = (url.searchParams.get("q") || "").trim();
   const topK = Math.max(1, Math.min(25, Number(url.searchParams.get("topK") ?? "10")));
 
-  // Feature gate (defaults ON)
+  // Feature flag (defaults ON)
   const enabled = envBool("FEATURE_AI_SERVER", true);
   if (!enabled) return json({ requests: [], files: [] }, { status: 200 });
 
-  // Empty query → empty result for safety
-  if (!q) return json({ requests: [], files: [] });
+  // Empty query → empty result (predictable + cheap)
+  if (!qRaw) return json({ requests: [], files: [] });
 
-  // RLS-friendly Supabase client (scoped to user session cookies)
+  // Escape % and _ so the user's query doesn't become a wildcard maker
+  const q = qRaw.replace(/%/g, "\\%").replace(/_/g, "\\_");
+
+  // RLS-friendly Supabase client bound to session cookies
   const jar = cookies();
   const db = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -48,18 +51,17 @@ export async function GET(req: Request) {
   );
 
   try {
-    // ---------- Requests ----------
-    // Basic keyword match on title/description; newest first.
+    // -------- Requests: match title/description (newest first) --------
     const { data: reqRows, error: reqErr } = await db
       .from("requests")
       .select("id, title, description, status, created_at")
-      .or(`title.ilike.%${q}%,description.ilike.%${q}%`)
+      .or(`title.ilike.%${q}%,description.ilike.%${q}%`, { referencedTable: "requests" })
       .order("created_at", { ascending: false })
       .limit(topK);
 
     if (reqErr) throw reqErr;
 
-    const requests: RequestHit[] = (reqRows || []).map((r: any) => ({
+    const requests: RequestHit[] = (reqRows ?? []).map((r: any) => ({
       kind: "request",
       id: Number(r.id),
       title: r.title ?? null,
@@ -68,8 +70,7 @@ export async function GET(req: Request) {
       created_at: new Date(r.created_at).toISOString(),
     }));
 
-    // ---------- Files ----------
-    // Keyword match on filename; newest first.
+    // -------- Files: match filename (newest first) --------
     const { data: fileRows, error: fileErr } = await db
       .from("request_files")
       .select("id, request_id, name, mime, size_bytes, created_at")
@@ -79,7 +80,7 @@ export async function GET(req: Request) {
 
     if (fileErr) throw fileErr;
 
-    const files: FileHit[] = (fileRows || []).map((f: any) => ({
+    const files: FileHit[] = (fileRows ?? []).map((f: any) => ({
       kind: "file",
       id: Number(f.id),
       request_id: Number(f.request_id),
