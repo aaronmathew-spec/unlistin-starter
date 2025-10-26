@@ -6,11 +6,11 @@
  * ✅ Backward compatible: preserves `checkRate(key)` export
  * ✅ Convenience helpers: `rateLimitByKey`, `tryConsume`, `tooMany`
  *
- * NOTE: File name uses capital "L" (`rateLimit.ts`). Ensure you don't also have
- * `src/lib/ratelimit.ts` in the repo to avoid duplicate/conflicting modules.
+ * NOTE: Do not import Upstash's types (they vary by version). We normalize the
+ *       response shape ourselves to avoid type drift across package versions.
  */
 
-import { Ratelimit, type RatelimitResponse } from "@upstash/ratelimit";
+import { Ratelimit } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
 
 /** Whether Upstash is configured (otherwise, helpers will fail-open / allow). */
@@ -62,20 +62,39 @@ function getLimiter(opts?: { max?: number; windowSec?: number; prefix?: string }
   return limiter;
 }
 
+/** Upstash response (normalized locally to avoid version/type drift). */
+type NormalizedLimit = {
+  success: boolean;
+  limit: number;
+  remaining: number;
+  reset: number; // epoch seconds
+};
+
+/** Convert any Upstash response shape into our stable NormalizedLimit. */
+function normalize(res: any, fallback: { limit: number; windowSec: number }): NormalizedLimit {
+  const nowSec = Math.floor(Date.now() / 1000);
+  return {
+    success: !!res?.success,
+    limit: Number.isFinite(res?.limit) ? Number(res.limit) : fallback.limit,
+    remaining: Math.max(0, Number(res?.remaining ?? 0)),
+    reset: Number.isFinite(res?.reset) ? Number(res.reset) : nowSec + fallback.windowSec,
+  };
+}
+
 /**
  * Backward-compatible API (kept to avoid breaking existing imports).
  * Default: 60 requests / 60s window per key (configurable via ENV).
  *
- * Returns the raw Upstash `RatelimitResponse` when enabled,
+ * Returns the raw (untyped) Upstash response when enabled,
  * or `{ success: true }` when disabled (NO-OP).
  */
 export async function checkRate(
   key: string,
   opts?: { max?: number; windowSec?: number; prefix?: string }
-): Promise<RatelimitResponse | { success: true }> {
+): Promise<any | { success: true }> {
   const limiter = getLimiter(opts);
   if (!limiter) return { success: true };
-  const res = await limiter.limit(key); // type: RatelimitResponse
+  const res = await limiter.limit(key); // don't type-import; shapes differ by package version
   return res;
 }
 
@@ -97,23 +116,22 @@ export async function rateLimitByKey(
   opts?: { max?: number; windowSec?: number; prefix?: string }
 ): Promise<RateLimitResult> {
   const limiter = getLimiter(opts);
+  const max = Math.max(1, Math.floor(opts?.max ?? DEFAULT_MAX));
+  const windowSec = Math.max(1, Math.floor(opts?.windowSec ?? DEFAULT_WINDOW_SEC));
+
   if (!limiter) {
     const now = Math.floor(Date.now() / 1000);
-    const windowSec = Math.max(1, Math.floor(opts?.windowSec ?? DEFAULT_WINDOW_SEC));
-    return {
-      allowed: true,
-      remaining: opts?.max ?? DEFAULT_MAX,
-      reset: now + windowSec,
-      limit: opts?.max ?? DEFAULT_MAX,
-    };
+    return { allowed: true, remaining: max, reset: now + windowSec, limit: max };
   }
 
-  const res = await limiter.limit(key); // RatelimitResponse
+  const raw = await limiter.limit(key);
+  const res = normalize(raw, { limit: max, windowSec });
+
   return {
     allowed: !!res.success,
-    remaining: Math.max(0, Number(res.remaining ?? 0)),
-    reset: Number(res.reset ?? Math.ceil(Date.now() / 1000)),
-    limit: Number(res.limit ?? (opts?.max ?? DEFAULT_MAX)),
+    remaining: res.remaining,
+    reset: res.reset,
+    limit: res.limit,
   };
 }
 
