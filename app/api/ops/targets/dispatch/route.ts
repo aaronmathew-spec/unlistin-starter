@@ -7,6 +7,7 @@ import { createLogger } from "@/lib/ops/logger";
 import { rateLimitByKey, tooMany } from "@/lib/rateLimit";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 type SubjectPayload = {
   fullName: string;
@@ -41,18 +42,21 @@ export async function POST(req: Request) {
   try {
     headers = assertSecureCron(req); // throws Response(401) if invalid
   } catch (e) {
-    // We can return the thrown Response directly, or map to NextResponse
     if (e instanceof Response) return e;
     return bad("unauthorized_cron", 403);
   }
 
   // --- 2) Rate limit per client IP (fails open if Upstash not configured) ---
   const clientIp = getClientIp(headers);
-  const { allowed, reset, remaining } = await rateLimitByKey(`ops:dispatch:${clientIp}`, {
-    max: 20,
-    windowSec: 60,
-  });
-  if (!allowed) return tooMany({ reset, remaining });
+  try {
+    const { allowed, reset, remaining, limit } = await rateLimitByKey(`ops:dispatch:${clientIp}`, {
+      max: 20,
+      windowSec: 60,
+    });
+    if (!allowed) return tooMany({ reset, remaining, limit });
+  } catch {
+    // fail-open if ratelimit not configured
+  }
 
   // --- 3) Parse/validate body ---
   let body: DispatchBody;
@@ -119,7 +123,7 @@ export async function POST(req: Request) {
 
       const t0 = Date.now();
       try {
-        const res = await Promise.race([
+        const res: any = await Promise.race([
           Promise.resolve(
             sendControllerRequest({
               controllerKey,
@@ -146,24 +150,24 @@ export async function POST(req: Request) {
         const elapsed = Date.now() - t0;
         log.info("targets_dispatch_item", {
           key: controllerKey,
-          channel: (res as any)?.channel,
-          ok: (res as any)?.ok,
-          providerId: (res as any)?.providerId || null,
-          error: (res as any)?.error || null,
-          idempotent: (res as any)?.idempotent ?? null,
+          channel: res?.channel ?? null,
+          ok: !!res?.ok,
+          providerId: res?.providerId || null,
+          error: res?.error || null,
+          idempotent: res?.idempotent ?? null,
           ms: elapsed,
         });
 
         return {
           key: controllerKey,
           name: controllerName,
-          ok: !!(res as any)?.ok,
-          channel: (res as any)?.channel ?? "webform",
-          providerId: (res as any)?.providerId ?? null,
-          error: (res as any)?.error ?? null,
-          note: (res as any)?.note ?? null,
-          idempotent: (res as any)?.idempotent ?? null,
-          hint: (res as any)?.hint ?? null,
+          ok: !!res?.ok,
+          channel: (res?.channel as "webform" | "email" | "portal" | "letter" | "fax" | undefined) ?? "webform",
+          providerId: (res?.providerId as string | null | undefined) ?? null,
+          error: (res?.error as string | null | undefined) ?? null,
+          note: (res?.note as string | null | undefined) ?? null,
+          idempotent: (res?.idempotent as "deduped" | "new" | null | undefined) ?? null,
+          hint: (res?.hint as string | null | undefined) ?? null,
         };
       } catch (e: unknown) {
         const elapsed = Date.now() - t0;
