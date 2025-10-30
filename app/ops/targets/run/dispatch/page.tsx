@@ -9,8 +9,9 @@ export const dynamic = "force-dynamic";
 type PlanItem = {
   key: string;
   name: string;
-  preferredChannel?: string;
-  allowedChannels?: string[];
+  preferredChannel?: string | null;
+  allowedChannels?: string[] | null;
+  category?: string | null;
 };
 
 type SubjectInput = {
@@ -40,17 +41,16 @@ function mono(v: string) {
 
 async function fetchPlanForSubject(s: SubjectInput): Promise<PlanItem[]> {
   const payload = {
+    // the API tolerates either 'subject' or 'fullName'
+    subject: s.fullName,
     fullName: s.fullName,
-    email: s.email ?? null,
-    phone: s.phone ?? null,
-    handles: s.handles ?? [],
     region: s.region ?? "IN",
-    fastLane: false,
   };
 
-  // Same API your Plan page uses; reuse to get authoritative names/keys.
-  const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL ?? ""}/api/targets/plan`, {
-    // When NEXT_PUBLIC_BASE_URL is empty (local), fall back to relative (Next runtime will resolve).
+  const base = process.env.NEXT_PUBLIC_BASE_URL ?? "";
+  const url = base ? `${base}/api/targets/plan` : `/api/targets/plan`;
+
+  const res = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload),
@@ -58,8 +58,17 @@ async function fetchPlanForSubject(s: SubjectInput): Promise<PlanItem[]> {
   }).catch(() => null);
 
   if (!res || !res.ok) return [];
-  const j = (await res.json()) as { ok: boolean; plan?: PlanItem[] };
-  return j.ok && Array.isArray(j.plan) ? j.plan : [];
+
+  // The API returns { ok, plan } — but also tolerate a bare array for safety.
+  let j: any;
+  try {
+    j = await res.json();
+  } catch {
+    return [];
+  }
+  if (Array.isArray(j)) return j as PlanItem[];
+  if (j && Array.isArray(j.plan)) return j.plan as PlanItem[];
+  return [];
 }
 
 function pickItems(all: PlanItem[], keys: string[]): { key: string; name: string }[] {
@@ -96,7 +105,10 @@ async function dispatchFanout(args: {
     items: args.items,
   };
 
-  const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL ?? ""}/api/ops/targets/dispatch`, {
+  const base = process.env.NEXT_PUBLIC_BASE_URL ?? "";
+  const url = base ? `${base}/api/ops/targets/dispatch` : `/api/ops/targets/dispatch`;
+
+  const res = await fetch(url, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -133,11 +145,11 @@ async function dispatchFanout(args: {
       key: string;
       name: string;
       ok: boolean;
-      channel: "webform" | "email" | "noop";
+      channel: "webform" | "email" | "noop" | null;
       providerId: string | null;
       error: string | null;
       note: string | null;
-      idempotent: "deduped" | "new" | null;
+      idempotent: string | null;
       hint: string | null;
     }>;
   };
