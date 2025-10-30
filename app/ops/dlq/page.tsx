@@ -2,6 +2,7 @@
 import { listDLQ } from "@/lib/ops/dlq";
 import { actionRetryDLQ } from "./actions";
 
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /** Small monospace pill used for terse values */
@@ -132,7 +133,7 @@ export default async function OpsDLQPage({
   }
 
   // Build an Export CSV link that mirrors current filters/limit.
-  // /api/ops/dlq/list now supports ?format=csv (see route code below).
+  // /api/ops/dlq/list now supports ?format=csv (ensure that route exists).
   const csvHref = `/api/ops/dlq/list?format=csv&limit=${encodeURIComponent(
     String(limit)
   )}${qChannel ? `&channel=${encodeURIComponent(qChannel)}` : ""}${
@@ -169,7 +170,7 @@ export default async function OpsDLQPage({
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <a
-            href="/ops/dispatch"
+            href="/ops/targets/run"
             style={{
               textDecoration: "none",
               border: "1px solid #e5e7eb",
@@ -178,7 +179,7 @@ export default async function OpsDLQPage({
               fontWeight: 600,
             }}
           >
-            ← Back to Dispatch
+            ← Back to Plan
           </a>
           <a
             href={csvHref}
@@ -206,6 +207,7 @@ export default async function OpsDLQPage({
           border: "1px solid #e5e7eb",
           borderRadius: 12,
           overflow: "hidden",
+          background: "white",
         }}
       >
         <div style={{ overflowX: "auto" }}>
@@ -255,9 +257,7 @@ export default async function OpsDLQPage({
                   r.payload?.subject?.phone ??
                   "-";
                 const error = r.error_code
-                  ? `${r.error_code}${
-                      r.error_note ? ` – ${r.error_note}` : ""
-                    }`
+                  ? `${r.error_code}${r.error_note ? ` – ${r.error_note}` : ""}`
                   : r.error_note || "-";
                 const payloadShort = safeJsonPreview(r.payload, 140);
 
@@ -266,7 +266,7 @@ export default async function OpsDLQPage({
                     <td style={{ padding: 12 }}>
                       {new Date(r.created_at).toLocaleString()}
                     </td>
-                    <td style={{ padding: 12 }}>{r.channel}</td>
+                    <td style={{ padding: 12 }}>{r.channel || "-"}</td>
                     <td style={{ padding: 12 }}>
                       {r.controller_key || "-"}
                     </td>
@@ -324,8 +324,7 @@ export default async function OpsDLQPage({
 
       {/* Footer */}
       <div style={{ marginTop: 14, fontSize: 12, color: "#6b7280" }}>
-        Retry is behind a feature flag. Set{" "}
-        <Mono>FLAG_DLQ_RETRY=1</Mono> to enable.
+        Retry is behind a feature flag. Set <Mono>FLAG_DLQ_RETRY=1</Mono> to enable.
       </div>
     </div>
   );
