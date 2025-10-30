@@ -6,6 +6,8 @@
     { "path": "/api/cron/dispatch", "schedule": "*/10 * * * *" },
     { "path": "/api/cron/auto-intake", "schedule": "*/5 * * * *" },
     { "path": "/api/cron/verify", "schedule": "*/30 * * * *" },
-    { "path": "/api/detect/changes", "schedule": "0 11 * * *" }
+    { "path": "/api/detect/changes", "schedule": "0 11 * * *" },
+
+    { "path": "/api/ops/webform/worker", "schedule": "*/2 * * * *" }
   ]
 }
