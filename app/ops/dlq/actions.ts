@@ -7,22 +7,28 @@ import { retryDLQ } from "@/lib/ops/dlq";
 
 /**
  * Server action to retry a DLQ item.
- * Uses your existing retry helper; redirects back with query status.
+ * Behind feature flag: FLAG_DLQ_RETRY=1
+ * Redirects back with query-string status so the UI can show a notice.
  */
 export async function actionRetryDLQ(fd: FormData) {
+  if (process.env.FLAG_DLQ_RETRY !== "1") {
+    redirect(`/ops/dlq?err=${encodeURIComponent("retry_disabled")}`);
+  }
+
   const id = String(fd.get("id") || "").trim();
   if (!id) {
     redirect(`/ops/dlq?err=${encodeURIComponent("missing_id")}`);
   }
+
   try {
     const res = await retryDLQ(id);
-    const note =
-      (res && (res as any).note) ||
-      (res && typeof res === "string" ? res : "enqueued");
-    redirect(`/ops/dlq?ok=1&note=${encodeURIComponent(String(note))}`);
+    if (res.ok) {
+      const note = (res as any).note || "retry_enqueued";
+      redirect(`/ops/dlq?ok=1&note=${encodeURIComponent(String(note))}`);
+    } else {
+      redirect(`/ops/dlq?err=${encodeURIComponent(String((res as any).error || "retry_failed"))}`);
+    }
   } catch (e: any) {
-    redirect(
-      `/ops/dlq?err=${encodeURIComponent(String(e?.message || e || "retry_failed"))}`
-    );
+    redirect(`/ops/dlq?err=${encodeURIComponent(String(e?.message || e || "retry_failed"))}`);
   }
 }
