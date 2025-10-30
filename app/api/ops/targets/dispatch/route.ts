@@ -2,6 +2,9 @@
 import { NextResponse } from "next/server";
 import sendControllerRequest from "@/lib/dispatch/send";
 import { buildDraftForController } from "@/lib/email/templates/controllers/draft";
+import { assertSecureCron, getClientIp } from "@/lib/ops/secure-cron";
+import { createLogger } from "@/lib/ops/logger";
+import { rateLimitByKey, tooMany } from "@/lib/rateLimit";
 
 export const runtime = "nodejs";
 
@@ -16,8 +19,8 @@ type SubjectPayload = {
 type ItemPayload = { key: string; name: string };
 
 type DispatchBody = {
-  region?: string | null;   // e.g., "IN"
-  locale?: string | null;   // e.g., "en-IN"
+  region?: string | null; // e.g., "IN"
+  locale?: string | null; // e.g., "en-IN"
   subject: SubjectPayload;
   items: ItemPayload[];
 };
@@ -26,38 +29,40 @@ function bad(message: string, status = 400, extra: Record<string, unknown> = {})
   return NextResponse.json({ ok: false, error: message, ...extra }, { status });
 }
 
-function hasHeaderSecret(headers: Headers): boolean {
-  const provided = headers.get("x-secure-cron")?.trim();
-  const expected = process.env.SECURE_CRON_SECRET?.trim();
-  return !!provided && !!expected && provided === expected;
-}
-
 function normStr(v?: string | null): string | null {
   if (v === undefined || v === null) return null;
   const s = String(v).trim();
   return s.length ? s : null;
 }
 
-function log(event: string, payload: Record<string, unknown>) {
-  console.log(JSON.stringify({ ts: new Date().toISOString(), event, ...payload }));
-}
-
 export async function POST(req: Request) {
-  if (!hasHeaderSecret(req.headers)) {
-    log("targets_dispatch_forbidden", {});
+  // --- 1) Secure-cron auth (header: x-secure-cron) ---
+  let headers: Headers;
+  try {
+    headers = assertSecureCron(req); // throws Response(401) if invalid
+  } catch (e) {
+    // We can return the thrown Response directly, or map to NextResponse
+    if (e instanceof Response) return e;
     return bad("unauthorized_cron", 403);
   }
 
+  // --- 2) Rate limit per client IP (fails open if Upstash not configured) ---
+  const clientIp = getClientIp(headers);
+  const { allowed, reset, remaining } = await rateLimitByKey(`ops:dispatch:${clientIp}`, {
+    max: 20,
+    windowSec: 60,
+  });
+  if (!allowed) return tooMany({ reset, remaining });
+
+  // --- 3) Parse/validate body ---
   let body: DispatchBody;
   try {
     body = (await req.json()) as DispatchBody;
   } catch {
-    log("targets_dispatch_invalid_json", {});
     return bad("invalid_json");
   }
 
   if (!body || !body.subject || !Array.isArray(body.items)) {
-    log("targets_dispatch_invalid_payload", {});
     return bad("invalid_payload");
   }
 
@@ -71,18 +76,30 @@ export async function POST(req: Request) {
   const subjectPhone = normStr(body.subject.phone);
   const subjectId = normStr(body.subject.subjectId);
   const handles = Array.isArray(body.subject.handles)
-    ? body.subject.handles.filter((h) => !!normStr(h)).map((h) => String(h))
+    ? body.subject.handles.map((h) => normStr(h)).filter(Boolean).map((h) => String(h))
     : [];
 
-  log("targets_dispatch_start", {
-    items: body.items.length,
+  // --- 4) Structured logging ---
+  const requestId =
+    headers.get("x-request-id") ||
+    headers.get("x-vercel-id") ||
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const log = createLogger("ops.dispatch", {
+    requestId,
+    ip: clientIp,
     region,
     locale,
     subjectId: subjectId || null,
+  });
+
+  log.info("targets_dispatch_start", {
+    items: body.items.length,
     hasEmail: !!subjectEmail,
     hasPhone: !!subjectPhone,
   });
 
+  // --- 5) Fan-out with timeout protection ---
+  const controllerTimeoutMs = Number.parseInt(process.env.DISPATCH_CONTROLLER_TIMEOUT_MS ?? "25000", 10);
   const started = Date.now();
 
   const results = await Promise.all(
@@ -102,51 +119,60 @@ export async function POST(req: Request) {
 
       const t0 = Date.now();
       try {
-        const res = await sendControllerRequest({
-          controllerKey,
-          controllerName,
-          subject: {
-            name: subjectFullName,
-            email: subjectEmail,
-            phone: subjectPhone,
-            handle: handles[0] ?? null,
-            id: subjectId,
-          },
-          locale,
-          draft,
-          formUrl: null,
-          action: "create_request_v1",
-          subjectId,
-        });
+        const res = await Promise.race([
+          Promise.resolve(
+            sendControllerRequest({
+              controllerKey,
+              controllerName,
+              subject: {
+                name: subjectFullName,
+                email: subjectEmail,
+                phone: subjectPhone,
+                handle: handles[0] ?? null,
+                id: subjectId,
+              },
+              locale,
+              draft,
+              formUrl: null,
+              action: "create_request_v1",
+              subjectId,
+            })
+          ),
+          new Promise((_resolve, reject) =>
+            setTimeout(() => reject(new Error("controller_timeout")), controllerTimeoutMs)
+          ),
+        ]);
 
         const elapsed = Date.now() - t0;
-        log("targets_dispatch_item", {
+        log.info("targets_dispatch_item", {
           key: controllerKey,
-          channel: res.channel,
-          ok: res.ok,
-          providerId: res.providerId || null,
-          error: res.error || null,
-          idempotent: res.idempotent || null,
+          channel: (res as any)?.channel,
+          ok: (res as any)?.ok,
+          providerId: (res as any)?.providerId || null,
+          error: (res as any)?.error || null,
+          idempotent: (res as any)?.idempotent ?? null,
           ms: elapsed,
         });
 
         return {
           key: controllerKey,
           name: controllerName,
-          ok: res.ok,
-          channel: res.channel,
-          providerId: res.providerId,
-          error: res.error,
-          note: res.note,
-          idempotent: res.idempotent ?? null,
-          hint: res.hint ?? null,
+          ok: !!(res as any)?.ok,
+          channel: (res as any)?.channel ?? "webform",
+          providerId: (res as any)?.providerId ?? null,
+          error: (res as any)?.error ?? null,
+          note: (res as any)?.note ?? null,
+          idempotent: (res as any)?.idempotent ?? null,
+          hint: (res as any)?.hint ?? null,
         };
       } catch (e: unknown) {
         const elapsed = Date.now() - t0;
+        const isTimeout = (e as Error)?.message === "controller_timeout";
         const msg = (e as Error)?.message || String(e);
-        log("targets_dispatch_item_exception", {
+        log.error("targets_dispatch_item_exception", {
           key: controllerKey,
           error: msg,
+          timeout: isTimeout || undefined,
           ms: elapsed,
         });
         return {
@@ -155,19 +181,20 @@ export async function POST(req: Request) {
           ok: false,
           channel: "webform",
           providerId: null,
-          error: "dispatch_exception",
+          error: isTimeout ? "dispatch_timeout" : "dispatch_exception",
           note: msg,
           idempotent: null,
-          hint: "Exception during dispatch attempt",
+          hint: isTimeout ? "Controller request timed out" : "Exception during dispatch attempt",
         };
       }
     })
   );
 
+  // --- 6) Summarize & respond ---
   const totalElapsed = Date.now() - started;
   const okCount = results.filter((r) => r.ok).length;
 
-  log("targets_dispatch_done", {
+  log.info("targets_dispatch_done", {
     total: results.length,
     okCount,
     failCount: results.length - okCount,
