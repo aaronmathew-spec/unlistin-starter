@@ -134,15 +134,17 @@ export async function attachAuthorizationEvidence(
   files: Array<File>
 ): Promise<AttachResult> {
   // 0) Load authz record (minimal)
-  const { data: authz, error: aErr } = await db
+  const { data: authzRow, error: aErr } = await db
     .from("authorizations")
     .select("id, subject_full_name, consent_text, manifest_hash")
     .eq("id", authorizationId)
     .single();
 
-  if (aErr || !authz) {
+  if (aErr || !authzRow) {
     throw new Error(`Authorization not found: ${authorizationId}`);
   }
+  // Ensure TS knows we have the fields we expect
+  const authz = authzRow as MinimalAuthzRecord;
 
   const uploaded: AuthorizationFileRow[] = [];
 
