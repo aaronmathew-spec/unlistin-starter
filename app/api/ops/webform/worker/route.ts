@@ -1,5 +1,9 @@
+/* app/api/ops/webform/worker/route.ts
+ * Cron-guarded worker: drains webform queue using Playwright handlers.
+ */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { chromium } from "@playwright/test";
@@ -28,7 +32,7 @@ const OPS_SECRET = (process.env.SECURE_CRON_SECRET || "").trim();
 const MAX_JOBS_PER_PULSE = 3;
 
 /** After how many failures should we push to DLQ (best-effort if attempts not tracked) */
-const MAX_ATTEMPTS = 5;
+const MAX_ATTEMPTS_FOR_DLQ = 5;
 
 /** 403 helper */
 function forbidden(msg: string) {
@@ -145,11 +149,6 @@ export async function POST(req: Request) {
         const gate = await shouldAllowController(controllerKey);
         if (!gate.allow) {
           await completeJobFailure(job.id, "controller_circuit_open");
-          // Optional: DLQ immediately if circuit is open (commented by default)
-          // await pushDLQ({ channel: "webform", controller_key: controllerKey, subject_id: (job as any).subject_id ?? null,
-          //   payload: { jobId: job.id, controllerKey, reason: "circuit_open" }, error_code: "controller_circuit_open",
-          //   error_note: `recent_failures=${gate.recentFailures ?? 0}`, retries: readAttempts(job)
-          // });
           // eslint-disable-next-line no-console
           console.warn(
             "[worker.circuit_open]",
@@ -210,7 +209,7 @@ export async function POST(req: Request) {
 
             // If too many attempts -> DLQ
             const attempts = readAttempts(job) + 1;
-            if (attempts >= MAX_ATTEMPTS) {
+            if (attempts >= MAX_ATTEMPTS_FOR_DLQ) {
               await pushDLQ({
                 channel: "webform",
                 controller_key: controllerKey,
@@ -276,7 +275,7 @@ export async function POST(req: Request) {
         );
 
         const attempts = readAttempts(job) + 1;
-        if (attempts >= MAX_ATTEMPTS) {
+        if (attempts >= MAX_ATTEMPTS_FOR_DLQ) {
           await pushDLQ({
             channel: "webform",
             controller_key: controllerKey,
