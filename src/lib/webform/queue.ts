@@ -1,5 +1,12 @@
-// src/lib/webform/queue.ts
+/* src/lib/webform/queue.ts
+ * Lightweight Supabase-backed Webform Job Queue helpers.
+ * - Enqueue accepts rich inputs and folds extras into `meta`
+ * - Claim is race-safe best-effort (optimistic update)
+ * - Success/Failure mark helpers (failure re-queues until MAX_ATTEMPTS)
+ */
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { supabaseAdmin } from "@/src/lib/supabase/admin";
+import { randomUUID as uuid } from "crypto";
 
 export type WebformJob = {
   id: string;
@@ -89,10 +96,9 @@ export async function enqueueWebformJob(args: EnqueueArgs): Promise<{ id: string
 
   // Derive required DB fields (never insert nulls)
   const resolvedSubjectId =
-    (subjectId ?? subject?.id ?? null) ? String(subjectId ?? subject?.id) : crypto.randomUUID();
+    (subjectId ?? subject?.id ?? null) ? String(subjectId ?? subject?.id) : uuid();
 
-  const resolvedUrl =
-    (url ?? formUrl ?? null) ? String(url ?? formUrl) : "https://google.com/";
+  const resolvedUrl = (url ?? formUrl ?? null) ? String(url ?? formUrl) : "https://google.com/";
 
   const mergedMeta: Record<string, any> = {
     ...clean(meta),
@@ -136,7 +142,7 @@ export async function claimNextJob(): Promise<WebformJob | null> {
   const { data: candidates, error: selErr } = await s
     .from(TABLE)
     .select("*")
-    .in("status", ["queued"])
+    .eq("status", "queued")
     .lt("attempts", MAX_ATTEMPTS)
     .order("created_at", { ascending: true })
     .limit(1);
@@ -145,7 +151,7 @@ export async function claimNextJob(): Promise<WebformJob | null> {
   const job = (candidates?.[0] as WebformJob | undefined) ?? null;
   if (!job) return null;
 
-  const workerId = crypto.randomUUID();
+  const workerId = uuid();
 
   const { data: updData, error: updErr } = await s
     .from(TABLE)
