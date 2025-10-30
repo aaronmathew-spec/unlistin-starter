@@ -237,10 +237,10 @@ export async function attachAuthorizationEvidence(
     manifestHashHex = sha256Hex(`${authz.id}:${Date.now()}`);
   }
 
-  // 4) Update authorizations.manifest_hash
-  const { data: updated, error: uErr } = await db
+  // 4) Update authorizations.manifest_hash (cast to any to avoid postgrest type arity issues)
+  const { data: updated, error: uErr } = await (db as any)
     .from("authorizations")
-    .update({ manifest_hash: manifestHashHex })
+    .update({ manifest_hash: manifestHashHex } as any)
     .eq("id", authz.id)
     .select("id, subject_full_name, consent_text, manifest_hash")
     .single();
