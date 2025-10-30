@@ -192,13 +192,16 @@ export async function attachAuthorizationEvidence(
   }
 
   // 2) Rebuild manifest from current state (authz + all files)
-  const { data: allFiles, error: lfErr } = await db
+  const { data: allFilesRaw, error: lfErr } = await db
     .from("authorization_files")
     .select("id, authorization_id, name, url, bucket, path, mime, size_bytes, created_at")
     .eq("authorization_id", authz.id)
     .order("created_at", { ascending: true });
 
   if (lfErr) throw new Error(`load_files_failed: ${lfErr.message}`);
+
+  // Explicitly assert the row shape to avoid `never` inference in strict mode
+  const allFiles = (allFilesRaw ?? []) as unknown as AuthorizationFileRow[];
 
   const builder = await loadManifestBuilder();
 
@@ -209,7 +212,7 @@ export async function attachAuthorizationEvidence(
       subject: { fullName: authz.subject_full_name ?? null },
       consent: { text: authz.consent_text ?? null },
     },
-    evidence: (allFiles || []).map((r) => ({
+    evidence: allFiles.map((r) => ({
       id: r.id,
       name: r.name,
       url: r.url,
@@ -226,7 +229,9 @@ export async function attachAuthorizationEvidence(
   let manifestHashHex: string | null = null;
   try {
     manifestHashHex =
-      manifest?.integrity?.hashHex ?? sha256Hex(Buffer.from(JSON.stringify(manifest)));
+      (manifest?.integrity && manifest?.integrity?.hashHex) ||
+      (manifest?.hashHex as string | undefined) ||
+      sha256Hex(Buffer.from(JSON.stringify(manifest)));
   } catch {
     // final fallback: hash of current time (should practically never happen)
     manifestHashHex = sha256Hex(`${authz.id}:${Date.now()}`);
