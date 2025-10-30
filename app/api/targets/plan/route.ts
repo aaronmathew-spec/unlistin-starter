@@ -2,13 +2,11 @@ export const runtime = "nodejs";
 
 /**
  * POST /api/targets/plan
- * Body: { subject: string; region?: string; categories?: string[]; channels?: string[] }
- * Returns: PlanItem[] ordered by priority
- *
- * Notes:
- * - Self-contained: includes an inlined controller matrix and a regional policy resolver.
- * - Defensive on optional fields and tolerant to additional keys in the body.
- * - The shape matches the UI expectations in /ops/targets/run (key, name, category?, preferredChannel?, allowedChannels?, requires?, notes?).
+ * Accepts flexible input:
+ *  - { subject?: string, fullName?: string, region?: string, categories?: string[], channels?: Channel[] }
+ * Returns:
+ *  - { ok: true, region: string|null, total: number, plan: PlanItem[] }
+ * The PlanItem shape matches /ops/targets/run expectations.
  */
 
 type Channel = "email" | "webform" | "portal" | "letter" | "fax";
@@ -20,12 +18,13 @@ type PlanItem = {
   allowedChannels?: Channel[] | null;
   requires?: string[] | null;
   notes?: string | null;
-  // Internal scoring for ordering; not returned.
+  // Internal only, stripped before returning
   _score?: number;
 };
 
 type PlanInput = {
   subject?: string | null;
+  fullName?: string | null; // tolerated alias
   region?: string | null;
   categories?: string[] | null;
   channels?: Channel[] | null;
@@ -134,9 +133,7 @@ const CONTROLLERS: Array<
 /** Region policy resolver: tweak channels/weights per region. */
 function resolvePolicyByRegion(region?: string | null) {
   const r = (region ?? "").toUpperCase();
-  // Simple example matrix — extend as needed.
   return {
-    // penalize non-digital channels for faster cycles in IN/US
     channelWeight: (ch: Channel): number => {
       if (ch === "webform") return -0.6;
       if (ch === "email") return -0.3;
@@ -145,10 +142,9 @@ function resolvePolicyByRegion(region?: string | null) {
       if (ch === "fax") return +0.4;
       return 0;
     },
-    // bump certain controllers regionally
     controllerBoost: (key: string): number => {
       if (r === "IN" && (key === "truecaller" || key === "data-brokers-india")) return -1.0;
-      if (r === "EU" && key === "google") return -0.2; // GDPR de-index familiarity
+      if (r === "EU" && key === "google") return -0.2;
       return 0;
     },
   };
@@ -173,14 +169,15 @@ export async function POST(req: Request) {
     // ignore, use empty body
   }
 
-  const subject = (body.subject ?? "").trim();
+  // accept either 'subject' or 'fullName'
+  const subject = String((body.subject ?? body.fullName ?? "") || "").trim();
   const region = (body.region ?? "").trim() || null;
   const cats = Array.isArray(body.categories) ? body.categories : null;
   const chans = Array.isArray(body.channels) ? (body.channels as Channel[]) : null;
 
   const policy = resolvePolicyByRegion(region);
 
-  // Filter by region allowance
+  // Region filter
   let rows = CONTROLLERS.filter((c) => {
     if (c.regions && region) return c.regions.includes(region.toUpperCase());
     if (c.regions && !region) return false;
@@ -204,7 +201,7 @@ export async function POST(req: Request) {
     rows = rows.filter((r) => (r.category ? set.has(r.category.toLowerCase()) : false));
   }
 
-  // Optional channel filter (keep only overlapping channels, and drop if none)
+  // Optional channel filter (keep only overlapping channels, drop if none)
   if (chans?.length) {
     const set = new Set(chans);
     rows = rows
@@ -215,7 +212,7 @@ export async function POST(req: Request) {
       .filter((r) => r.allowedChannels && r.allowedChannels.length > 0);
   }
 
-  // Simple subject-based nudge (if subject contains image/video terms, bump media controllers)
+  // Subject-based nudge (media => boost youtube slightly)
   if (subject) {
     const s = subject.toLowerCase();
     const media = s.includes("image") || s.includes("video") || s.includes("photo") || s.includes("clip");
@@ -227,11 +224,9 @@ export async function POST(req: Request) {
     }
   }
 
-  // Sort by score asc, then stable by key
+  // Sort by score asc, then key asc; strip internals
   rows.sort((a, b) => a._score - b._score || a.key.localeCompare(b.key));
-
-  // Strip internal fields before returning
   const plan: PlanItem[] = rows.map(({ _score, defaultAllowed, priority, ...rest }) => rest);
 
-  return json(plan, { status: 200 });
+  return json({ ok: true, region, total: plan.length, plan }, { status: 200 });
 }
