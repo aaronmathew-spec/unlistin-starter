@@ -77,7 +77,7 @@ export async function deleteDLQ(id: string | number) {
 
 /**
  * Retry semantics:
- * - Replays the original dispatch using sendControllerRequest (no separate queue dep).
+ * - Replays the original dispatch using sendControllerRequest.
  * - On success: deletes DLQ row.
  * - On failure: increments retries and annotates error fields.
  */
@@ -122,7 +122,6 @@ export async function retryDLQ(id: string | number) {
   };
 
   const locale = (payload.locale as string | undefined) ?? "en-IN";
-  const region = (payload.region as string | undefined) ?? "IN";
   const draft = (payload.draft as any) ?? {
     subjectLine: payload.subjectLine ?? null,
     bodyText: payload.bodyText ?? null,
@@ -130,7 +129,7 @@ export async function retryDLQ(id: string | number) {
   const formUrl = (payload.formUrl as string | null | undefined) ?? null;
 
   try {
-    // For now, treat channel as informational; sendControllerRequest decides the path.
+    // Call matches ControllerRequestInput / SendInput (no 'region' prop)
     const res = await sendControllerRequest({
       controllerKey,
       controllerName,
@@ -140,7 +139,6 @@ export async function retryDLQ(id: string | number) {
       formUrl,
       action: "retry_request_v1",
       subjectId: subject.id,
-      region,
     });
 
     if (res.ok) {
