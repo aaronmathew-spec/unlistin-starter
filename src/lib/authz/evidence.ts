@@ -31,6 +31,20 @@ type AuthorizationFileRow = {
   created_at: string;
 };
 
+/**
+ * Local insert shape to satisfy TS without generated Supabase types.
+ * Parameterizing `.from<AuthorizationFileInsert>()` avoids `never` inference.
+ */
+type AuthorizationFileInsert = {
+  authorization_id: number | string;
+  name: string;
+  url: string | null;
+  bucket: string;
+  path: string;
+  mime: string | null;
+  size_bytes: number | null;
+};
+
 type AttachResult = {
   record: MinimalAuthzRecord;
   files: AuthorizationFileRow[];
@@ -48,11 +62,9 @@ function required(name: string): string {
 
 // Build a service-role Supabase client (server-only)
 export function getServiceSupabase(): Supa {
-  return createClient(
-    required("NEXT_PUBLIC_SUPABASE_URL"),
-    required("SUPABASE_SERVICE_ROLE"),
-    { auth: { persistSession: false } }
-  );
+  return createClient(required("NEXT_PUBLIC_SUPABASE_URL"), required("SUPABASE_SERVICE_ROLE"), {
+    auth: { persistSession: false },
+  });
 }
 
 /** Best-effort hex digest for manifest integrity when builder doesn't supply it. */
@@ -103,6 +115,12 @@ async function loadManifestBuilder(): Promise<{
   throw new Error("Authorization manifest builder not found");
 }
 
+/** Basic filename sanitizer for storage keys. */
+function safeName(name: string) {
+  const base = (name || "").split("/").pop() || "file";
+  return base.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 140);
+}
+
 /**
  * Attach evidence files and recompute manifest hash.
  * @param db Supabase service client
@@ -129,11 +147,13 @@ export async function attachAuthorizationEvidence(
 
   // 1) Upload each file to storage and insert DB row
   for (const f of files) {
-    const name = f.name || `evidence-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const name = safeName(
+      f.name || `evidence-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    );
     const mime = (f as any).type || null;
     const size = Number.isFinite((f as any).size) ? Number((f as any).size) : null;
 
-    const path = `${String(authorizationId)}/${Date.now()}-${name}`;
+    const path = `${String(authorizationId)}/${Date.now()}-${Math.random().toString(36).slice(2, 6)}-${name}`;
     const ab = await f.arrayBuffer();
 
     // upload
@@ -146,9 +166,9 @@ export async function attachAuthorizationEvidence(
     // get public URL (bucket is public by convention)
     const { data: pub } = db.storage.from(BUCKET).getPublicUrl(path);
 
-    // insert DB row
+    // insert DB row (NOTE the generic <AuthorizationFileInsert> to fix TS)
     const { data: row, error: iErr } = await db
-      .from("authorization_files")
+      .from<AuthorizationFileInsert>("authorization_files")
       .insert({
         authorization_id: authz.id,
         name,
@@ -164,7 +184,7 @@ export async function attachAuthorizationEvidence(
       .single();
 
     if (iErr || !row) throw new Error(`insert_file_failed: ${iErr?.message}`);
-    uploaded.push(row as AuthorizationFileRow);
+    uploaded.push(row as unknown as AuthorizationFileRow);
   }
 
   // 2) Rebuild manifest from current state (authz + all files)
@@ -192,7 +212,7 @@ export async function attachAuthorizationEvidence(
       mime: r.mime,
       bytes: r.size_bytes,
       createdAt: r.created_at,
-      // Kind inference could happen here if your builder expects it.
+      // Kind inference could be added here if your builder expects it.
     })),
   };
 
@@ -202,8 +222,7 @@ export async function attachAuthorizationEvidence(
   let manifestHashHex: string | null = null;
   try {
     manifestHashHex =
-      manifest?.integrity?.hashHex ??
-      sha256Hex(Buffer.from(JSON.stringify(manifest)));
+      manifest?.integrity?.hashHex ?? sha256Hex(Buffer.from(JSON.stringify(manifest)));
   } catch {
     // final fallback: hash of current time (should practically never happen)
     manifestHashHex = sha256Hex(`${authz.id}:${Date.now()}`);
