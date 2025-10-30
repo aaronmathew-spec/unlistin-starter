@@ -32,8 +32,9 @@ type AuthorizationFileRow = {
 };
 
 /**
- * Local insert shape to satisfy TS without generated Supabase types.
- * Parameterizing `.from<AuthorizationFileInsert>()` avoids `never` inference.
+ * Local insert shape (compile-time only). We won't pass it as a generic to `.from`
+ * because different postgrest typings expect 1–2 type params. We'll instead cast
+ * the payload at the callsite to keep builds green across versions.
  */
 type AuthorizationFileInsert = {
   authorization_id: number | string;
@@ -166,25 +167,26 @@ export async function attachAuthorizationEvidence(
     // get public URL (bucket is public by convention)
     const { data: pub } = db.storage.from(BUCKET).getPublicUrl(path);
 
-    // insert DB row (NOTE the generic <AuthorizationFileInsert> to fix TS)
+    // Build insert payload and cast to any to avoid postgrest generic arity issues across versions
+    const insertPayload: AuthorizationFileInsert = {
+      authorization_id: authz.id,
+      name,
+      url: pub?.publicUrl ?? null,
+      bucket: BUCKET,
+      path,
+      mime,
+      size_bytes: size,
+    };
+
+    // insert DB row
     const { data: row, error: iErr } = await db
-      .from<AuthorizationFileInsert>("authorization_files")
-      .insert({
-        authorization_id: authz.id,
-        name,
-        url: pub?.publicUrl ?? null,
-        bucket: BUCKET,
-        path,
-        mime,
-        size_bytes: size,
-      })
-      .select(
-        "id, authorization_id, name, url, bucket, path, mime, size_bytes, created_at"
-      )
+      .from("authorization_files")
+      .insert(insertPayload as any)
+      .select("id, authorization_id, name, url, bucket, path, mime, size_bytes, created_at")
       .single();
 
     if (iErr || !row) throw new Error(`insert_file_failed: ${iErr?.message}`);
-    uploaded.push(row as unknown as AuthorizationFileRow);
+    uploaded.push(row as AuthorizationFileRow);
   }
 
   // 2) Rebuild manifest from current state (authz + all files)
