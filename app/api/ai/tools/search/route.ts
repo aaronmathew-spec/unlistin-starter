@@ -4,7 +4,26 @@ export const runtime = "nodejs";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { envBool } from "@/lib/env";
-import type { FileHit, RequestHit } from "@/types/ai";
+
+// Local types (avoid importing external types to keep builds green)
+type RequestHit = {
+  kind: "request";
+  id: number;
+  title: string | null;
+  description: string | null;
+  status: string | null;
+  created_at: string | null;
+};
+
+type FileHit = {
+  kind: "file";
+  id: number;
+  request_id: number | null;
+  name: string;
+  mime: string | null;
+  size_bytes: number | null;
+  created_at: string | null;
+};
 
 function json(data: any, init?: ResponseInit) {
   return new Response(JSON.stringify(data), {
@@ -41,8 +60,7 @@ export async function GET(req: Request) {
   // Escape special LIKE wildcards for fallback path
   const qLike = qRaw.replace(/%/g, "\\%").replace(/_/g, "\\_");
 
-  // FTS query: convert plain text into tsquery. Simple heuristic: append :* for prefix
-  // For multi-word queries, AND them together.
+  // FTS query: turn "foo bar" into "foo:* & bar:*"
   const ftsQuery = qRaw
     .split(/\s+/)
     .filter(Boolean)
@@ -62,11 +80,10 @@ export async function GET(req: Request) {
 
     if (useFts) {
       // ---------- FTS path ----------
-      // requests via FTS (fts column created by migration)
-      const { data: reqRows, error: reqErr } = await db
+      const { data: reqRows, error: reqErr } = await (db
         .from("requests")
-        .select("id, title, description, status, created_at")
-        .textSearch("fts", ftsQuery, { type: "plain" }) // uses to_tsquery internally
+        .select("id, title, description, status, created_at") as any)
+        .textSearch("fts", ftsQuery, { type: "plain" }) // to_tsquery-ish
         .order("created_at", { ascending: false })
         .limit(topK);
 
@@ -78,13 +95,12 @@ export async function GET(req: Request) {
         title: r.title ?? null,
         description: r.description ?? null,
         status: r.status ?? null,
-        created_at: new Date(r.created_at).toISOString(),
+        created_at: r.created_at ? new Date(r.created_at).toISOString() : null,
       }));
 
-      // files via FTS
-      const { data: fileRows, error: fileErr } = await db
+      const { data: fileRows, error: fileErr } = await (db
         .from("request_files")
-        .select("id, request_id, name, mime, size_bytes, created_at")
+        .select("id, request_id, name, mime, size_bytes, created_at") as any)
         .textSearch("fts", ftsQuery, { type: "plain" })
         .order("created_at", { ascending: false })
         .limit(topK);
@@ -94,18 +110,18 @@ export async function GET(req: Request) {
       files = (fileRows ?? []).map((f: any) => ({
         kind: "file",
         id: Number(f.id),
-        request_id: Number(f.request_id),
+        request_id: Number.isFinite(f.request_id) ? Number(f.request_id) : null,
         name: String(f.name ?? ""),
         mime: f.mime ?? null,
         size_bytes: Number.isFinite(f.size_bytes) ? Number(f.size_bytes) : null,
-        created_at: new Date(f.created_at).toISOString(),
+        created_at: f.created_at ? new Date(f.created_at).toISOString() : null,
       }));
     } else {
       // ---------- Fallback ILIKE path ----------
       const { data: reqRows, error: reqErr } = await db
         .from("requests")
         .select("id, title, description, status, created_at")
-        .or(`title.ilike.%${qLike}%,description.ilike.%${qLike}%`, { referencedTable: "requests" })
+        .or(`title.ilike.%${qLike}%,description.ilike.%${qLike}%`)
         .order("created_at", { ascending: false })
         .limit(topK);
 
@@ -117,13 +133,13 @@ export async function GET(req: Request) {
         title: r.title ?? null,
         description: r.description ?? null,
         status: r.status ?? null,
-        created_at: new Date(r.created_at).toISOString(),
+        created_at: r.created_at ? new Date(r.created_at).toISOString() : null,
       }));
 
       const { data: fileRows, error: fileErr } = await db
         .from("request_files")
         .select("id, request_id, name, mime, size_bytes, created_at")
-        .ilike("name", `%${qLike}%`)
+        .or(`name.ilike.%${qLike}%`)
         .order("created_at", { ascending: false })
         .limit(topK);
 
@@ -132,11 +148,11 @@ export async function GET(req: Request) {
       files = (fileRows ?? []).map((f: any) => ({
         kind: "file",
         id: Number(f.id),
-        request_id: Number(f.request_id),
+        request_id: Number.isFinite(f.request_id) ? Number(f.request_id) : null,
         name: String(f.name ?? ""),
         mime: f.mime ?? null,
         size_bytes: Number.isFinite(f.size_bytes) ? Number(f.size_bytes) : null,
-        created_at: new Date(f.created_at).toISOString(),
+        created_at: f.created_at ? new Date(f.created_at).toISOString() : null,
       }));
     }
 
