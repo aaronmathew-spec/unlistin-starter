@@ -1,22 +1,27 @@
-// src/lib/ops/dlq.ts
-/* eslint-disable @typescript-eslint/no-explicit-any */
-import { createClient } from "@supabase/supabase-js";
+/* src/lib/ops/dlq.ts
+ * Server-only DLQ helpers for the Ops UI.
+ *
+ * Table: public.ops_dlq
+ * Columns: id, created_at, channel, controller_key, subject_id, payload, error_code, error_note, retries
+ */
 
-// If your project keeps these in a separate helper, feel free to consolidate:
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import "server-only";
+import { createClient } from "@supabase/supabase-js";
+import sendControllerRequest from "@/lib/dispatch/send";
+
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE || "";
 
 function sb() {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
-    throw new Error("Supabase env missing");
+    throw new Error("Supabase env missing: set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE");
   }
-  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
-    auth: { persistSession: false },
-  });
+  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, { auth: { persistSession: false } });
 }
 
 export type DLQRow = {
-  id: string;
+  id: string | number;
   created_at: string;
   channel: "webform" | "email" | string;
   controller_key: string | null;
@@ -33,7 +38,7 @@ export async function listDLQ(limit = 200): Promise<DLQRow[]> {
     .from("ops_dlq")
     .select("id, created_at, channel, controller_key, subject_id, payload, error_code, error_note, retries")
     .order("created_at", { ascending: false })
-    .limit(limit);
+    .limit(Math.max(1, Math.min(1000, limit)));
   if (error) throw error;
   return (data || []) as DLQRow[];
 }
@@ -58,12 +63,12 @@ export async function pushDLQ(args: PushArgs) {
     error_code: args.error_code ?? null,
     error_note: args.error_note ?? null,
     retries: args.retries ?? 0,
-  });
+  } as any);
   if (error) throw error;
   return { ok: true };
 }
 
-export async function deleteDLQ(id: string) {
+export async function deleteDLQ(id: string | number) {
   const client = sb();
   const { error } = await client.from("ops_dlq").delete().eq("id", id);
   if (error) throw error;
@@ -72,19 +77,17 @@ export async function deleteDLQ(id: string) {
 
 /**
  * Retry semantics:
- * - For channel 'webform', we try to re-enqueue using your existing webform queue.
- * - If enqueue succeeds, we delete the DLQ row.
- * - If enqueue fails, we increment retries and update error_note.
- *
- * Extend this switch with 'email' etc. as you add handlers.
+ * - Replays the original dispatch using sendControllerRequest (no separate queue dep).
+ * - On success: deletes DLQ row.
+ * - On failure: increments retries and annotates error fields.
  */
-export async function retryDLQ(id: string) {
+export async function retryDLQ(id: string | number) {
   const client = sb();
 
   // Load the DLQ row
   const { data, error } = await client
     .from("ops_dlq")
-    .select("id, channel, controller_key, payload, retries")
+    .select("id, channel, controller_key, subject_id, payload, retries")
     .eq("id", id)
     .single();
 
@@ -93,56 +96,74 @@ export async function retryDLQ(id: string) {
   }
 
   const row = data as DLQRow & { retries: number | null };
-  const channel = (row.channel || "").toLowerCase();
+  const payload = (row.payload || {}) as Record<string, any>;
+  const channel = String(row.channel || "").toLowerCase();
+
+  // Normalize fields expected by sendControllerRequest
+  const controllerKey =
+    (payload.controllerKey as string | undefined) ??
+    (row.controller_key as string | undefined) ??
+    "unknown";
+  const controllerName =
+    (payload.controllerName as string | undefined) ?? controllerKey;
+
+  const subject = {
+    name:
+      (payload.subject?.name as string | undefined) ??
+      (payload.subject?.fullName as string | undefined) ??
+      "Unknown Subject",
+    email: (payload.subject?.email as string | null | undefined) ?? null,
+    phone: (payload.subject?.phone as string | null | undefined) ?? null,
+    handle: (payload.subject?.handle as string | null | undefined) ?? null,
+    id:
+      (payload.subject?.id as string | null | undefined) ??
+      (row.subject_id as string | null | undefined) ??
+      null,
+  };
+
+  const locale = (payload.locale as string | undefined) ?? "en-IN";
+  const region = (payload.region as string | undefined) ?? "IN";
+  const draft = (payload.draft as any) ?? {
+    subjectLine: payload.subjectLine ?? null,
+    bodyText: payload.bodyText ?? null,
+  };
+  const formUrl = (payload.formUrl as string | null | undefined) ?? null;
 
   try {
-    switch (channel) {
-      case "webform": {
-        // Minimal safety: payload should contain what enqueue needs.
-        // Your enqueue expects: { controllerKey, controllerName?, subject, locale?, draft?, formUrl? }
-        const payload = (row.payload || {}) as any;
+    // For now, treat channel as informational; sendControllerRequest decides the path.
+    const res = await sendControllerRequest({
+      controllerKey,
+      controllerName,
+      subject,
+      locale,
+      draft,
+      formUrl,
+      action: "retry_request_v1",
+      subjectId: subject.id,
+      region,
+    });
 
-        // Adapter import is local to avoid circular deps on some setups
-        const { enqueueWebformJob } = await import("@/lib/webform/queue");
-
-        await enqueueWebformJob({
-          controllerKey: payload.controllerKey ?? row.controller_key ?? "generic",
-          controllerName: payload.controllerName ?? (row.controller_key ?? "Controller"),
-          subject: {
-            name: payload.subject?.name ?? undefined,
-            email: payload.subject?.email ?? undefined,
-            phone: payload.subject?.phone ?? undefined,
-            handle: payload.subject?.handle ?? undefined,
-            id: payload.subject?.id ?? undefined,
-          },
-          locale: payload.locale ?? "en-IN",
-          draft: payload.draft
-            ? { subject: payload.draft.subject ?? "", bodyText: payload.draft.bodyText ?? "" }
-            : undefined,
-          formUrl: payload.formUrl ?? undefined,
-        });
-
-        // On success: delete from DLQ
-        await client.from("ops_dlq").delete().eq("id", id);
-        return { ok: true, requeued: true, channel: "webform" };
-      }
-
-      // Add future cases like 'email' here…
-
-      default: {
-        // Unknown channel: leave in DLQ and annotate
-        const retries = (row.retries ?? 0) + 1;
-        await client
-          .from("ops_dlq")
-          .update({
-            retries,
-            error_code: "retry_unsupported_channel",
-            error_note: `No retry handler for channel=${channel}`,
-          })
-          .eq("id", id);
-        return { ok: false, error: "unsupported_channel", requeued: false };
-      }
+    if (res.ok) {
+      await client.from("ops_dlq").delete().eq("id", id);
+      return {
+        ok: true,
+        requeued: true,
+        channel: res.channel ?? channel,
+        note: `Retried via ${res.channel ?? "webform"}`,
+      };
     }
+
+    const retries = (row.retries ?? 0) + 1;
+    await client
+      .from("ops_dlq")
+      .update({
+        retries,
+        error_code: res.error ?? "retry_failed",
+        error_note: res.note ?? null,
+      } as any)
+      .eq("id", id);
+
+    return { ok: false, error: res.error || "retry_failed", requeued: false };
   } catch (e: any) {
     const msg = String(e?.message || e);
     const retries = (row.retries ?? 0) + 1;
@@ -150,9 +171,9 @@ export async function retryDLQ(id: string) {
       .from("ops_dlq")
       .update({
         retries,
-        error_code: "retry_failed",
+        error_code: "retry_exception",
         error_note: msg,
-      })
+      } as any)
       .eq("id", id);
     return { ok: false, error: msg, requeued: false };
   }
