@@ -12,41 +12,53 @@ function srv() {
   });
 }
 
-/** Try to decode a bytea/Buffer-ish value to utf-8 string safely */
-function bytesToUtf8(value: any): string | null {
+/** Best-effort decode of bytea/Buffer/ArrayBuffer/base64 -> utf8 string */
+function toUtf8(value: any): string | null {
   try {
     if (!value) return null;
-    let buf: Buffer;
-    if (Buffer.isBuffer(value)) {
-      buf = value as Buffer;
-    } else if (typeof value === "string") {
-      // could be base64 from a trigger—try decode; if fails, return as-is
+
+    // If we already have a string, prefer it as-is.
+    if (typeof value === "string") {
+      // Might be base64 (from triggers). Try decode; if it fails, return raw.
       try {
-        buf = Buffer.from(value, "base64");
+        const buf = Buffer.from(value, "base64");
+        // Heuristic: if base64 decoding produced something non-empty, prefer it.
+        if (buf.length) {
+          return new TextDecoder("utf-8").decode(new Uint8Array(buf));
+        }
       } catch {
-        return value;
+        /* fall through and return value */
       }
-    } else {
-      // Supabase bytea often comes as ArrayBuffer/Uint8Array
-      // normalize to Buffer
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const u8 = value as any;
-      if (u8?.buffer) {
-        buf = Buffer.from(u8 as Uint8Array);
-      } else {
-        buf = Buffer.from(String(value));
-      }
+      return value;
     }
-    return new TextDecoder("utf-8").decode(Uint8Array.from(buf));
+
+    // Buffer | Uint8Array | ArrayBuffer-like
+    if (Buffer.isBuffer(value)) {
+      return new TextDecoder("utf-8").decode(new Uint8Array(value));
+    }
+    if (value?.buffer) {
+      const u8 = value instanceof Uint8Array ? value : new Uint8Array(value);
+      return new TextDecoder("utf-8").decode(u8);
+    }
+
+    // Fallback
+    return String(value);
   } catch {
     return null;
   }
 }
 
-export async function GET(
-  _req: Request,
-  { params }: { params: { id: string } }
-) {
+function htmlResponse(id: string, html: string) {
+  const headers: HeadersInit = {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+    "content-disposition": `inline; filename="webform-${encodeURIComponent(id)}.html"`,
+  };
+  return new Response(html, { status: 200, headers });
+}
+
+export async function GET(_req: Request, { params }: { params: { id: string } }) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
     return new Response("env_missing", { status: 500 });
   }
@@ -55,56 +67,65 @@ export async function GET(
 
   const sb = srv();
 
-  // We try multiple sources, in priority order:
-  // 1) artifact_html (bytea/string) column, if present in the table
-  // 2) result.html (string) saved by the worker
-  // 3) result.htmlBytesBase64 (string base64) saved by the worker
-  const { data, error } = await sb
-    .from("webform_jobs")
-    .select("artifact_html, result")
-    .eq("id", id)
-    .single();
+  // Attempt #1: query with artifact_html (newer schema)
+  let row: any | null = null;
+  let hadColumnError = false;
 
-  if (error) return new Response("not_found", { status: 404 });
+  {
+    const { data, error } = await sb
+      .from("webform_jobs")
+      .select("artifact_html, result")
+      .eq("id", id)
+      .single();
 
-  // 1) artifact_html -> utf8 string
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const artifactHtml: any = (data as any)?.artifact_html ?? null;
-  let bodyStr: string | null = bytesToUtf8(artifactHtml);
-
-  // 2) result.html
-  if (!bodyStr) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const res = (data as any)?.result ?? null;
-    const html = res?.html;
-    if (typeof html === "string" && html.length > 0) {
-      bodyStr = html;
-    }
-  }
-
-  // 3) result.htmlBytesBase64
-  if (!bodyStr) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const res = (data as any)?.result ?? null;
-    const htmlB64 = res?.htmlBytesBase64 || res?.html_base64;
-    if (typeof htmlB64 === "string" && htmlB64.length > 0) {
-      try {
-        const buf = Buffer.from(htmlB64, "base64");
-        bodyStr = new TextDecoder("utf-8").decode(Uint8Array.from(buf));
-      } catch {
-        /* ignore */
+    if (error) {
+      // If the column doesn't exist in this schema, PostgREST returns 400.
+      // We’ll retry without artifact_html below.
+      if ((error as any)?.code === "PGRST102" || /column .* does not exist/i.test(error.message) || error.message.includes("unknown")) {
+        hadColumnError = true;
+      } else {
+        return new Response("not_found", { status: 404 });
       }
+    } else {
+      row = data;
     }
   }
 
-  if (!bodyStr) return new Response("no_html", { status: 404 });
+  // Attempt #2: older schema without artifact_html -> fetch only result
+  if (!row && hadColumnError) {
+    const { data, error } = await sb
+      .from("webform_jobs")
+      .select("result")
+      .eq("id", id)
+      .single();
+    if (error || !data) return new Response("not_found", { status: 404 });
+    row = data;
+  }
 
-  const headers = {
-    "content-type": "text/html; charset=utf-8",
-    "cache-control": "no-store",
-    "content-disposition": `inline; filename="webform-${encodeURIComponent(id)}.html"`,
-  };
+  // 1) Prefer artifact_html if present (and decodable)
+  const artifactHtml = toUtf8(row?.artifact_html);
+  if (artifactHtml && artifactHtml.length > 0) {
+    return htmlResponse(id, artifactHtml);
+  }
 
-  // String is a valid BodyInit — no Blob gymnastics needed here
-  return new Response(bodyStr, { status: 200, headers });
+  // 2) Try result.html (string)
+  const res = row?.result ?? null;
+  const htmlStr: unknown = res?.html;
+  if (typeof htmlStr === "string" && htmlStr.length > 0) {
+    return htmlResponse(id, htmlStr);
+  }
+
+  // 3) Try result.htmlBytesBase64 / html_base64
+  const htmlB64: unknown = res?.htmlBytesBase64 ?? res?.html_base64;
+  if (typeof htmlB64 === "string" && htmlB64.length > 0) {
+    try {
+      const buf = Buffer.from(htmlB64, "base64");
+      const text = new TextDecoder("utf-8").decode(new Uint8Array(buf));
+      if (text) return htmlResponse(id, text);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return new Response("no_html", { status: 404 });
 }
