@@ -1,9 +1,44 @@
 // app/ops/webform/queue/page.tsx
+// Minimal Webform Job Console: lists recent jobs, quick filters, and optional admin actions.
+//
+// Reads directly from Supabase using your service-role admin helper (server component).
+// Actions (Requeue/Delete) are enabled only when FLAG_WEBFORM_ADMIN=1.
+//
+// ENV required:
+// - NEXT_PUBLIC_SUPABASE_URL
+// - SUPABASE_SERVICE_ROLE
+// - (optional) WEBFORM_JOBS_TABLE (defaults to "webform_jobs")
+// - (optional) FLAG_WEBFORM_ADMIN = "1" to enable Requeue/Delete buttons
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-import { listWebformJobs, getWebformCounts } from "@/src/lib/webform/dao";
-import { actionRequeue, actionCancel } from "@/app/ops/webform/actions";
+import { supabaseAdmin } from "@/src/lib/supabase/admin";
+import { actionRequeueJob, actionDeleteJob } from "./actions";
+
+const TABLE = process.env.WEBFORM_JOBS_TABLE || "webform_jobs";
+const ADMIN_ENABLED = process.env.FLAG_WEBFORM_ADMIN === "1";
+
+type WebformJob = {
+  id: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  subject_id: string;
+  url: string;
+  meta: Record<string, any> | null;
+  attempts: number;
+  error: string | null;
+  result: Record<string, any> | null;
+  created_at: string;
+  claimed_at: string | null;
+  finished_at: string | null;
+  worker_id: string | null;
+
+  controller_key?: string | null;
+  controller_name?: string | null;
+  subject_name?: string | null;
+  subject_email?: string | null;
+  subject_handle?: string | null;
+};
 
 function Mono({ children }: { children: React.ReactNode }) {
   return (
@@ -23,62 +58,68 @@ function Mono({ children }: { children: React.ReactNode }) {
   );
 }
 
-function Pill({ label, value, color }: { label: string; value: number; color: string }) {
-  return (
-    <div
-      style={{
-        border: `1px solid ${color}`,
-        color,
-        padding: "6px 10px",
-        borderRadius: 999,
-        fontSize: 12,
-        fontWeight: 700,
-        background: "#fff",
-      }}
-      title={label}
-    >
-      {label}: {value}
-    </div>
-  );
-}
-
 function clamp(n: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, n));
 }
 
-const FLAG_WEBFORM_RETRY = process.env.FLAG_WEBFORM_RETRY === "1";
-const OPS_SECRET = (process.env.SECURE_CRON_SECRET || "").trim();
+function safeJsonPreview(value: unknown, max = 180): string {
+  try {
+    const s = JSON.stringify(value);
+    if (!s) return "-";
+    return s.length > max ? s.slice(0, max) + "…" : s;
+  } catch {
+    const s = String(value ?? "-");
+    return s.length > max ? s.slice(0, max) + "…" : s;
+  }
+}
 
-export default async function Page({
+export default async function WebformQueuePage({
   searchParams,
 }: {
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
+  const s = supabaseAdmin();
+
   const qStatus =
-    typeof searchParams?.status === "string" ? searchParams?.status.trim() : "";
-  const qLimit =
-    typeof searchParams?.limit === "string" ? Number(searchParams?.limit) : 200;
-  const limit = Number.isFinite(qLimit) ? clamp(qLimit as number, 1, 1000) : 200;
+    typeof searchParams?.status === "string"
+      ? (searchParams.status.toLowerCase() as WebformJob["status"] | "all")
+      : "all";
+  const qController =
+    typeof searchParams?.controller === "string"
+      ? searchParams.controller.trim()
+      : "";
+  const qSubject =
+    typeof searchParams?.subject === "string"
+      ? searchParams.subject.trim()
+      : "";
+  const qLimitRaw =
+    typeof searchParams?.limit === "string" ? searchParams.limit : undefined;
+  const limit = clamp(qLimitRaw ? Number(qLimitRaw) || 200 : 200, 1, 1000);
 
-  // Data
-  const [counts, jobs] = await Promise.all([
-    getWebformCounts(),
-    listWebformJobs({ status: qStatus || undefined, limit }),
-  ]);
+  // Base query
+  let query = s
+    .from(TABLE)
+    .select(
+      "id, status, subject_id, url, meta, attempts, error, result, created_at, claimed_at, finished_at, worker_id, controller_key, controller_name, subject_name, subject_email, subject_handle"
+    )
+    .order("created_at", { ascending: false })
+    .limit(limit);
 
-  // Build export link (CSV behind flag or with header; this is just link construction)
-  const csvHref = `/api/ops/webform/list?format=csv&limit=${encodeURIComponent(
-    String(limit)
-  )}${qStatus ? `&status=${encodeURIComponent(qStatus)}` : ""}`;
+  if (qStatus && qStatus !== "all") query = query.eq("status", qStatus);
+  if (qController) query = query.ilike("controller_key", `%${qController}%`);
+  if (qSubject)
+    query = query.or(
+      `subject_id.ilike.%${qSubject}%,subject_email.ilike.%${qSubject}%,subject_name.ilike.%${qSubject}%`
+    );
 
-  const ok = searchParams?.ok === "1";
-  const err =
-    typeof searchParams?.err === "string" ? searchParams?.err : undefined;
-  const note =
-    typeof searchParams?.note === "string" ? searchParams?.note : undefined;
+  const { data, error } = await query;
+
+  const rows = (data ?? []) as WebformJob[];
+  const total = rows.length;
 
   return (
     <div style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}>
+      {/* Header */}
       <div
         style={{
           display: "flex",
@@ -90,12 +131,17 @@ export default async function Page({
         <div>
           <h1 style={{ margin: 0 }}>Ops · Webform Queue</h1>
           <p style={{ marginTop: 6, color: "#6b7280" }}>
-            Live view of the Playwright webform queue. Use{" "}
-            <Mono>?status=queued</Mono> and <Mono>?limit=500</Mono> to filter.
+            Inspect and manage the webform submission jobs. Use{" "}
+            <a href="/ops/webform/pulse">Pulse</a> to run the worker on demand.
           </p>
-          {!OPS_SECRET && (
-            <div style={{ marginTop: 4, color: "#b91c1c", fontSize: 12 }}>
-              SECURE_CRON_SECRET not set — export API will reject JSON calls.
+          <div style={{ marginTop: 6, color: "#6b7280", fontSize: 12 }}>
+            Filters: <Mono>?status=queued|running|succeeded|failed|all</Mono>{" "}
+            <Mono>?controller=truecaller</Mono> <Mono>?subject=alice@</Mono>{" "}
+            <Mono>?limit=500</Mono>
+          </div>
+          {!ADMIN_ENABLED && (
+            <div style={{ marginTop: 6, color: "#9ca3af", fontSize: 12 }}>
+              Set <Mono>FLAG_WEBFORM_ADMIN=1</Mono> to enable requeue/delete.
             </div>
           )}
         </div>
@@ -104,70 +150,78 @@ export default async function Page({
             href="/ops/webform/pulse"
             style={{
               textDecoration: "none",
-              border: "1px solid #111827",
+              border: "1px solid #e5e7eb",
               padding: "8px 12px",
               borderRadius: 8,
               fontWeight: 600,
-              background: "#111827",
-              color: "white",
             }}
-            title="Trigger one pulse of the worker"
           >
             ▶ Pulse Worker
           </a>
           <a
-            href={csvHref}
+            href="/ops/dlq"
             style={{
               textDecoration: "none",
               border: "1px solid #e5e7eb",
               padding: "8px 12px",
               borderRadius: 8,
               fontWeight: 600,
-              background: "#fff",
             }}
-            title="Download CSV"
           >
-            ⬇ Export CSV
+            DLQ
           </a>
         </div>
       </div>
 
-      {/* Counts */}
-      <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
-        <Pill label="Queued" value={counts.queued} color="#1f2937" />
-        <Pill label="Running" value={counts.running} color="#2563eb" />
-        <Pill label="Failed" value={counts.failed} color="#dc2626" />
-        <Pill label="Succeeded" value={counts.succeeded} color="#059669" />
-        <Pill label="Total" value={counts.total} color="#6b7280" />
-      </div>
-
-      {/* Status notice */}
-      {ok && (
+      {/* Error */}
+      {error ? (
         <div
           style={{
-            padding: 12,
-            border: "1px solid #10b981",
-            background: "#ecfdf5",
-            borderRadius: 10,
             marginTop: 12,
-          }}
-        >
-          ✅ {note || "Done"}
-        </div>
-      )}
-      {err && (
-        <div
-          style={{
             padding: 12,
             border: "1px solid #ef4444",
             background: "#fef2f2",
             borderRadius: 10,
-            marginTop: 12,
           }}
         >
-          ❌ {err}
+          ❌ Failed to load queue: <b>{String(error.message)}</b>
         </div>
-      )}
+      ) : null}
+
+      {/* Summary */}
+      <div
+        style={{
+          marginTop: 12,
+          display: "flex",
+          gap: 12,
+          flexWrap: "wrap",
+        }}
+      >
+        <div
+          style={{
+            border: "1px solid #e5e7eb",
+            background: "white",
+            borderRadius: 10,
+            padding: 12,
+          }}
+        >
+          Total <Mono>{String(total)}</Mono>
+        </div>
+        {(["queued", "running", "succeeded", "failed"] as const).map((st) => (
+          <div
+            key={st}
+            style={{
+              border: "1px solid #e5e7eb",
+              background: "white",
+              borderRadius: 10,
+              padding: 12,
+            }}
+          >
+            {st}{" "}
+            <Mono>{String(rows.filter((r) => r.status === st).length)}</Mono>
+          </div>
+        ))}
+      </div>
 
       {/* Table */}
       <div
@@ -183,7 +237,7 @@ export default async function Page({
           <table
             style={{
               width: "100%",
-              minWidth: 980,
+              minWidth: 1100,
               borderCollapse: "separate",
               borderSpacing: 0,
             }}
@@ -206,12 +260,12 @@ export default async function Page({
                   Attempts
                 </th>
                 <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
-                  Error
-                </th>
-                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
                   URL
                 </th>
-                {FLAG_WEBFORM_RETRY && (
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
+                  Error / Result
+                </th>
+                {ADMIN_ENABLED && (
                   <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
                     Actions
                   </th>
@@ -219,102 +273,111 @@ export default async function Page({
               </tr>
             </thead>
             <tbody>
-              {jobs.map((j) => {
-                const subject =
-                  j.subject_name ||
-                  j.subject_email ||
-                  j.subject_phone ||
-                  j.subject_id ||
+              {rows.map((r) => {
+                const controller =
+                  r.controller_name ||
+                  r.controller_key ||
+                  r.meta?.controllerName ||
+                  r.meta?.controllerKey ||
                   "-";
-                const ctrl = j.controller_name || j.controller_key || "-";
+                const subject =
+                  r.subject_name ||
+                  r.subject_email ||
+                  r.subject_id ||
+                  r.meta?.subject?.email ||
+                  r.meta?.subject?.name ||
+                  "-";
+                const url = r.meta?.formUrl || r.url || "-";
+                const resultShort =
+                  r.error?.slice(0, 160) ||
+                  (r.result ? safeJsonPreview(r.result, 160) : "-");
+
                 return (
-                  <tr key={j.id} style={{ borderTop: "1px solid #e5e7eb" }}>
+                  <tr key={r.id} style={{ borderTop: "1px solid #e5e7eb" }}>
                     <td style={{ padding: 12 }}>
-                      {new Date(j.created_at).toLocaleString()}
+                      {new Date(r.created_at).toLocaleString()}
                     </td>
-                    <td style={{ padding: 12 }}>{j.status}</td>
-                    <td style={{ padding: 12 }}>{ctrl}</td>
-                    <td style={{ padding: 12 }}>{subject}</td>
-                    <td style={{ padding: 12 }}>{j.attempts}</td>
+                    <td style={{ padding: 12 }}>{r.status}</td>
                     <td style={{ padding: 12 }}>
-                      {j.error ? <Mono>{j.error}</Mono> : "—"}
+                      <Mono>{controller}</Mono>
                     </td>
                     <td style={{ padding: 12 }}>
-                      {j.url ? (
-                        <a
-                          href={j.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          style={{ textDecoration: "none" }}
-                          title={j.url}
-                        >
-                          <Mono>open</Mono>
-                        </a>
-                      ) : (
-                        "—"
-                      )}
+                      <Mono>{subject}</Mono>
                     </td>
-                    {FLAG_WEBFORM_RETRY && (
+                    <td style={{ padding: 12 }}>{r.attempts ?? 0}</td>
+                    <td style={{ padding: 12 }}>
+                      <a
+                        href={url}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ textDecoration: "none" }}
+                      >
+                        <Mono>{url}</Mono>
+                      </a>
+                    </td>
+                    <td style={{ padding: 12 }}>
+                      <Mono>{resultShort}</Mono>
+                    </td>
+                    {ADMIN_ENABLED && (
                       <td style={{ padding: 12 }}>
-                        <div style={{ display: "flex", gap: 6 }}>
-                          <form action={actionRequeue}>
-                            <input type="hidden" name="id" value={j.id} />
-                            <button
-                              type="submit"
-                              style={{
-                                padding: "6px 10px",
-                                borderRadius: 8,
-                                border: "1px solid #111827",
-                                background: "#111827",
-                                color: "white",
-                                fontWeight: 600,
-                                cursor: "pointer",
-                              }}
-                              title="Requeue"
-                            >
-                              Requeue
-                            </button>
-                          </form>
-                          <form action={actionCancel}>
-                            <input type="hidden" name="id" value={j.id} />
-                            <input
-                              type="hidden"
-                              name="reason"
-                              value="cancelled_by_operator"
-                            />
-                            <button
-                              type="submit"
-                              style={{
-                                padding: "6px 10px",
-                                borderRadius: 8,
-                                border: "1px solid #b91c1c",
-                                background: "#fff",
-                                color: "#b91c1c",
-                                fontWeight: 700,
-                                cursor: "pointer",
-                              }}
-                              title="Cancel (mark failed)"
-                            >
-                              Cancel
-                            </button>
-                          </form>
-                        </div>
+                        <form
+                          action={actionRequeueJob}
+                          style={{ display: "inline-block", marginRight: 6 }}
+                        >
+                          <input type="hidden" name="id" value={r.id} />
+                          <button
+                            type="submit"
+                            style={{
+                              padding: "6px 10px",
+                              borderRadius: 8,
+                              border: "1px solid #111827",
+                              background: "#111827",
+                              color: "white",
+                              fontWeight: 600,
+                              cursor: "pointer",
+                            }}
+                            title="Requeue"
+                          >
+                            Requeue
+                          </button>
+                        </form>
+                        <form
+                          action={actionDeleteJob}
+                          style={{ display: "inline-block" }}
+                        >
+                          <input type="hidden" name="id" value={r.id} />
+                          <button
+                            type="submit"
+                            style={{
+                              padding: "6px 10px",
+                              borderRadius: 8,
+                              border: "1px solid #ef4444",
+                              background: "white",
+                              color: "#ef4444",
+                              fontWeight: 600,
+                              cursor: "pointer",
+                            }}
+                            title="Delete"
+                          >
+                            Delete
+                          </button>
+                        </form>
                       </td>
                     )}
                   </tr>
                 );
               })}
-              {jobs.length === 0 && (
+              {rows.length === 0 && (
                 <tr>
                   <td
-                    colSpan={FLAG_WEBFORM_RETRY ? 8 : 7}
+                    colSpan={ADMIN_ENABLED ? 8 : 7}
                     style={{
                       padding: 24,
                       textAlign: "center",
                       color: "#6b7280",
                     }}
                   >
-                    No jobs (or filter too strict).
+                    No jobs match your filters.
                   </td>
                 </tr>
               )}
@@ -323,9 +386,9 @@ export default async function Page({
         </div>
       </div>
 
-      <div style={{ marginTop: 12, color: "#6b7280", fontSize: 12 }}>
-        Tip: use <Mono>/ops/webform/pulse</Mono> to kick the worker; check{" "}
-        <Mono>/ops/dlq</Mono> for exhausted jobs.
+      {/* Footer */}
+      <div style={{ marginTop: 14, fontSize: 12, color: "#6b7280" }}>
+        Tip: Use <a href="/ops/webform/pulse">Pulse</a> to run the worker now.
       </div>
     </div>
   );
