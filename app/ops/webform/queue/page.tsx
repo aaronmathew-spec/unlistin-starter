@@ -22,10 +22,10 @@ const ADMIN_ENABLED = process.env.FLAG_WEBFORM_ADMIN === "1";
 type WebformJob = {
   id: string;
   status: "queued" | "running" | "succeeded" | "failed";
-  subject_id: string;
-  url: string;
+  subject_id: string | null;
+  url: string | null;
   meta: Record<string, any> | null;
-  attempts: number;
+  attempts: number | null;
   error: string | null;
   result: Record<string, any> | null;
   created_at: string;
@@ -106,11 +106,18 @@ export default async function WebformQueuePage({
     .limit(limit);
 
   if (qStatus && qStatus !== "all") query = query.eq("status", qStatus);
-  if (qController) query = query.ilike("controller_key", `%${qController}%`);
-  if (qSubject)
+  if (qController) {
+    // match either controller_key or controller_name
     query = query.or(
-      `subject_id.ilike.%${qSubject}%,subject_email.ilike.%${qSubject}%,subject_name.ilike.%${qSubject}%`
+      `controller_key.ilike.%${qController}%,controller_name.ilike.%${qController}%`
     );
+  }
+  if (qSubject) {
+    // fuzzy match across known subject fields
+    query = query.or(
+      `subject_id.ilike.%${qSubject}%,subject_email.ilike.%${qSubject}%,subject_name.ilike.%${qSubject}%,subject_handle.ilike.%${qSubject}%`
+    );
+  }
 
   const { data, error } = await query;
 
@@ -237,7 +244,7 @@ export default async function WebformQueuePage({
           <table
             style={{
               width: "100%",
-              minWidth: 1100,
+              minWidth: 1200,
               borderCollapse: "separate",
               borderSpacing: 0,
             }}
@@ -263,6 +270,9 @@ export default async function WebformQueuePage({
                   URL
                 </th>
                 <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
+                  Artifacts
+                </th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
                   Error / Result
                 </th>
                 {ADMIN_ENABLED && (
@@ -283,43 +293,87 @@ export default async function WebformQueuePage({
                 const subject =
                   r.subject_name ||
                   r.subject_email ||
+                  r.subject_handle ||
                   r.subject_id ||
                   r.meta?.subject?.email ||
                   r.meta?.subject?.name ||
                   "-";
-                const url = r.meta?.formUrl || r.url || "-";
+                const formUrl = r.meta?.formUrl || r.url || "-";
                 const resultShort =
-                  r.error?.slice(0, 160) ||
+                  (r.error ? r.error.slice(0, 160) : null) ??
                   (r.result ? safeJsonPreview(r.result, 160) : "-");
+                const jobDetailHref = `/ops/webform/job/${encodeURIComponent(
+                  r.id
+                )}`;
+                const htmlHref = `/api/ops/webform/job/${encodeURIComponent(
+                  r.id
+                )}/html`;
+                const screenshotHref = `/api/ops/webform/job/${encodeURIComponent(
+                  r.id
+                )}/screenshot`;
 
                 return (
                   <tr key={r.id} style={{ borderTop: "1px solid #e5e7eb" }}>
                     <td style={{ padding: 12 }}>
                       {new Date(r.created_at).toLocaleString()}
                     </td>
-                    <td style={{ padding: 12 }}>{r.status}</td>
                     <td style={{ padding: 12 }}>
-                      <Mono>{controller}</Mono>
+                      <Mono>{r.status}</Mono>
+                    </td>
+                    <td style={{ padding: 12 }}>
+                      <a
+                        href={jobDetailHref}
+                        style={{ textDecoration: "none" }}
+                        title="Open job detail"
+                      >
+                        <Mono>{controller}</Mono>
+                      </a>
                     </td>
                     <td style={{ padding: 12 }}>
                       <Mono>{subject}</Mono>
                     </td>
-                    <td style={{ padding: 12 }}>{r.attempts ?? 0}</td>
+                    <td style={{ padding: 12 }}>
+                      <Mono>{String(r.attempts ?? 0)}</Mono>
+                    </td>
+                    <td style={{ padding: 12 }}>
+                      {formUrl && formUrl !== "-" ? (
+                        <a
+                          href={formUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          style={{ textDecoration: "none" }}
+                          title="Open form URL"
+                        >
+                          <Mono>{formUrl}</Mono>
+                        </a>
+                      ) : (
+                        <Mono>—</Mono>
+                      )}
+                    </td>
                     <td style={{ padding: 12 }}>
                       <a
-                        href={url}
+                        href={htmlHref}
                         target="_blank"
                         rel="noreferrer"
-                        style={{ textDecoration: "none" }}
+                        style={{ marginRight: 8 }}
+                        title="Open captured HTML (new tab)"
                       >
-                        <Mono>{url}</Mono>
+                        🧾
+                      </a>
+                      <a
+                        href={screenshotHref}
+                        target="_blank"
+                        rel="noreferrer"
+                        title="Open screenshot (new tab)"
+                      >
+                        🖼
                       </a>
                     </td>
                     <td style={{ padding: 12 }}>
                       <Mono>{resultShort}</Mono>
                     </td>
                     {ADMIN_ENABLED && (
-                      <td style={{ padding: 12 }}>
+                      <td style={{ padding: 12, whiteSpace: "nowrap" }}>
                         <form
                           action={actionRequeueJob}
                           style={{ display: "inline-block", marginRight: 6 }}
@@ -370,7 +424,7 @@ export default async function WebformQueuePage({
               {rows.length === 0 && (
                 <tr>
                   <td
-                    colSpan={ADMIN_ENABLED ? 8 : 7}
+                    colSpan={ADMIN_ENABLED ? 9 : 8}
                     style={{
                       padding: 24,
                       textAlign: "center",
