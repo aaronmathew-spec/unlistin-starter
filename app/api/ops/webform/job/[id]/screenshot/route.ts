@@ -70,8 +70,7 @@ function extractScreenshot(row: any): { body: Uint8Array; mime: string } | null 
 export async function GET(req: Request, ctx: { params: { id: string } }) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
     return new Response("env_missing", { status: 500 });
-  }
-
+    }
   const id = (ctx.params?.id || "").trim();
   if (!id) return new Response("missing_id", { status: 400 });
 
@@ -91,6 +90,13 @@ export async function GET(req: Request, ctx: { params: { id: string } }) {
   const extracted = extractScreenshot(data);
   if (!extracted) return new Response("no_screenshot", { status: 404 });
 
+  // Convert Uint8Array (possibly backed by SharedArrayBuffer/offset) into a clean ArrayBuffer
+  const u8 = extracted.body;
+  const ab: ArrayBuffer =
+    u8.byteOffset === 0 && u8.byteLength === u8.buffer.byteLength
+      ? (u8.buffer as ArrayBuffer)
+      : (u8.buffer as ArrayBuffer).slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+
   const headers: Record<string, string> = {
     "content-type": extracted.mime || "image/png",
     "cache-control": "no-store",
@@ -99,7 +105,6 @@ export async function GET(req: Request, ctx: { params: { id: string } }) {
       : `inline; filename="webform-${id}.png"`,
   };
 
-  // FIX: wrap bytes in a Blob to satisfy BodyInit typing in Node runtime
-  const blob = new Blob([extracted.body], { type: extracted.mime || "image/png" });
-  return new Response(blob, { status: 200, headers });
+  // Hand Response an ArrayBuffer (valid BodyInit in Node’s fetch)
+  return new Response(ab, { status: 200, headers });
 }
