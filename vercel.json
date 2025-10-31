@@ -7,6 +7,8 @@
     { "path": "/api/cron/auto-intake", "schedule": "*/5 * * * *" },
     { "path": "/api/cron/verify", "schedule": "*/30 * * * *" },
     { "path": "/api/detect/changes", "schedule": "0 11 * * *" },
+    
+    { "path": "/api/ops/webform/worker", "schedule": "*/5 * * * *" },
 
     { "path": "/api/cron/ops-webform", "schedule": "*/2 * * * *" }
   ]
