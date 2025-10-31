@@ -1,4 +1,3 @@
-// src/lib/guards/circuit-breaker.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 // Optional, resilient circuit breaker to avoid hot controllers.
@@ -18,20 +17,37 @@ const MAX_RECENT_FAILS = Number(process.env.CB_MAX_RECENT_FAILS ?? 5);
 type Fail = { at: number; code?: string | null };
 const mem = new Map<string, Fail[]>();
 
-function now() {
+function now(): number {
   return Math.floor(Date.now() / 1000);
 }
 
-function prune(list: Fail[]) {
+/**
+ * Prune entries older than the current window, in-place without new array allocs.
+ * Uses a two-pointer compaction to avoid touching undefined indexes.
+ */
+function prune(list: Fail[]): void {
   const cutoff = now() - WINDOW_SECONDS;
-  for (let i = list.length - 1; i >= 0; i--) {
-    if (list[i].at < cutoff) list.splice(i, 1);
+  let write = 0;
+  for (let read = 0; read < list.length; read++) {
+    const item: Fail | undefined = list[read];
+    if (item && item.at >= cutoff) {
+      if (write !== read) list[write] = item;
+      write++;
+    }
   }
+  // truncate the tail
+  if (write < list.length) list.length = write;
 }
 
-export async function shouldAllowController(keyRaw: string) {
+export async function shouldAllowController(keyRaw: string): Promise<{
+  allow: boolean;
+  recentFailures: number;
+  windowSecs: number;
+}> {
   const key = String(keyRaw || "").toLowerCase().trim();
-  if (!ENABLED || !key) return { allow: true, recentFailures: 0, windowSecs: WINDOW_SECONDS };
+  if (!ENABLED || !key) {
+    return { allow: true, recentFailures: 0, windowSecs: WINDOW_SECONDS };
+  }
 
   const list = mem.get(key) ?? [];
   prune(list);
@@ -45,7 +61,7 @@ export async function recordControllerFailure(
   keyRaw: string,
   reason?: string | null,
   note?: string | null
-) {
+): Promise<void> {
   const key = String(keyRaw || "").toLowerCase().trim();
   if (!key) return;
 
