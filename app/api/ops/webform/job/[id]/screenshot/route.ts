@@ -94,14 +94,12 @@ export async function GET(req: Request, ctx: { params: { id: string } }) {
   const headers: Record<string, string> = {
     "content-type": extracted.mime || "image/png",
     "cache-control": "no-store",
+    "content-disposition": asDownload
+      ? `attachment; filename="webform-${id}.png"`
+      : `inline; filename="webform-${id}.png"`,
   };
 
-  // Optional download
-  if (asDownload) {
-    headers["content-disposition"] = `attachment; filename="webform-${id}.png"`;
-  } else {
-    headers["content-disposition"] = `inline; filename="webform-${id}.png"`;
-  }
-
-  return new Response(extracted.body, { status: 200, headers });
+  // FIX: wrap bytes in a Blob to satisfy BodyInit typing in Node runtime
+  const blob = new Blob([extracted.body], { type: extracted.mime || "image/png" });
+  return new Response(blob, { status: 200, headers });
 }
