@@ -9,6 +9,7 @@
 // - SUPABASE_SERVICE_ROLE
 // - (optional) WEBFORM_JOBS_TABLE (defaults to "webform_jobs")
 // - (optional) FLAG_WEBFORM_ADMIN = "1" to enable Requeue/Delete buttons
+// - (optional) FLAG_WEBFORM_EXPORT = "1" to allow CSV export without secret
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -124,6 +125,15 @@ export default async function WebformQueuePage({
   const rows = (data ?? []) as WebformJob[];
   const total = rows.length;
 
+  // build Export CSV href mirroring current filters (status/controller/subject/limit)
+  const csvHref = `/api/ops/webform/list?format=csv&limit=${encodeURIComponent(
+    String(limit)
+  )}${
+    qStatus && qStatus !== "all" ? `&status=${encodeURIComponent(qStatus)}` : ""
+  }${
+    qController ? `&controller=${encodeURIComponent(qController)}` : ""
+  }${qSubject ? `&subject=${encodeURIComponent(qSubject)}` : ""}`;
+
   return (
     <div style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}>
       {/* Header */}
@@ -153,6 +163,20 @@ export default async function WebformQueuePage({
           )}
         </div>
         <div style={{ display: "flex", gap: 8 }}>
+          <a
+            href={csvHref}
+            style={{
+              textDecoration: "none",
+              border: "1px solid #e5e7eb",
+              padding: "8px 12px",
+              borderRadius: 8,
+              fontWeight: 600,
+              background: "#fff",
+            }}
+            title="Download CSV of current view"
+          >
+            ⬇ Export CSV
+          </a>
           <a
             href="/ops/webform/pulse"
             style={{
@@ -224,8 +248,7 @@ export default async function WebformQueuePage({
               padding: 12,
             }}
           >
-            {st}{" "}
-            <Mono>{String(rows.filter((r) => r.status === st).length)}</Mono>
+            {st} <Mono>{String(rows.filter((r) => r.status === st).length)}</Mono>
           </div>
         ))}
       </div>
@@ -302,15 +325,9 @@ export default async function WebformQueuePage({
                 const resultShort =
                   (r.error ? r.error.slice(0, 160) : null) ??
                   (r.result ? safeJsonPreview(r.result, 160) : "-");
-                const jobDetailHref = `/ops/webform/job/${encodeURIComponent(
-                  r.id
-                )}`;
-                const htmlHref = `/api/ops/webform/job/${encodeURIComponent(
-                  r.id
-                )}/html`;
-                const screenshotHref = `/api/ops/webform/job/${encodeURIComponent(
-                  r.id
-                )}/screenshot`;
+                const jobDetailHref = `/ops/webform/job/${encodeURIComponent(r.id)}`;
+                const htmlHref = `/api/ops/webform/job/${encodeURIComponent(r.id)}/html`;
+                const screenshotHref = `/api/ops/webform/job/${encodeURIComponent(r.id)}/screenshot`;
 
                 return (
                   <tr key={r.id} style={{ borderTop: "1px solid #e5e7eb" }}>
