@@ -63,26 +63,46 @@ function Box({ children, title }: { children: React.ReactNode; title: string }) 
   );
 }
 
-export default async function Page({
-  params,
-}: {
-  params: { id: string };
-}) {
-  const id = decodeURIComponent(params.id);
+export default async function Page({ params }: { params: { id: string } }) {
+  const id = decodeURIComponent(params.id || "");
   const s = supabaseAdmin();
 
   const { data, error } = await s
     .from(TABLE)
     .select(
-      "id,status,subject_id,url,meta,attempts,error,result,created_at,claimed_at,finished_at,worker_id,controller_key,controller_name,subject_name,subject_email,subject_handle"
+      [
+        "id",
+        "status",
+        "subject_id",
+        "url",
+        "meta",
+        "attempts",
+        "error",
+        "result",
+        "created_at",
+        "claimed_at",
+        "finished_at",
+        "worker_id",
+        "controller_key",
+        "controller_name",
+        "subject_name",
+        "subject_email",
+        "subject_handle",
+      ].join(",")
     )
     .eq("id", id)
     .single();
 
   const job = (data as Job | null) ?? null;
 
+  const screenshotUrl = `/api/ops/webform/job/${encodeURIComponent(
+    id
+  )}/screenshot`;
+  const htmlUrl = `/api/ops/webform/job/${encodeURIComponent(id)}/html`;
+
   return (
     <div style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}>
+      {/* Header */}
       <div
         style={{
           display: "flex",
@@ -94,10 +114,22 @@ export default async function Page({
         <div>
           <h1 style={{ margin: 0 }}>Ops · Webform Job</h1>
           <div style={{ marginTop: 6, color: "#6b7280" }}>
-            ID: <Mono>{id}</Mono>
+            ID: <Mono>{id || "—"}</Mono>
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <a
+            href="/ops/webform/jobs"
+            style={{
+              textDecoration: "none",
+              border: "1px solid #e5e7eb",
+              padding: "8px 12px",
+              borderRadius: 8,
+              fontWeight: 600,
+            }}
+          >
+            ← Back to Jobs
+          </a>
           <a
             href="/ops/webform/queue"
             style={{
@@ -125,6 +157,7 @@ export default async function Page({
         </div>
       </div>
 
+      {/* Error / Not found */}
       {error || !job ? (
         <div
           style={{
@@ -156,25 +189,48 @@ export default async function Page({
             </Box>
             <Box title="Controller">
               <div>
-                <Mono>{job.controller_name || job.controller_key || "-"}</Mono>
+                <Mono>
+                  {job.controller_name ||
+                    job.controller_key ||
+                    job.meta?.controllerName ||
+                    job.meta?.controllerKey ||
+                    "-"}
+                </Mono>
               </div>
               <div style={{ color: "#6b7280", marginTop: 6 }}>
                 Subject:{" "}
                 <Mono>
                   {job.subject_name ||
                     job.subject_email ||
+                    job.subject_handle ||
                     job.subject_id ||
+                    job.meta?.subject?.name ||
+                    job.meta?.subject?.email ||
+                    job.meta?.subject?.handle ||
                     "-"}
                 </Mono>
               </div>
             </Box>
             <Box title="Timestamps">
-              <div>Created: {new Date(job.created_at).toLocaleString()}</div>
               <div>
-                Claimed: {job.claimed_at ? new Date(job.claimed_at).toLocaleString() : "—"}
+                Created:{" "}
+                <Mono>{new Date(job.created_at).toLocaleString()}</Mono>
               </div>
               <div>
-                Finished: {job.finished_at ? new Date(job.finished_at).toLocaleString() : "—"}
+                Claimed:{" "}
+                <Mono>
+                  {job.claimed_at
+                    ? new Date(job.claimed_at).toLocaleString()
+                    : "—"}
+                </Mono>
+              </div>
+              <div>
+                Finished:{" "}
+                <Mono>
+                  {job.finished_at
+                    ? new Date(job.finished_at).toLocaleString()
+                    : "—"}
+                </Mono>
               </div>
               <div>
                 Worker: <Mono>{job.worker_id || "—"}</Mono>
@@ -201,7 +257,7 @@ export default async function Page({
             }}
           >
             <a
-              href={`/api/ops/webform/job/${encodeURIComponent(job.id)}/html`}
+              href={htmlUrl}
               target="_blank"
               rel="noreferrer"
               style={{
@@ -217,9 +273,7 @@ export default async function Page({
               🧾 View HTML
             </a>
             <a
-              href={`/api/ops/webform/job/${encodeURIComponent(
-                job.id
-              )}/screenshot`}
+              href={screenshotUrl}
               target="_blank"
               rel="noreferrer"
               style={{
@@ -234,9 +288,75 @@ export default async function Page({
             >
               🖼 View Screenshot
             </a>
+            <a
+              href={`${screenshotUrl}?download=1`}
+              style={{
+                textDecoration: "none",
+                border: "1px solid #e5e7eb",
+                padding: "8px 12px",
+                borderRadius: 8,
+                fontWeight: 600,
+                background: "#fff",
+              }}
+              title="Download screenshot"
+            >
+              ⬇ Download Screenshot
+            </a>
           </div>
 
-          {/* Meta / Result / Error */}
+          {/* Inline previews */}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1.3fr 1fr",
+              gap: 12,
+              marginTop: 16,
+            }}
+          >
+            <Box title="Screenshot (inline)">
+              <div style={{ marginTop: 4 }}>
+                <img
+                  src={screenshotUrl}
+                  alt="screenshot"
+                  style={{
+                    width: "100%",
+                    borderRadius: 8,
+                    border: "1px solid #e5e7eb",
+                  }}
+                />
+              </div>
+            </Box>
+            <Box title="HTML (inline preview)">
+              <div
+                style={{
+                  marginTop: 4,
+                  maxHeight: 420,
+                  overflow: "auto",
+                  background: "#0b1020",
+                  borderRadius: 8,
+                }}
+              >
+                <pre
+                  style={{
+                    margin: 0,
+                    padding: 12,
+                    whiteSpace: "pre-wrap",
+                    color: "#e5e7eb",
+                    fontSize: 12,
+                  }}
+                >
+                  {String(
+                    (job.result?.html ||
+                      job.result?.page_html ||
+                      job.result?.raw_html ||
+                      "")
+                  ).slice(0, 100_000) || "—"}
+                </pre>
+              </div>
+            </Box>
+          </div>
+
+          {/* Meta / Result / Error JSON */}
           <div
             style={{
               display: "grid",
@@ -257,7 +377,7 @@ export default async function Page({
                 {JSON.stringify(job.meta ?? {}, null, 2)}
               </pre>
             </Box>
-            <Box title="Result">
+            <Box title="Result JSON">
               {job.result ? (
                 <pre
                   style={{
