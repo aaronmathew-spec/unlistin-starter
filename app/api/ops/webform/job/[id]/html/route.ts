@@ -1,4 +1,3 @@
-// app/api/ops/webform/job/[id]/html/route.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export const runtime = "nodejs";
 
@@ -13,7 +12,10 @@ function srv() {
   });
 }
 
-export async function GET(_req: Request, { params }: { params: { id: string } }) {
+export async function GET(
+  req: Request,
+  { params }: { params: { id: string } }
+) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
     return new Response("env_missing", { status: 500 });
   }
@@ -21,7 +23,7 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
   if (!id) return new Response("missing_id", { status: 400 });
 
   const sb = srv();
-  // result likely contains one of: html | page_html | raw_html
+  // We keep the selection tight to avoid large row payloads.
   const { data, error } = await sb
     .from("webform_jobs")
     .select("result")
@@ -30,23 +32,27 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
 
   if (error || !data) return new Response("not_found", { status: 404 });
 
-  const result = (data as any)?.result || {};
-  const html: string =
-    result?.html ??
-    result?.page_html ??
-    result?.raw_html ??
-    "";
+  const html: unknown =
+    (data as any)?.result?.html ??
+    (data as any)?.result?.page_html ??
+    (data as any)?.result?.raw_html ??
+    null;
 
-  if (!html || typeof html !== "string") {
+  if (typeof html !== "string" || !html.trim()) {
     return new Response("no_html", { status: 404 });
   }
 
-  return new Response(html, {
-    status: 200,
-    headers: {
-      "content-type": "text/html; charset=utf-8",
-      "cache-control": "no-store",
-      "content-disposition": `inline; filename="webform-${id}.html"`,
-    },
-  });
+  const url = new URL(req.url);
+  const isDownload = url.searchParams.get("download") === "1";
+
+  const headers: Record<string, string> = {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+  };
+  if (isDownload) {
+    headers["content-disposition"] = `attachment; filename="webform-${id}.html"`;
+  }
+
+  // Strings are valid BodyInit; send directly.
+  return new Response(html, { status: 200, headers });
 }
