@@ -1,4 +1,3 @@
-// app/ops/webform/queue/page.tsx
 // Minimal Webform Job Console: lists recent jobs, quick filters, and optional admin actions.
 //
 // Reads directly from Supabase using your service-role admin helper (server component).
@@ -9,7 +8,7 @@
 // - SUPABASE_SERVICE_ROLE
 // - (optional) WEBFORM_JOBS_TABLE (defaults to "webform_jobs")
 // - (optional) FLAG_WEBFORM_ADMIN = "1" to enable Requeue/Delete buttons
-// - (optional) FLAG_WEBFORM_EXPORT = "1" to allow CSV export without secret
+// - (optional) FLAG_WEBFORM_EXPORT = "1" to allow CSV download without ops header
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -164,20 +163,6 @@ export default async function WebformQueuePage({
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <a
-            href={csvHref}
-            style={{
-              textDecoration: "none",
-              border: "1px solid #e5e7eb",
-              padding: "8px 12px",
-              borderRadius: 8,
-              fontWeight: 600,
-              background: "#fff",
-            }}
-            title="Download CSV of current view"
-          >
-            ⬇ Export CSV
-          </a>
-          <a
             href="/ops/webform/pulse"
             style={{
               textDecoration: "none",
@@ -200,6 +185,20 @@ export default async function WebformQueuePage({
             }}
           >
             DLQ
+          </a>
+          <a
+            href={csvHref}
+            style={{
+              textDecoration: "none",
+              border: "1px solid #e5e7eb",
+              padding: "8px 12px",
+              borderRadius: 8,
+              fontWeight: 600,
+              background: "#fff",
+            }}
+            title="Download CSV of current view"
+          >
+            ⬇ Export CSV
           </a>
         </div>
       </div>
@@ -327,7 +326,9 @@ export default async function WebformQueuePage({
                   (r.result ? safeJsonPreview(r.result, 160) : "-");
                 const jobDetailHref = `/ops/webform/job/${encodeURIComponent(r.id)}`;
                 const htmlHref = `/api/ops/webform/job/${encodeURIComponent(r.id)}/html`;
-                const screenshotHref = `/api/ops/webform/job/${encodeURIComponent(r.id)}/screenshot`;
+                const screenshotHref = `/api/ops/webform/job/${encodeURIComponent(
+                  r.id
+                )}/screenshot`;
 
                 return (
                   <tr key={r.id} style={{ borderTop: "1px solid #e5e7eb" }}>
