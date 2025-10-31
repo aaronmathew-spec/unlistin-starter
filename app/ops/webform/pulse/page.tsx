@@ -77,13 +77,22 @@ function Mono({ children }: { children: React.ReactNode }) {
 
 async function pulseWorker(): Promise<WorkerResult> {
   const secret = (process.env.SECURE_CRON_SECRET || "").trim();
-  const base = process.env.NEXT_PUBLIC_BASE_URL?.trim() || "";
+  const base =
+    process.env.NEXT_PUBLIC_BASE_URL?.trim() ||
+    // fallback: try Vercel URL if provided
+    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
   const url = `${base}/api/ops/webform/worker`;
 
   if (!secret) {
     return {
       ok: false,
       error: "SECURE_CRON_SECRET not configured",
+    };
+  }
+  if (!base) {
+    return {
+      ok: false,
+      error: "Base URL missing (set NEXT_PUBLIC_BASE_URL or VERCEL_URL)",
     };
   }
 
@@ -94,14 +103,16 @@ async function pulseWorker(): Promise<WorkerResult> {
         "content-type": "application/json",
         "x-secure-cron": secret,
       },
-      // we want fresh execution every time
       cache: "no-store",
     });
 
-    // Worker returns JSON on both success and failure paths
-    const json = (await res.json()) as WorkerResult;
+    let json: WorkerResult;
+    try {
+      json = (await res.json()) as WorkerResult;
+    } catch {
+      json = { ok: false, error: `worker_http_${res.status}` } as WorkerResult;
+    }
 
-    // If the API responded non-200, surface as error while preserving payload
     if (!res.ok) {
       return {
         ok: false,
@@ -123,6 +134,7 @@ export default async function Page() {
   const result = await pulseWorker();
 
   const backHref = "/ops/webform/queue";
+  const rerunHref = "/ops/webform/pulse?ts=" + Date.now(); // force re-run on refresh click
 
   return (
     <div style={{ padding: 24, maxWidth: 820, margin: "0 auto" }}>
@@ -133,19 +145,36 @@ export default async function Page() {
             Triggers a single pass of the Playwright webform worker and shows the outcome.
           </p>
         </div>
-        <a
-          href={backHref}
-          style={{
-            textDecoration: "none",
-            border: "1px solid #e5e7eb",
-            padding: "8px 12px",
-            borderRadius: 8,
-            fontWeight: 600,
-            background: "#fff",
-          }}
-        >
-          ← Back to Queue
-        </a>
+        <div style={{ display: "flex", gap: 8 }}>
+          <a
+            href={backHref}
+            style={{
+              textDecoration: "none",
+              border: "1px solid #e5e7eb",
+              padding: "8px 12px",
+              borderRadius: 8,
+              fontWeight: 600,
+              background: "#fff",
+            }}
+          >
+            ← Back to Queue
+          </a>
+          <a
+            href={rerunHref}
+            style={{
+              textDecoration: "none",
+              border: "1px solid #111827",
+              padding: "8px 12px",
+              borderRadius: 8,
+              fontWeight: 700,
+              background: "#111827",
+              color: "white",
+            }}
+            title="Run another pulse"
+          >
+            ▶ Run Again
+          </a>
+        </div>
       </div>
 
       <div style={{ height: 12 }} />
@@ -163,34 +192,21 @@ export default async function Page() {
           <div style={{ fontWeight: 700, marginBottom: 6 }}>
             Pulse completed successfully
           </div>
-          <div>
-            Processed: <Mono>{String((result as any).processed ?? 0)}</Mono>
-          </div>
-          <div style={{ marginTop: 4 }}>
-            Last Job ID:{" "}
-            <Mono>{String((result as any).lastId ?? "—")}</Mono>
-          </div>
+          {"processed" in result && (
+            <div>
+              Processed: <Mono>{String((result as any).processed ?? 0)}</Mono>
+            </div>
+          )}
+          {"lastId" in result && (
+            <div style={{ marginTop: 4 }}>
+              Last Job ID: <Mono>{String((result as any).lastId ?? "—")}</Mono>
+            </div>
+          )}
           {(result as any).note ? (
             <div style={{ marginTop: 6, color: "#065f46" }}>
               {(result as any).note}
             </div>
           ) : null}
-          <div style={{ marginTop: 12 }}>
-            <a
-              href={backHref}
-              style={{
-                textDecoration: "none",
-                border: "1px solid #111827",
-                padding: "8px 12px",
-                borderRadius: 8,
-                fontWeight: 600,
-                background: "#111827",
-                color: "white",
-              }}
-            >
-              View Queue
-            </a>
-          </div>
         </Box>
       ) : (
         <Box tone="error">
@@ -206,31 +222,17 @@ export default async function Page() {
           )}
           {"lastId" in result && (
             <div style={{ marginTop: 4 }}>
-              Last Job ID:{" "}
-              <Mono>{String((result as any).lastId ?? "—")}</Mono>
+              Last Job ID: <Mono>{String((result as any).lastId ?? "—")}</Mono>
             </div>
           )}
-          <div style={{ marginTop: 12 }}>
-            <a
-              href={backHref}
-              style={{
-                textDecoration: "none",
-                border: "1px solid #e5e7eb",
-                padding: "8px 12px",
-                borderRadius: 8,
-                fontWeight: 600,
-              }}
-            >
-              Back to Queue
-            </a>
-          </div>
         </Box>
       )}
 
       {/* Tips */}
       <div style={{ marginTop: 16, color: "#6b7280", fontSize: 12 }}>
-        Ensure <Mono>SECURE_CRON_SECRET</Mono> is set in your environment. The worker endpoint is{" "}
-        <Mono>/api/ops/webform/worker</Mono>.
+        Ensure <Mono>SECURE_CRON_SECRET</Mono> is set. Base URL resolves from{" "}
+        <Mono>NEXT_PUBLIC_BASE_URL</Mono> (preferred) or <Mono>VERCEL_URL</Mono>.
+        Worker endpoint: <Mono>/api/ops/webform/worker</Mono>.
       </div>
     </div>
   );
