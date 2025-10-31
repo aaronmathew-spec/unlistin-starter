@@ -8,17 +8,22 @@ import { supabaseAdmin } from "@/src/lib/supabase/admin";
 const TABLE = process.env.WEBFORM_JOBS_TABLE || "webform_jobs";
 const ADMIN_ENABLED = process.env.FLAG_WEBFORM_ADMIN === "1";
 
-/**
- * Requeue a job:
- * - status -> queued
- * - clear error
- * - keep attempts as-is so retries accounting stays truthful
- * - clear finished_at so it can be picked again
- */
-export async function actionRequeueJob(fd: FormData) {
+/** Guard: only allow when admin flag is enabled */
+function adminGuard() {
   if (!ADMIN_ENABLED) {
     redirect(`/ops/webform/queue?err=${encodeURIComponent("admin_disabled")}`);
   }
+}
+
+/**
+ * Requeue a job:
+ * - status -> queued
+ * - clear error/result
+ * - keep attempts as-is (for honest retry accounting)
+ * - clear claimed_at/finished_at/worker_id so it can be claimed again
+ */
+export async function actionRequeueJob(fd: FormData) {
+  adminGuard();
 
   const id = String(fd.get("id") || "").trim();
   if (!id) {
@@ -32,7 +37,10 @@ export async function actionRequeueJob(fd: FormData) {
       .update({
         status: "queued",
         error: null,
+        result: null,
+        claimed_at: null,
         finished_at: null,
+        worker_id: null,
       })
       .eq("id", id);
 
@@ -54,13 +62,9 @@ export async function actionRequeueJob(fd: FormData) {
   }
 }
 
-/**
- * Delete a job permanently.
- */
+/** Permanently delete a job row */
 export async function actionDeleteJob(fd: FormData) {
-  if (!ADMIN_ENABLED) {
-    redirect(`/ops/webform/queue?err=${encodeURIComponent("admin_disabled")}`);
-  }
+  adminGuard();
 
   const id = String(fd.get("id") || "").trim();
   if (!id) {
