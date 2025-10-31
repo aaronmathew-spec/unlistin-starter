@@ -1,3 +1,4 @@
+// app/api/ops/webform/job/[id]/html/route.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export const runtime = "nodejs";
 
@@ -12,47 +13,53 @@ function srv() {
   });
 }
 
+/**
+ * Returns the captured HTML for a given job id, if present.
+ * We look for either:
+ *   - webform_jobs.artifact_html (preferred if you’ve added this column)
+ *   - webform_jobs.result.html (fallback; what the worker stores today)
+ */
 export async function GET(
-  req: Request,
+  _req: Request,
   { params }: { params: { id: string } }
 ) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
     return new Response("env_missing", { status: 500 });
   }
+
   const id = (params?.id || "").trim();
   if (!id) return new Response("missing_id", { status: 400 });
 
   const sb = srv();
-  // We keep the selection tight to avoid large row payloads.
+
+  // Select potential sources. If artifact_html doesn’t exist in your schema,
+  // Supabase will just omit it from the row; the fallback below will still work.
   const { data, error } = await sb
     .from("webform_jobs")
-    .select("result")
+    .select("artifact_html, result")
     .eq("id", id)
     .single();
 
   if (error || !data) return new Response("not_found", { status: 404 });
 
-  const html: unknown =
-    (data as any)?.result?.html ??
-    (data as any)?.result?.page_html ??
-    (data as any)?.result?.raw_html ??
-    null;
+  // Prefer dedicated artifact column; else fall back to result.html
+  const artifactHtml = (data as any)?.artifact_html;
+  const resultHtml = (data as any)?.result?.html;
 
-  if (typeof html !== "string" || !html.trim()) {
-    return new Response("no_html", { status: 404 });
-  }
+  const html =
+    typeof artifactHtml === "string"
+      ? artifactHtml
+      : typeof resultHtml === "string"
+      ? resultHtml
+      : null;
 
-  const url = new URL(req.url);
-  const isDownload = url.searchParams.get("download") === "1";
+  if (!html) return new Response("no_html", { status: 404 });
 
-  const headers: Record<string, string> = {
-    "content-type": "text/html; charset=utf-8",
-    "cache-control": "no-store",
-  };
-  if (isDownload) {
-    headers["content-disposition"] = `attachment; filename="webform-${id}.html"`;
-  }
-
-  // Strings are valid BodyInit; send directly.
-  return new Response(html, { status: 200, headers });
+  return new Response(html, {
+    status: 200,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+    },
+  });
 }
