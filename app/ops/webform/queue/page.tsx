@@ -1,3 +1,4 @@
+// app/ops/webform/queue/page.tsx
 // Minimal Webform Job Console: lists recent jobs, quick filters, and optional admin actions.
 //
 // Reads directly from Supabase using your service-role admin helper (server component).
@@ -8,7 +9,6 @@
 // - SUPABASE_SERVICE_ROLE
 // - (optional) WEBFORM_JOBS_TABLE (defaults to "webform_jobs")
 // - (optional) FLAG_WEBFORM_ADMIN = "1" to enable Requeue/Delete buttons
-// - (optional) FLAG_WEBFORM_EXPORT = "1" to allow CSV download without ops header
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -96,6 +96,15 @@ export default async function WebformQueuePage({
     typeof searchParams?.limit === "string" ? searchParams.limit : undefined;
   const limit = clamp(qLimitRaw ? Number(qLimitRaw) || 200 : 200, 1, 1000);
 
+  // Build export CSV href mirroring current filters
+  const csvHref = `/api/ops/webform/list?format=csv&limit=${encodeURIComponent(
+    String(limit)
+  )}${
+    qStatus && qStatus !== "all" ? `&status=${encodeURIComponent(qStatus)}` : ""
+  }${
+    qController ? `&controller=${encodeURIComponent(qController)}` : ""
+  }${qSubject ? `&subject=${encodeURIComponent(qSubject)}` : ""}`;
+
   // Base query
   let query = s
     .from(TABLE)
@@ -123,15 +132,6 @@ export default async function WebformQueuePage({
 
   const rows = (data ?? []) as WebformJob[];
   const total = rows.length;
-
-  // build Export CSV href mirroring current filters (status/controller/subject/limit)
-  const csvHref = `/api/ops/webform/list?format=csv&limit=${encodeURIComponent(
-    String(limit)
-  )}${
-    qStatus && qStatus !== "all" ? `&status=${encodeURIComponent(qStatus)}` : ""
-  }${
-    qController ? `&controller=${encodeURIComponent(qController)}` : ""
-  }${qSubject ? `&subject=${encodeURIComponent(qSubject)}` : ""}`;
 
   return (
     <div style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}>
@@ -186,6 +186,7 @@ export default async function WebformQueuePage({
           >
             DLQ
           </a>
+          {/* NEW: Export CSV */}
           <a
             href={csvHref}
             style={{
