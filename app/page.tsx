@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 
 /* ---------- Types (kept compatible with your existing API shape) ---------- */
@@ -25,41 +25,70 @@ export default function HomePage() {
   const [data, setData] = useState<DashboardResponse | null>(null);
   const [exposure, setExposure] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
-
-  async function load() {
-    setLoading(true);
-
-    // Always render even if APIs fail.
-    const [dashRes, expRes] = await Promise.allSettled([
-      fetch("/api/dashboard", { cache: "no-store" }).then((r) => r.json()),
-      fetch("/api/exposure").then((r) => (r.ok ? r.json() : { score: null })),
-    ]);
-
-    // dashboard
-    if (dashRes.status === "fulfilled" && dashRes.value) {
-      setData(dashRes.value as DashboardResponse);
-    } else {
-      // graceful fallback (all zeros)
-      setData({
-        requests: { total: 0, open: 0, in_progress: 0, resolved: 0, closed: 0 },
-        coverage: { total: 0, open: 0, in_progress: 0, resolved: 0 },
-        brokers: { total: 0 },
-        activity: [],
-      });
-    }
-
-    // exposure
-    if (expRes.status === "fulfilled" && typeof (expRes.value as any)?.score === "number") {
-      setExposure(Math.round((expRes.value as any).score));
-    } else {
-      setExposure(null);
-    }
-
-    setLoading(false);
-  }
+  const mounted = useRef(true);
 
   useEffect(() => {
+    mounted.current = true;
+    const ac = new AbortController();
+
+    async function load() {
+      try {
+        setLoading(true);
+
+        const [dashRes, expRes] = await Promise.allSettled([
+          fetch("/api/dashboard", { cache: "no-store", signal: ac.signal }).then((r) =>
+            r.ok ? r.json() : null
+          ),
+          fetch("/api/exposure", { signal: ac.signal }).then((r) =>
+            r.ok ? r.json() : { score: null }
+          ),
+        ]);
+
+        if (!mounted.current) return;
+
+        // dashboard
+        if (dashRes.status === "fulfilled" && dashRes.value) {
+          setData(dashRes.value as DashboardResponse);
+        } else {
+          // graceful fallback (all zeros)
+          setData({
+            requests: { total: 0, open: 0, in_progress: 0, resolved: 0, closed: 0 },
+            coverage: { total: 0, open: 0, in_progress: 0, resolved: 0 },
+            brokers: { total: 0 },
+            activity: [],
+          });
+        }
+
+        // exposure
+        if (
+          expRes.status === "fulfilled" &&
+          expRes.value &&
+          typeof (expRes.value as any)?.score === "number"
+        ) {
+          setExposure(Math.round((expRes.value as any).score));
+        } else {
+          setExposure(null);
+        }
+      } catch {
+        // keep fallbacks above; nothing else to do
+        if (!mounted.current) return;
+        setData({
+          requests: { total: 0, open: 0, in_progress: 0, resolved: 0, closed: 0 },
+          coverage: { total: 0, open: 0, in_progress: 0, resolved: 0 },
+          brokers: { total: 0 },
+          activity: [],
+        });
+        setExposure(null);
+      } finally {
+        if (mounted.current) setLoading(false);
+      }
+    }
+
     load();
+    return () => {
+      mounted.current = false;
+      ac.abort();
+    };
   }, []);
 
   const metrics = useMemo(() => {
@@ -108,9 +137,15 @@ export default function HomePage() {
 
           {/* CTAs */}
           <div className="row hero-ctas">
-            <Link href="/scan/quick" className="btn btn-lg">Run Quick Scan</Link>
-            <Link href="/ops/proofs/verify" className="btn btn-outline btn-lg">Verify Bundle</Link>
-            <Link href="/billing" className="btn btn-ghost btn-lg">Plans & Billing</Link>
+            <Link href="/scan/quick" className="btn btn-lg">
+              Run Quick Scan
+            </Link>
+            <Link href="/ops/proofs/verify" className="btn btn-outline btn-lg">
+              Verify Bundle
+            </Link>
+            <Link href="/billing" className="btn btn-ghost btn-lg">
+              Plans &amp; Billing
+            </Link>
           </div>
 
           {/* Trust chips */}
@@ -118,7 +153,7 @@ export default function HomePage() {
             <span className="chip">Short-lived links</span>
             <span className="chip">Signed manifests</span>
             <span className="chip">Merkle proof ledger</span>
-            <span className="chip">RLS & CSP enforced</span>
+            <span className="chip">RLS &amp; CSP enforced</span>
           </div>
 
           {/* KPI tiles inside hero (no empty right card) */}
@@ -159,7 +194,7 @@ export default function HomePage() {
           <div className="tile card">
             <div className="tile-title">Coverage Map</div>
             <div className="tile-sub">
-              A live directory of controllers, forms & quirks—kept current and jurisdiction-aware.
+              A live directory of controllers, forms &amp; quirks—kept current and jurisdiction-aware.
             </div>
           </div>
           <div className="tile card">
@@ -171,7 +206,7 @@ export default function HomePage() {
           <div className="tile card">
             <div className="tile-title">SLA Follow-ups</div>
             <div className="tile-sub">
-              Escalations & reminders run quietly in the background until closure.
+              Escalations &amp; reminders run quietly in the background until closure.
             </div>
           </div>
         </section>
@@ -182,7 +217,9 @@ export default function HomePage() {
             <div className="lead" style={{ color: "var(--fg)" }}>
               No requests yet — create your first removal request to get started.
             </div>
-            <Link href="/requests" className="btn btn-outline">Create a Request</Link>
+            <Link href="/requests" className="btn btn-outline">
+              Create a Request
+            </Link>
           </div>
         )}
 
@@ -190,7 +227,9 @@ export default function HomePage() {
         <section className="section">
           <div className="row" style={{ justifyContent: "space-between" }}>
             <div className="h3">Recent Activity</div>
-            <Link className="btn btn-ghost" href="/activity">View all</Link>
+            <Link className="btn btn-ghost" href="/activity">
+              View all
+            </Link>
           </div>
 
           {loading ? (
@@ -260,10 +299,26 @@ function Kpi({
 }) {
   if (loading) {
     return (
-      <div className="kpi panel">
-        <div style={{ height: 14, width: 96, background: "rgba(255,255,255,.08)", borderRadius: 8, marginBottom: 8 }} />
+      <div className="kpi panel" aria-busy="true" aria-live="polite">
+        <div
+          style={{
+            height: 14,
+            width: 96,
+            background: "rgba(255,255,255,.08)",
+            borderRadius: 8,
+            marginBottom: 8,
+          }}
+        />
         <div style={{ height: 28, width: 72, background: "rgba(255,255,255,.08)", borderRadius: 8 }} />
-        <div style={{ height: 10, width: 160, background: "rgba(255,255,255,.06)", borderRadius: 8, marginTop: 8 }} />
+        <div
+          style={{
+            height: 10,
+            width: 160,
+            background: "rgba(255,255,255,.06)",
+            borderRadius: 8,
+            marginTop: 8,
+          }}
+        />
       </div>
     );
   }
@@ -280,8 +335,16 @@ function ActivitySkeleton() {
   return (
     <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
       {[0, 1, 2, 3].map((i) => (
-        <div key={i} className="panel">
-          <div style={{ height: 16, width: 220, background: "rgba(255,255,255,.08)", borderRadius: 8, marginBottom: 8 }} />
+        <div key={i} className="panel" aria-hidden>
+          <div
+            style={{
+              height: 16,
+              width: 220,
+              background: "rgba(255,255,255,.08)",
+              borderRadius: 8,
+              marginBottom: 8,
+            }}
+          />
           <div style={{ height: 12, width: 320, background: "rgba(255,255,255,.06)", borderRadius: 8 }} />
         </div>
       ))}
@@ -291,8 +354,10 @@ function ActivitySkeleton() {
 
 function ExposurePill({ score }: { score: number }) {
   const style = (() => {
-    if (score >= 75) return { background: "rgba(239,68,68,.12)", color: "#ef4444", border: "1px solid rgba(239,68,68,.2)" };
-    if (score >= 40) return { background: "rgba(245,158,11,.12)", color: "#f59e0b", border: "1px solid rgba(245,158,11,.2)" };
+    if (score >= 75)
+      return { background: "rgba(239,68,68,.12)", color: "#ef4444", border: "1px solid rgba(239,68,68,.2)" };
+    if (score >= 40)
+      return { background: "rgba(245,158,11,.12)", color: "#f59e0b", border: "1px solid rgba(245,158,11,.2)" };
     return { background: "rgba(16,185,129,.12)", color: "#10b981", border: "1px solid rgba(16,185,129,.2)" };
   })();
   return (
@@ -305,19 +370,29 @@ function ExposurePill({ score }: { score: number }) {
 /* ------------------------------- Utilities ------------------------------- */
 function prettyEntity(t: Act["entity_type"]) {
   switch (t) {
-    case "request": return "Request";
-    case "coverage": return "Coverage";
-    case "broker": return "Broker";
-    case "file": return "File";
+    case "request":
+      return "Request";
+    case "coverage":
+      return "Coverage";
+    case "broker":
+      return "Broker";
+    case "file":
+      return "File";
   }
 }
 function prettyAction(a: Act["action"]) {
   switch (a) {
-    case "create": return "Created";
-    case "update": return "Updated";
-    case "status": return "Status Changed";
-    case "delete": return "Deleted";
-    case "upload": return "Uploaded";
-    case "download": return "Downloaded";
+    case "create":
+      return "Created";
+    case "update":
+      return "Updated";
+    case "status":
+      return "Status Changed";
+    case "delete":
+      return "Deleted";
+    case "upload":
+      return "Uploaded";
+    case "download":
+      return "Downloaded";
   }
 }
