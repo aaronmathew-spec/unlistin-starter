@@ -17,26 +17,25 @@ function toUtf8(value: any): string | null {
   try {
     if (!value) return null;
 
-    // If we already have a string, prefer it as-is.
+    // String path
     if (typeof value === "string") {
-      // Might be base64 (from triggers). Try decode; if it fails, return raw.
+      // Could be base64 from trigger; try decode. If fails, return raw.
       try {
         const buf = Buffer.from(value, "base64");
-        // Heuristic: if base64 decoding produced something non-empty, prefer it.
         if (buf.length) {
           return new TextDecoder("utf-8").decode(new Uint8Array(buf));
         }
       } catch {
-        /* fall through and return value */
+        /* ignore; fall back to raw */
       }
       return value;
     }
 
-    // Buffer | Uint8Array | ArrayBuffer-like
+    // Buffer / Uint8Array / ArrayBuffer-like
     if (Buffer.isBuffer(value)) {
       return new TextDecoder("utf-8").decode(new Uint8Array(value));
     }
-    if (value?.buffer) {
+    if ((value as any)?.buffer) {
       const u8 = value instanceof Uint8Array ? value : new Uint8Array(value);
       return new TextDecoder("utf-8").decode(u8);
     }
@@ -81,7 +80,11 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
     if (error) {
       // If the column doesn't exist in this schema, PostgREST returns 400.
       // We’ll retry without artifact_html below.
-      if ((error as any)?.code === "PGRST102" || /column .* does not exist/i.test(error.message) || error.message.includes("unknown")) {
+      if (
+        (error as any)?.code === "PGRST102" ||
+        /column .* does not exist/i.test(error.message) ||
+        error.message.includes("unknown")
+      ) {
         hadColumnError = true;
       } else {
         return new Response("not_found", { status: 404 });
@@ -116,7 +119,7 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
   }
 
   // 3) Try result.htmlBytesBase64 / html_base64
-  const htmlB64: unknown = res?.htmlBytesBase64 ?? res?.html_base64;
+  const htmlB64: unknown = (res as any)?.htmlBytesBase64 ?? (res as any)?.html_base64;
   if (typeof htmlB64 === "string" && htmlB64.length > 0) {
     try {
       const buf = Buffer.from(htmlB64, "base64");
