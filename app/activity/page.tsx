@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 
 type Act = {
@@ -16,12 +16,19 @@ export default function ActivityPage() {
   const [rows, setRows] = useState<Act[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
 
-  // filters
+  // filters (client + server)
   const [entityType, setEntityType] = useState<"" | Act["entity_type"]>("");
   const [entityId, setEntityId] = useState<string>("");
 
-  const filtered = useMemo(() => rows, [rows]);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
 
   async function fetchPage(cursor?: string | null) {
     const u = new URL("/api/activity", window.location.origin);
@@ -29,29 +36,52 @@ export default function ActivityPage() {
     if (cursor) u.searchParams.set("cursor", cursor);
     if (entityType) u.searchParams.set("entity_type", entityType);
     if (entityId.trim()) u.searchParams.set("entity_id", entityId.trim());
-    const j = await fetch(u.toString(), { cache: "no-store" }).then((r) => r.json());
+    const res = await fetch(u.toString(), { cache: "no-store" });
+    const j = await res.json().catch(() => ({} as any));
     return { list: (j.activity ?? []) as Act[], next: j.nextCursor ?? null };
   }
 
   async function refresh() {
     setLoading(true);
-    const { list, next } = await fetchPage(null);
-    setRows(list);
-    setNextCursor(next);
-    setLoading(false);
+    try {
+      const { list, next } = await fetchPage(null);
+      if (!alive.current) return;
+      setRows(list);
+      setNextCursor(next);
+    } finally {
+      if (alive.current) setLoading(false);
+    }
   }
 
   useEffect(() => {
+    // refresh on filter change
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entityType, entityId]);
 
   async function loadMore() {
-    if (!nextCursor) return;
-    const { list, next } = await fetchPage(nextCursor);
-    setRows((prev) => [...prev, ...list]);
-    setNextCursor(next);
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const { list, next } = await fetchPage(nextCursor);
+      if (!alive.current) return;
+      setRows((prev) => [...prev, ...list]);
+      setNextCursor(next);
+    } finally {
+      if (alive.current) setLoadingMore(false);
+    }
   }
+
+  // Local safeguard filtering in case the API ignores filters
+  const filtered = useMemo(() => {
+    const byType = entityType
+      ? rows.filter((r) => r.entity_type === entityType)
+      : rows;
+    const byId = entityId.trim()
+      ? byType.filter((r) => String(r.entity_id) === entityId.trim())
+      : byType;
+    return byId;
+  }, [rows, entityType, entityId]);
 
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
@@ -59,6 +89,7 @@ export default function ActivityPage() {
 
       <section className="border rounded-xl p-4 flex flex-wrap gap-3 items-center">
         <select
+          aria-label="Filter by entity type"
           value={entityType}
           onChange={(e) => setEntityType((e.target.value as any) || "")}
           className="border rounded-lg px-3 py-2"
@@ -70,6 +101,7 @@ export default function ActivityPage() {
           <option value="file">File</option>
         </select>
         <input
+          aria-label="Filter by entity id"
           value={entityId}
           onChange={(e) => setEntityId(e.target.value)}
           placeholder="Entity ID (optional)"
@@ -106,7 +138,10 @@ export default function ActivityPage() {
                   : undefined;
 
               return (
-                <li key={a.id} className="border rounded p-3 text-sm flex items-start justify-between">
+                <li
+                  key={a.id}
+                  className="border rounded p-3 text-sm flex items-start justify-between"
+                >
                   <div className="pr-4">
                     <div className="font-medium">
                       {href ? (
@@ -137,8 +172,12 @@ export default function ActivityPage() {
 
         {nextCursor && (
           <div className="flex justify-center pt-2">
-            <button onClick={loadMore} className="px-4 py-2 rounded-lg border hover:bg-gray-50">
-              Load more
+            <button
+              onClick={loadMore}
+              disabled={loadingMore}
+              className="px-4 py-2 rounded-lg border hover:bg-gray-50 disabled:opacity-60"
+            >
+              {loadingMore ? "Loading…" : "Load more"}
             </button>
           </div>
         )}
