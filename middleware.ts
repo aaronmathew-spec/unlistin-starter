@@ -56,13 +56,7 @@ function buildCSP() {
     "img-src": [self, "data:", "blob:", ...supabaseOrigins],
     "script-src": [self], // no inline scripts
     "font-src": [self, "data:"],
-    "connect-src": [
-      self,
-      "https://*.vercel.app",
-      "https://*.vercel.dev",
-      ...vercel,
-      ...supabaseOrigins,
-    ],
+    "connect-src": [self, "https://*.vercel.app", "https://*.vercel.dev", ...vercel, ...supabaseOrigins],
     "frame-ancestors": ["'none'"],
     "object-src": ["'none'"],
     "base-uri": [self],
@@ -142,10 +136,7 @@ export function middleware(req: NextRequest) {
     const provided = (req.headers.get("x-secure-cron") || "").trim();
 
     if (!expected || !provided || expected !== provided) {
-      const deny = NextResponse.json(
-        { ok: false, error: "unauthorized_cron" },
-        { status: 401 },
-      );
+      const deny = NextResponse.json({ ok: false, error: "unauthorized_cron" }, { status: 401 });
       return applySecurityHeaders(deny);
     }
     // fall-through to apply headers and continue
