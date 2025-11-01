@@ -11,8 +11,8 @@ import { makeArtifactReceipt } from "@/src/lib/crypto/receipts";
 import { createClient } from "@supabase/supabase-js";
 
 const OPS = (process.env.SECURE_CRON_SECRET || "").trim();
-const URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-const SR = process.env.SUPABASE_SERVICE_ROLE || "";
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE || "";
 
 function forbid(msg: string) {
   return NextResponse.json({ ok: false, error: msg }, { status: 403 });
@@ -41,13 +41,13 @@ export async function GET(req: Request) {
   if (!OPS) return forbid("secret_not_configured");
   if (hdr !== OPS) return forbid("invalid_secret");
 
-  const url = new URL(req.url);
+  const url = new URL(req.url); // ✅ uses global URL, no shadowing
   const jobId = String(url.searchParams.get("job_id") || "").trim();
   if (!jobId) {
     return NextResponse.json({ ok: false, error: "missing_job_id" }, { status: 400 });
   }
 
-  const sb = createClient(URL, SR, { auth: { persistSession: false } });
+  const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, { auth: { persistSession: false } });
   const { data, error } = await sb
     .from("ops_artifact_receipts")
     .select("job_id, html_sha256, screenshot_sha256, created_at")
