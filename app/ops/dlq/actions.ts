@@ -1,9 +1,8 @@
-// app/ops/dlq/actions.ts
 "use server";
 
 import "server-only";
 import { redirect } from "next/navigation";
-import { retryDLQ } from "@/lib/ops/dlq";
+import { retryDLQ } from "@/src/lib/ops/dlq";
 
 /**
  * Server action to retry a DLQ item.
@@ -22,13 +21,19 @@ export async function actionRetryDLQ(fd: FormData) {
 
   try {
     const res = await retryDLQ(id);
-    if (res.ok) {
+    if ((res as any)?.ok) {
       const note = (res as any).note || "retry_enqueued";
       redirect(`/ops/dlq?ok=1&note=${encodeURIComponent(String(note))}`);
     } else {
-      redirect(`/ops/dlq?err=${encodeURIComponent(String((res as any).error || "retry_failed"))}`);
+      redirect(
+        `/ops/dlq?err=${encodeURIComponent(
+          String((res as any)?.error || "retry_failed")
+        )}`
+      );
     }
   } catch (e: any) {
-    redirect(`/ops/dlq?err=${encodeURIComponent(String(e?.message || e || "retry_failed"))}`);
+    redirect(
+      `/ops/dlq?err=${encodeURIComponent(String(e?.message || e || "retry_failed"))}`
+    );
   }
 }
