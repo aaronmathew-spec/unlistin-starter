@@ -17,21 +17,18 @@ function toUtf8(value: any): string | null {
   try {
     if (!value) return null;
 
-    // String path
     if (typeof value === "string") {
-      // Could be base64 from trigger; try decode. If fails, return raw.
       try {
         const buf = Buffer.from(value, "base64");
         if (buf.length) {
           return new TextDecoder("utf-8").decode(new Uint8Array(buf));
         }
       } catch {
-        /* ignore; fall back to raw */
+        /* ignore */
       }
       return value;
     }
 
-    // Buffer / Uint8Array / ArrayBuffer-like
     if (Buffer.isBuffer(value)) {
       return new TextDecoder("utf-8").decode(new Uint8Array(value));
     }
@@ -40,29 +37,33 @@ function toUtf8(value: any): string | null {
       return new TextDecoder("utf-8").decode(u8);
     }
 
-    // Fallback
     return String(value);
   } catch {
     return null;
   }
 }
 
-function htmlResponse(id: string, html: string) {
+function htmlResponse(id: string, html: string, asDownload: boolean) {
   const headers: HeadersInit = {
     "content-type": "text/html; charset=utf-8",
     "cache-control": "no-store",
     "x-content-type-options": "nosniff",
-    "content-disposition": `inline; filename="webform-${encodeURIComponent(id)}.html"`,
+    "content-disposition": asDownload
+      ? `attachment; filename="webform-${encodeURIComponent(id)}.html"`
+      : `inline; filename="webform-${encodeURIComponent(id)}.html"`,
   };
   return new Response(html, { status: 200, headers });
 }
 
-export async function GET(_req: Request, { params }: { params: { id: string } }) {
+export async function GET(req: Request, { params }: { params: { id: string } }) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
     return new Response("env_missing", { status: 500 });
   }
   const id = (params?.id || "").trim();
   if (!id) return new Response("missing_id", { status: 400 });
+
+  const url = new URL(req.url);
+  const asDownload = url.searchParams.get("download") === "1";
 
   const sb = srv();
 
@@ -78,8 +79,6 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
       .single();
 
     if (error) {
-      // If the column doesn't exist in this schema, PostgREST returns 400.
-      // We’ll retry without artifact_html below.
       if (
         (error as any)?.code === "PGRST102" ||
         /column .* does not exist/i.test(error.message) ||
@@ -108,14 +107,14 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
   // 1) Prefer artifact_html if present (and decodable)
   const artifactHtml = toUtf8(row?.artifact_html);
   if (artifactHtml && artifactHtml.length > 0) {
-    return htmlResponse(id, artifactHtml);
+    return htmlResponse(id, artifactHtml, asDownload);
   }
 
   // 2) Try result.html (string)
   const res = row?.result ?? null;
   const htmlStr: unknown = res?.html;
   if (typeof htmlStr === "string" && htmlStr.length > 0) {
-    return htmlResponse(id, htmlStr);
+    return htmlResponse(id, htmlStr, asDownload);
   }
 
   // 3) Try result.htmlBytesBase64 / html_base64
@@ -124,7 +123,7 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
     try {
       const buf = Buffer.from(htmlB64, "base64");
       const text = new TextDecoder("utf-8").decode(new Uint8Array(buf));
-      if (text) return htmlResponse(id, text);
+      if (text) return htmlResponse(id, text, asDownload);
     } catch {
       /* ignore */
     }
