@@ -3,6 +3,7 @@
  */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { createClient } from "@supabase/supabase-js";
+import { createHash } from "crypto";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE || "";
@@ -18,17 +19,16 @@ function sb() {
 
 // ---------- hashing ----------
 export function sha256Hex(input: string | Uint8Array | Buffer): string {
-  const crypto = require("crypto") as typeof import("crypto");
   const buf =
     typeof input === "string"
       ? Buffer.from(input, "utf-8")
       : Buffer.isBuffer(input)
       ? input
       : Buffer.from(input);
-  return crypto.createHash("sha256").update(buf).digest("hex");
+  return createHash("sha256").update(buf).digest("hex");
 }
 
-// ---------- decode helpers (reuses your html/screenshot logic patterns) ----------
+// ---------- decode helpers ----------
 function toUtf8(value: any): string | null {
   try {
     if (!value) return null;
@@ -38,9 +38,7 @@ function toUtf8(value: any): string | null {
         if (maybe.length) {
           return new TextDecoder("utf-8").decode(new Uint8Array(maybe));
         }
-      } catch {
-        /* ignore */
-      }
+      } catch { /* ignore */ }
       return value;
     }
     if (Buffer.isBuffer(value)) {
@@ -81,9 +79,7 @@ function extractScreenshot(row: any): Uint8Array | null {
     try {
       const buf = Buffer.from(raw as any);
       return Uint8Array.from(buf);
-    } catch {
-      /* ignore */
-    }
+    } catch { /* ignore */ }
   }
   const result = row?.result || null;
   const b64 =
@@ -102,7 +98,6 @@ function extractScreenshot(row: any): Uint8Array | null {
 export async function makeArtifactReceipt(jobId: string) {
   const client = sb();
 
-  // Get row with all fields we may need
   const { data, error } = await client
     .from("webform_jobs")
     .select("artifact_html, artifact_screenshot, result")
@@ -113,7 +108,6 @@ export async function makeArtifactReceipt(jobId: string) {
     return { ok: false as const, error: "job_not_found" };
   }
 
-  // HTML string
   let html: string | null = toUtf8((data as any)?.artifact_html);
   if (!html) {
     const res = (data as any)?.result ?? null;
@@ -126,32 +120,23 @@ export async function makeArtifactReceipt(jobId: string) {
         try {
           const buf = Buffer.from(htmlB64, "base64");
           html = new TextDecoder("utf-8").decode(new Uint8Array(buf));
-        } catch {
-          /* ignore */
-        }
+        } catch { /* ignore */ }
       }
     }
   }
 
-  // Screenshot bytes
   const screenshotBytes = extractScreenshot(data);
 
-  const html_sha256 =
-    html && html.length > 0 ? sha256Hex(html) : null;
+  const html_sha256 = html && html.length > 0 ? sha256Hex(html) : null;
   const screenshot_sha256 =
     screenshotBytes && screenshotBytes.byteLength > 0
       ? sha256Hex(screenshotBytes)
       : null;
 
-  // Upsert into receipts
   const { error: upErr } = await client
     .from("ops_artifact_receipts")
     .upsert(
-      {
-        job_id: jobId,
-        html_sha256,
-        screenshot_sha256,
-      },
+      { job_id: jobId, html_sha256, screenshot_sha256 },
       { onConflict: "job_id" }
     );
 
@@ -159,18 +144,12 @@ export async function makeArtifactReceipt(jobId: string) {
     return { ok: false as const, error: "receipt_upsert_failed" };
   }
 
-  return {
-    ok: true as const,
-    job_id: jobId,
-    html_sha256,
-    screenshot_sha256,
-  };
+  return { ok: true as const, job_id: jobId, html_sha256, screenshot_sha256 };
 }
 
 export async function verifyArtifactReceipt(jobId: string) {
   const client = sb();
 
-  // Load stored receipt
   const { data: rec, error: recErr } = await client
     .from("ops_artifact_receipts")
     .select("job_id, html_sha256, screenshot_sha256")
@@ -181,7 +160,6 @@ export async function verifyArtifactReceipt(jobId: string) {
     return { ok: false as const, error: "receipt_not_found" };
   }
 
-  // Recompute latest hashes
   const fresh = await makeArtifactReceipt(jobId);
   if (!fresh.ok) {
     return { ok: false as const, error: fresh.error };
