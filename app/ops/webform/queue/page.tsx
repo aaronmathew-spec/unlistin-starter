@@ -1,8 +1,4 @@
-// app/ops/webform/queue/page.tsx
-// Minimal Webform Job Console: lists recent jobs, quick filters, and optional admin actions.
-//
-// Reads directly from Supabase using your service-role admin helper (server component).
-// Actions (Requeue/Delete) are enabled only when FLAG_WEBFORM_ADMIN=1.
+// Minimal Webform Job Console: lists recent jobs, quick filters, artifacts links, CSV export, and optional admin actions.
 //
 // ENV required:
 // - NEXT_PUBLIC_SUPABASE_URL
@@ -96,7 +92,7 @@ export default async function WebformQueuePage({
     typeof searchParams?.limit === "string" ? searchParams.limit : undefined;
   const limit = clamp(qLimitRaw ? Number(qLimitRaw) || 200 : 200, 1, 1000);
 
-  // Build export CSV href mirroring current filters
+  // CSV export (mirrors filters)
   const csvHref = `/api/ops/webform/list?format=csv&limit=${encodeURIComponent(
     String(limit)
   )}${
@@ -129,7 +125,6 @@ export default async function WebformQueuePage({
   }
 
   const { data, error } = await query;
-
   const rows = (data ?? []) as WebformJob[];
   const total = rows.length;
 
@@ -186,7 +181,6 @@ export default async function WebformQueuePage({
           >
             DLQ
           </a>
-          {/* NEW: Export CSV */}
           <a
             href={csvHref}
             style={{
