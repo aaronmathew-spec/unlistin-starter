@@ -1,16 +1,26 @@
 // app/ops/dlq/page.tsx
-// DLQ Console: list + filter + retry (via actionRetryDLQ). CSV export button mirrors filters.
+// Ops DLQ Console: list + filter + retry + CSV export
+//
+// Depends on:
+// - src/lib/ops/dlq.ts (you already have it)
+// - app/ops/dlq/actions.ts (you already have it)
+// - app/api/ops/dlq/list/route.ts (you already have it)
+// - src/lib/supabase/admin (present in your repo)
+// - src/lib/ops/notices (added below for friendly banners)
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 import { supabaseAdmin } from "@/src/lib/supabase/admin";
 import { actionRetryDLQ } from "./actions";
+import { getNoticeFromSearch } from "@/src/lib/ops/notices";
 
-type DLQRow = {
+const ADMIN_RETRY = process.env.FLAG_DLQ_RETRY === "1";
+
+type Row = {
   id: string | number;
   created_at: string;
-  channel: string;
+  channel: string | null;
   controller_key: string | null;
   subject_id: string | null;
   payload: Record<string, any> | null;
@@ -41,7 +51,7 @@ function clamp(n: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, n));
 }
 
-function safeJsonPreview(value: unknown, max = 200): string {
+function safeJsonPreview(value: unknown, max = 180): string {
   try {
     const s = JSON.stringify(value);
     if (!s) return "-";
@@ -59,15 +69,20 @@ export default async function DLQPage({
 }) {
   const s = supabaseAdmin();
 
-  const qChannel =
-    typeof searchParams?.channel === "string" ? searchParams.channel.trim() : "";
   const qController =
-    typeof searchParams?.controller === "string" ? searchParams.controller.trim() : "";
+    typeof searchParams?.controller === "string"
+      ? searchParams.controller.trim()
+      : "";
+  const qChannel =
+    typeof searchParams?.channel === "string"
+      ? searchParams.channel.trim()
+      : "";
   const qLimitRaw =
     typeof searchParams?.limit === "string" ? searchParams.limit : undefined;
   const limit = clamp(qLimitRaw ? Number(qLimitRaw) || 200 : 200, 1, 1000);
 
-  // Base select
+  const notice = getNoticeFromSearch(searchParams);
+
   let query = s
     .from("ops_dlq")
     .select(
@@ -76,22 +91,18 @@ export default async function DLQPage({
     .order("created_at", { ascending: false })
     .limit(limit);
 
-  if (qChannel) {
-    query = query.ilike("channel", `%${qChannel}%`);
-  }
-  if (qController) {
-    query = query.ilike("controller_key", `%${qController}%`);
-  }
+  if (qController) query = query.ilike("controller_key", `%${qController}%`);
+  if (qChannel) query = query.ilike("channel", `%${qChannel}%`);
 
   const { data, error } = await query;
-  const rows = (data ?? []) as DLQRow[];
-  const total = rows.length;
+  const rows = (data ?? []) as Row[];
 
-  // CSV export URL mirroring filters
-  const csvHref =
-    `/api/ops/dlq/list?format=csv&limit=${encodeURIComponent(String(limit))}` +
-    (qChannel ? `&channel=${encodeURIComponent(qChannel)}` : "") +
-    (qController ? `&controller=${encodeURIComponent(qController)}` : "");
+  // CSV export href (re-uses your API route)
+  const csvHref = `/api/ops/dlq/list?format=csv&limit=${encodeURIComponent(
+    String(limit)
+  )}${
+    qController ? `&controller=${encodeURIComponent(qController)}` : ""
+  }${qChannel ? `&channel=${encodeURIComponent(qChannel)}` : ""}`;
 
   return (
     <div style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}>
@@ -107,27 +118,15 @@ export default async function DLQPage({
         <div>
           <h1 style={{ margin: 0 }}>Ops · DLQ</h1>
           <p style={{ marginTop: 6, color: "#6b7280" }}>
-            Failed dispatches ready for manual retry. Configure{" "}
-            <Mono>FLAG_DLQ_RETRY=1</Mono> to enable the Retry action.
+            Dead-letter queue for failed dispatch attempts. Retry requires{" "}
+            <Mono>FLAG_DLQ_RETRY=1</Mono>.
           </p>
           <div style={{ marginTop: 6, color: "#6b7280", fontSize: 12 }}>
-            Filters: <Mono>?channel=webform</Mono> <Mono>?controller=truecaller</Mono>{" "}
-            <Mono>?limit=500</Mono>
+            Filters: <Mono>?controller=truecaller</Mono>{" "}
+            <Mono>?channel=webform</Mono> <Mono>?limit=500</Mono>
           </div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <a
-            href="/ops"
-            style={{
-              textDecoration: "none",
-              border: "1px solid #e5e7eb",
-              padding: "8px 12px",
-              borderRadius: 8,
-              fontWeight: 600,
-            }}
-          >
-            ← Ops Overview
-          </a>
           <a
             href="/ops/webform/queue"
             style={{
@@ -138,7 +137,7 @@ export default async function DLQPage({
               fontWeight: 600,
             }}
           >
-            📋 Queue
+            ← Back to Queue
           </a>
           <a
             href={csvHref}
@@ -156,6 +155,23 @@ export default async function DLQPage({
           </a>
         </div>
       </div>
+
+      {/* Notices */}
+      {notice ? (
+        <div
+          style={{
+            marginTop: 12,
+            padding: 12,
+            border: `1px solid ${notice.kind === "error" ? "#ef4444" : "#10b981"}`,
+            background: notice.kind === "error" ? "#fef2f2" : "#ecfdf5",
+            borderRadius: 10,
+            color: notice.kind === "error" ? "#991b1b" : "#065f46",
+            fontWeight: 600,
+          }}
+        >
+          {notice.message}
+        </div>
+      ) : null}
 
       {/* Error */}
       {error ? (
@@ -189,28 +205,22 @@ export default async function DLQPage({
             padding: 12,
           }}
         >
-          Total <Mono>{String(total)}</Mono>
+          Total <Mono>{String(rows.length)}</Mono>
         </div>
-        <div
-          style={{
-            border: "1px solid #e5e7eb",
-            background: "white",
-            borderRadius: 10,
-            padding: 12,
-          }}
-        >
-          Channel <Mono>{qChannel || "—"}</Mono>
-        </div>
-        <div
-          style={{
-            border: "1px solid #e5e7eb",
-            background: "white",
-            borderRadius: 10,
-            padding: 12,
-          }}
-        >
-          Controller <Mono>{qController || "—"}</Mono>
-        </div>
+        {["webform", "email"].map((ch) => (
+          <div
+            key={ch}
+            style={{
+              border: "1px solid #e5e7eb",
+              background: "white",
+              borderRadius: 10,
+              padding: 12,
+            }}
+          >
+            {ch}{" "}
+            <Mono>{String(rows.filter((r) => (r.channel || "") === ch).length)}</Mono>
+          </div>
+        ))}
       </div>
 
       {/* Table */}
@@ -241,19 +251,26 @@ export default async function DLQPage({
                 <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Retries</th>
                 <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Error</th>
                 <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Payload</th>
-                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Actions</th>
+                {ADMIN_RETRY && (
+                  <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Actions</th>
+                )}
               </tr>
             </thead>
             <tbody>
               {rows.map((r) => {
-                const subject = r.subject_id || r.payload?.subject?.id || r.payload?.subject?.email || "—";
-                const errorShort =
-                  (r.error_code ? `${r.error_code}: ${r.error_note || ""}` : r.error_note || "") || "—";
+                const subject =
+                  r.subject_id ||
+                  r.payload?.subject?.email ||
+                  r.payload?.subject?.name ||
+                  "-";
+                const err = r.error_code || r.error_note || "-";
                 const payloadShort = safeJsonPreview(r.payload, 160);
 
                 return (
                   <tr key={String(r.id)} style={{ borderTop: "1px solid #e5e7eb" }}>
-                    <td style={{ padding: 12 }}>{new Date(r.created_at).toLocaleString()}</td>
+                    <td style={{ padding: 12 }}>
+                      {new Date(r.created_at).toLocaleString()}
+                    </td>
                     <td style={{ padding: 12 }}>
                       <Mono>{r.channel || "—"}</Mono>
                     </td>
@@ -267,50 +284,43 @@ export default async function DLQPage({
                       <Mono>{String(r.retries ?? 0)}</Mono>
                     </td>
                     <td style={{ padding: 12 }}>
-                      <Mono>{errorShort}</Mono>
+                      <Mono>{err}</Mono>
                     </td>
                     <td style={{ padding: 12 }}>
                       <Mono>{payloadShort}</Mono>
                     </td>
-                    <td style={{ padding: 12, whiteSpace: "nowrap" }}>
-                      <form action={actionRetryDLQ} style={{ display: "inline-block" }}>
-                        <input type="hidden" name="id" value={String(r.id)} />
-                        <button
-                          type="submit"
-                          style={{
-                            padding: "6px 10px",
-                            borderRadius: 8,
-                            border: "1px solid #111827",
-                            background: "#111827",
-                            color: "white",
-                            fontWeight: 600,
-                            cursor: "pointer",
-                          }}
-                          title={
-                            process.env.FLAG_DLQ_RETRY === "1"
-                              ? "Retry dispatch"
-                              : "Enable FLAG_DLQ_RETRY=1 to allow retry"
-                          }
-                          disabled={process.env.FLAG_DLQ_RETRY !== "1"}
-                        >
-                          Retry
-                        </button>
-                      </form>
-                    </td>
+                    {ADMIN_RETRY && (
+                      <td style={{ padding: 12, whiteSpace: "nowrap" }}>
+                        <form action={actionRetryDLQ} style={{ display: "inline-block" }}>
+                          <input type="hidden" name="id" value={String(r.id)} />
+                          <button
+                            type="submit"
+                            style={{
+                              padding: "6px 10px",
+                              borderRadius: 8,
+                              border: "1px solid #111827",
+                              background: "#111827",
+                              color: "white",
+                              fontWeight: 600,
+                              cursor: "pointer",
+                            }}
+                            title="Retry"
+                          >
+                            Retry
+                          </button>
+                        </form>
+                      </td>
+                    )}
                   </tr>
                 );
               })}
               {rows.length === 0 && (
                 <tr>
                   <td
-                    colSpan={8}
-                    style={{
-                      padding: 24,
-                      textAlign: "center",
-                      color: "#6b7280",
-                    }}
+                    colSpan={ADMIN_RETRY ? 8 : 7}
+                    style={{ padding: 24, textAlign: "center", color: "#6b7280" }}
                   >
-                    DLQ is empty or filters matched nothing.
+                    DLQ is empty (or filters removed everything).
                   </td>
                 </tr>
               )}
@@ -319,8 +329,9 @@ export default async function DLQPage({
         </div>
       </div>
 
+      {/* Footer */}
       <div style={{ marginTop: 14, fontSize: 12, color: "#6b7280" }}>
-        CSV export requires <Mono>FLAG_DLQ_EXPORT=1</Mono> (or ops header <Mono>x-secure-cron</Mono>).
+        Tip: Enable retries with <Mono>FLAG_DLQ_RETRY=1</Mono>. Use the CSV export for audits.
       </div>
     </div>
   );
