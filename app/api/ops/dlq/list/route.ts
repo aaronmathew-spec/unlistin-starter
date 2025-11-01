@@ -9,7 +9,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
-import { listDLQ } from "@/lib/ops/dlq";
+import { listDLQ } from "@/src/lib/ops/dlq";
 
 const OPS_SECRET = (process.env.SECURE_CRON_SECRET || "").trim();
 const FLAG_DLQ_EXPORT = process.env.FLAG_DLQ_EXPORT === "1";
@@ -26,7 +26,10 @@ function csvEscape(s: unknown) {
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const limit = Math.max(1, Math.min(2000, Number(url.searchParams.get("limit") ?? "200")));
+  const limit = Math.max(
+    1,
+    Math.min(2000, Number(url.searchParams.get("limit") ?? "200"))
+  );
   const controller = url.searchParams.get("controller") || "";
   const channel = url.searchParams.get("channel") || "";
   const format = (url.searchParams.get("format") || "json").toLowerCase();
@@ -46,8 +49,12 @@ export async function GET(req: Request) {
 
   try {
     let rows = await listDLQ(limit);
-    if (controller) rows = rows.filter((r) => String(r.controller_key || "").includes(controller));
-    if (channel) rows = rows.filter((r) => String(r.channel || "").includes(channel));
+    if (controller)
+      rows = rows.filter((r) =>
+        String(r.controller_key || "").includes(controller)
+      );
+    if (channel)
+      rows = rows.filter((r) => String(r.channel || "").includes(channel));
 
     if (format === "csv") {
       const headerLine = [
@@ -85,6 +92,7 @@ export async function GET(req: Request) {
         headers: {
           "content-type": "text/csv; charset=utf-8",
           "cache-control": "no-store",
+          "x-content-type-options": "nosniff",
           "content-disposition": `attachment; filename="unlistin-dlq-${ts}.csv"`,
         },
       });
