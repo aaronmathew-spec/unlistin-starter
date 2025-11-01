@@ -1,192 +1,184 @@
-// app/start/page.tsx
-/* Customer intake: creates a minimal queued job via /api/public/intake.
-   If env flag is off, the page degrades gracefully with instructions. */
+"use client";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
+import { useState } from "react";
+import Link from "next/link";
 
-function Box({ children, title }: { children: React.ReactNode; title: string }) {
+type SubmitState =
+  | { status: "idle" }
+  | { status: "submitting" }
+  | { status: "ok" }
+  | { status: "error"; error: string };
+
+export default function StartPage() {
+  const [state, setState] = useState<SubmitState>({ status: "idle" });
+  const [form, setForm] = useState({
+    name: "",
+    email: "",
+    region: "IN",
+    goals: "",
+    referral: "",
+    // honeypot: must remain empty
+    company: "",
+  });
+
+  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (state.status === "submitting") return;
+
+    // very light client validation
+    if (!form.email || !/^\S+@\S+\.\S+$/.test(form.email)) {
+      setState({ status: "error", error: "Please enter a valid email." });
+      return;
+    }
+    if (form.company) {
+      // honeypot triggered: pretend OK silently
+      setState({ status: "ok" });
+      window.location.href = "/start/thanks";
+      return;
+    }
+
+    setState({ status: "submitting" });
+    try {
+      const res = await fetch("/api/public/intake", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: form.name,
+          email: form.email,
+          region: form.region,
+          goals: form.goals,
+          referral: form.referral || undefined,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json?.error || "submit_failed");
+      setState({ status: "ok" });
+      window.location.href = "/start/thanks";
+    } catch (e: any) {
+      setState({ status: "error", error: String(e?.message || e) });
+    }
+  }
+
   return (
-    <div style={{ border: "1px solid #e5e7eb", background: "white", borderRadius: 12, padding: 16 }}>
-      <div style={{ fontWeight: 700, marginBottom: 8 }}>{title}</div>
-      {children}
-    </div>
-  );
-}
+    <main>
+      <div className="bg-glow" aria-hidden />
+      <div className="hero">
+        <div className="hero-card glass" style={{ maxWidth: 840 }}>
+          <span className="pill">India-first · Proof-backed</span>
+          <h1 className="hero-title">
+            Start removing your data — <span className="hero-accent">safely & verifiably</span>
+          </h1>
+          <p className="sub">
+            Tell us what you want removed. We prepare lawful requests, dispatch to controllers, and
+            keep signed evidence for your records.
+          </p>
 
-function Mono({ children }: { children: React.ReactNode }) {
-  return (
-    <code
-      style={{
-        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-        fontSize: 12,
-        background: "#f9fafb",
-        border: "1px solid #e5e7eb",
-        padding: "2px 6px",
-        borderRadius: 6,
-      }}
-    >
-      {children}
-    </code>
-  );
-}
+          <form onSubmit={onSubmit} className="card" style={{ padding: 16, marginTop: 16 }}>
+            {/* honeypot (keep hidden) */}
+            <input
+              type="text"
+              name="company"
+              value={form.company}
+              onChange={(e) => setForm({ ...form, company: e.target.value })}
+              style={{ position: "absolute", left: -9999, width: 1, height: 1, opacity: 0 }}
+              tabIndex={-1}
+              aria-hidden
+              autoComplete="off"
+            />
 
-const ENABLED = (process.env.NEXT_PUBLIC_PUBLIC_INTAKE || "").toLowerCase() === "1";
+            <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
+              <label className="field" style={{ flex: 1, minWidth: 220 }}>
+                <div className="field-label">Name (optional)</div>
+                <input
+                  className="input"
+                  placeholder="Jane Doe"
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                />
+              </label>
 
-export default function Start() {
-  const note =
-    ENABLED
-      ? null
-      : "Online intake is currently closed. Please use Contact/Support or reach out to our team to initiate a request.";
+              <label className="field" style={{ flex: 1, minWidth: 220 }}>
+                <div className="field-label">Email</div>
+                <input
+                  className="input"
+                  placeholder="you@example.com"
+                  inputMode="email"
+                  required
+                  value={form.email}
+                  onChange={(e) => setForm({ ...form, email: e.target.value })}
+                />
+              </label>
 
-  return (
-    <main style={{ padding: 24, maxWidth: 800, margin: "0 auto" }}>
-      <a href="/" style={{ textDecoration: "none", color: "#111827" }}>← Home</a>
-      <h1 style={{ marginTop: 10, marginBottom: 6 }}>Start a data removal</h1>
-      <p style={{ color: "#6b7280", marginTop: 0 }}>
-        Tell us what you want removed and where it appears. We’ll generate compliant requests and keep you updated.
-      </p>
+              <label className="field" style={{ width: 160 }}>
+                <div className="field-label">Region</div>
+                <select
+                  className="input"
+                  value={form.region}
+                  onChange={(e) => setForm({ ...form, region: e.target.value })}
+                >
+                  <option value="IN">India</option>
+                  <option value="US">United States</option>
+                  <option value="EU">European Union</option>
+                  <option value="UK">United Kingdom</option>
+                  <option value="SG">Singapore</option>
+                  <option value="AU">Australia</option>
+                  <option value="OTHER">Other</option>
+                </select>
+              </label>
+            </div>
 
-      {!ENABLED && (
-        <div
-          style={{
-            marginTop: 10,
-            padding: 12,
-            border: "1px solid #f59e0b",
-            background: "#fffbeb",
-            color: "#92400e",
-            borderRadius: 10,
-          }}
-        >
-          ⚠ {note}
-        </div>
-      )}
+            <label className="field" style={{ marginTop: 12 }}>
+              <div className="field-label">What would you like to remove? (links, sites, or short note)</div>
+              <textarea
+                className="input"
+                rows={4}
+                placeholder="Example: remove my data from XYZ people search and ABC data broker…"
+                value={form.goals}
+                onChange={(e) => setForm({ ...form, goals: e.target.value })}
+              />
+            </label>
 
-      <form
-        method="post"
-        action="/api/public/intake"
-        style={{
-          marginTop: 14,
-          border: "1px solid #e5e7eb",
-          background: "white",
-          borderRadius: 12,
-          padding: 16,
-          display: "grid",
-          gap: 12,
-        }}
-      >
-        <div style={{ display: "grid", gap: 8 }}>
-          <label style={{ fontWeight: 600 }}>Your email (for updates)</label>
-          <input
-            name="email"
-            type="email"
-            required
-            placeholder="you@example.com"
-            style={{
-              padding: "10px 12px",
-              border: "1px solid #e5e7eb",
-              borderRadius: 10,
-            }}
-          />
-        </div>
+            <label className="field" style={{ marginTop: 12 }}>
+              <div className="field-label">Referral (optional)</div>
+              <input
+                className="input"
+                placeholder="Promo code or who referred you"
+                value={form.referral}
+                onChange={(e) => setForm({ ...form, referral: e.target.value })}
+              />
+            </label>
 
-        <div style={{ display: "grid", gap: 8 }}>
-          <label style={{ fontWeight: 600 }}>Your name</label>
-          <input
-            name="name"
-            type="text"
-            required
-            placeholder="Full name"
-            style={{ padding: "10px 12px", border: "1px solid #e5e7eb", borderRadius: 10 }}
-          />
-        </div>
+            {state.status === "error" ? (
+              <div className="panel" style={{ marginTop: 10, borderColor: "#ef4444", background: "#fef2f2", color: "#991b1b" }}>
+                {state.error}
+              </div>
+            ) : null}
 
-        <div style={{ display: "grid", gap: 8 }}>
-          <label style={{ fontWeight: 600 }}>Link to the page (URL)</label>
-          <input
-            name="url"
-            type="url"
-            required
-            placeholder="https://example.com/profile/..."
-            style={{ padding: "10px 12px", border: "1px solid #e5e7eb", borderRadius: 10 }}
-          />
-        </div>
+            <div className="row" style={{ gap: 8, marginTop: 14 }}>
+              <button
+                type="submit"
+                className="btn btn-lg"
+                disabled={state.status === "submitting"}
+                aria-busy={state.status === "submitting"}
+              >
+                {state.status === "submitting" ? "Submitting…" : "Get Started"}
+              </button>
+              <Link href="/" className="btn btn-ghost btn-lg">
+                Back to Home
+              </Link>
+            </div>
 
-        <div style={{ display: "grid", gap: 8 }}>
-          <label style={{ fontWeight: 600 }}>Describe what needs removal</label>
-          <textarea
-            name="description"
-            rows={5}
-            placeholder="Tell us what’s on the page (text, image, video, sensitive info, etc.)"
-            style={{ padding: 12, border: "1px solid #e5e7eb", borderRadius: 10 }}
-          />
-        </div>
+            <div className="hero-note" style={{ marginTop: 10 }}>
+              We’ll email next steps. We store the minimum required and sign manifests for audit.
+            </div>
+          </form>
 
-        <div style={{ display: "grid", gap: 8 }}>
-          <label style={{ fontWeight: 600 }}>Region</label>
-          <select
-            name="region"
-            defaultValue="IN"
-            style={{ padding: "10px 12px", border: "1px solid #e5e7eb", borderRadius: 10 }}
-          >
-            <option value="IN">India (DPDP)</option>
-            <option value="US">United States</option>
-            <option value="EU">European Union</option>
-          </select>
-          <div style={{ color: "#6b7280", fontSize: 12 }}>
-            We’ll route your request to the right policy templates automatically.
+          <div className="chips" style={{ marginTop: 14 }}>
+            <span className="chip">Min-data intake</span>
+            <span className="chip">Audit-ready proofs</span>
+            <span className="chip">Global policy mapping</span>
           </div>
         </div>
-
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 6 }}>
-          <button
-            type="submit"
-            disabled={!ENABLED}
-            style={{
-              padding: "10px 14px",
-              borderRadius: 12,
-              border: "1px solid #111827",
-              background: ENABLED ? "#111827" : "#6b7280",
-              color: "white",
-              fontWeight: 700,
-              cursor: ENABLED ? "pointer" : "not-allowed",
-            }}
-            title={ENABLED ? "Submit" : "Intake closed"}
-          >
-            Submit request
-          </button>
-          <a
-            href="/status"
-            style={{
-              textDecoration: "none",
-              border: "1px solid #e5e7eb",
-              padding: "10px 14px",
-              borderRadius: 12,
-              fontWeight: 600,
-              background: "white",
-              color: "#111827",
-            }}
-          >
-            Check status
-          </a>
-        </div>
-      </form>
-
-      <div style={{ marginTop: 16, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <Box title="What happens next">
-          <ol style={{ margin: 0, paddingLeft: 18, color: "#6b7280" }}>
-            <li>We validate the link and content.</li>
-            <li>AI drafts a compliant notice; a human reviews it.</li>
-            <li>We dispatch to the controller and track responses.</li>
-            <li>You’ll see proofs (HTML + screenshot) in your status page.</li>
-          </ol>
-        </Box>
-        <Box title="Transparency">
-          <div style={{ color: "#6b7280" }}>
-            We keep an audit of actions and mask sensitive data in logs. Learn more on{" "}
-            <a href="/why">Why</a>. For support, email <Mono>support@unlistin.example</Mono>.
-          </div>
-        </Box>
       </div>
     </main>
   );
