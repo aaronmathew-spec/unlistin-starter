@@ -13,7 +13,7 @@ const ENABLED = process.env.FLAG_CIRCUIT_BREAKER === "1";
 const WINDOW_SECONDS = Number(process.env.CB_WINDOW_SECS ?? 600); // 10 min
 const MAX_RECENT_FAILS = Number(process.env.CB_MAX_RECENT_FAILS ?? 5);
 
-// In-memory sliding window (per edge function instance)
+// In-memory sliding window (per runtime instance)
 type Fail = { at: number; code?: string | null };
 const mem = new Map<string, Fail[]>();
 
@@ -35,7 +35,6 @@ function prune(list: Fail[]): void {
       write++;
     }
   }
-  // truncate the tail
   if (write < list.length) list.length = write;
 }
 
@@ -80,7 +79,6 @@ export async function recordControllerFailure(
     const { createClient } = await import("@supabase/supabase-js");
     const sb = createClient(url, sr, { auth: { persistSession: false } });
 
-    // Attempt insert; ignore schema errors
     await sb.from("ops_controller_failures").insert({
       controller_key: key,
       reason: reason ?? null,
