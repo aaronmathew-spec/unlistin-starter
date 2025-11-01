@@ -13,12 +13,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" suppressHydrationWarning>
       <body>
-        {/* Top mini-header (brand only) */}
+        {/* Top mini-header (brand + primary nav) */}
         <header className="site-header">
           <a className="brand" href="/">Unlistin</a>
           <nav className="nav-minimal">
-            <a href="/(app)/dashboard" className="nav-link">Dashboard</a>
-            <a href="/(app)/settings" className="nav-link">Settings</a>
+            {/* Keep minimal, user-facing routes (stable & public) */}
+            <a href="/scan/quick" className="nav-link">Quick Scan</a>
+            <a href="/coverage" className="nav-link">Coverage</a>
+            <a href="/billing" className="nav-link">Billing</a>
+            <a href="/help" className="nav-link">Help</a>
           </nav>
         </header>
 
@@ -33,6 +36,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <a href="/help" className="muted">Help</a>
             <a href="/policy/privacy" className="muted">Privacy</a>
             <a href="/policy/terms" className="muted">Terms</a>
+            <a href="/verify" className="muted">Verify Proof</a>
           </div>
         </footer>
 
