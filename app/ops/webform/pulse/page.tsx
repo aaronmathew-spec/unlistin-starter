@@ -1,4 +1,3 @@
-// app/ops/webform/pulse/page.tsx
 // Manual one-click pulse for the webform worker (runs server-to-server).
 // Sends the SECURE_CRON_SECRET header, calls /api/ops/webform/worker, and renders the result.
 
@@ -79,15 +78,11 @@ async function pulseWorker(): Promise<WorkerResult> {
   const secret = (process.env.SECURE_CRON_SECRET || "").trim();
   const base =
     process.env.NEXT_PUBLIC_BASE_URL?.trim() ||
-    // fallback: try Vercel URL if provided
     (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
   const url = `${base}/api/ops/webform/worker`;
 
   if (!secret) {
-    return {
-      ok: false,
-      error: "SECURE_CRON_SECRET not configured",
-    };
+    return { ok: false, error: "SECURE_CRON_SECRET not configured" };
   }
   if (!base) {
     return {
@@ -118,7 +113,9 @@ async function pulseWorker(): Promise<WorkerResult> {
         ok: false,
         error:
           (json as any)?.error ||
-          `worker_http_${res.status}_${res.statusText.toLowerCase().replace(/\s+/g, "_")}`,
+          `worker_http_${res.status}_${res.statusText
+            .toLowerCase()
+            .replace(/\s+/g, "_")}`,
         processed: (json as any)?.processed,
         lastId: (json as any)?.lastId,
       };
