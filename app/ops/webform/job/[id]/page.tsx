@@ -7,6 +7,7 @@ export const dynamic = "force-dynamic";
 import { supabaseAdmin } from "@/src/lib/supabase/admin";
 
 const TABLE = process.env.WEBFORM_JOBS_TABLE || "webform_jobs";
+const HAS_OPS_SECRET = !!(process.env.SECURE_CRON_SECRET || "").trim();
 
 type Job = {
   id: string;
@@ -95,9 +96,21 @@ export default async function Page({ params }: { params: { id: string } }) {
 
   const job = (data as Job | null) ?? null;
 
+  // Load receipt if present (best-effort; page still renders if table missing)
+  let receipt: { html_sha256?: string | null; screenshot_sha256?: string | null } | null = null;
+  try {
+    const { data: r } = await s
+      .from("ops_artifact_receipts")
+      .select("html_sha256, screenshot_sha256")
+      .eq("job_id", id)
+      .single();
+    receipt = (r as any) || null;
+  } catch {
+    receipt = null;
+  }
+
   const screenshotUrl = `/api/ops/webform/job/${encodeURIComponent(id)}/screenshot`;
   const htmlUrl = `/api/ops/webform/job/${encodeURIComponent(id)}/html`;
-  const htmlDownloadUrl = `${htmlUrl}?download=1`;
 
   return (
     <div style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}>
@@ -272,20 +285,6 @@ export default async function Page({ params }: { params: { id: string } }) {
               🧾 View HTML
             </a>
             <a
-              href={htmlDownloadUrl}
-              style={{
-                textDecoration: "none",
-                border: "1px solid #e5e7eb",
-                padding: "8px 12px",
-                borderRadius: 8,
-                fontWeight: 600,
-                background: "#fff",
-              }}
-              title="Download captured HTML"
-            >
-              ⬇ Download HTML
-            </a>
-            <a
               href={screenshotUrl}
               target="_blank"
               rel="noreferrer"
@@ -315,6 +314,45 @@ export default async function Page({ params }: { params: { id: string } }) {
             >
               ⬇ Download Screenshot
             </a>
+          </div>
+
+          {/* NEW: Artifact Proofs */}
+          <div style={{ marginTop: 12 }}>
+            <Box title="Artifact Proofs (SHA-256)">
+              {receipt ? (
+                <>
+                  <div>HTML: <Mono>{receipt.html_sha256 || "—"}</Mono></div>
+                  <div style={{ marginTop: 4 }}>
+                    Screenshot: <Mono>{receipt.screenshot_sha256 || "—"}</Mono>
+                  </div>
+                </>
+              ) : (
+                <div style={{ color: "#6b7280" }}>No receipt stored yet.</div>
+              )}
+
+              <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <a
+                  href="/api/ops/proofs/receipt"
+                  title="Use POST with x-secure-cron header to upsert receipt"
+                  style={btn}
+                >
+                  ⤴ Upsert Receipt (API)
+                </a>
+                <a
+                  href="/api/ops/proofs/verify"
+                  title="Use POST with x-secure-cron header to verify now"
+                  style={btn}
+                >
+                  ✅ Verify Now (API)
+                </a>
+                <a href="/ops/admin" style={btn}>Admin</a>
+              </div>
+              {!HAS_OPS_SECRET && (
+                <div style={{ color: "#b91c1c", marginTop: 8, fontSize: 12 }}>
+                  Tip: Set <Mono>SECURE_CRON_SECRET</Mono> to enable the ops-only proof APIs.
+                </div>
+              )}
+            </Box>
           </div>
 
           {/* Inline previews */}
@@ -429,3 +467,12 @@ export default async function Page({ params }: { params: { id: string } }) {
     </div>
   );
 }
+
+const btn: React.CSSProperties = {
+  textDecoration: "none",
+  border: "1px solid #e5e7eb",
+  padding: "8px 12px",
+  borderRadius: 8,
+  fontWeight: 600,
+  background: "#fff",
+};
