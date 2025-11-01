@@ -1,4 +1,3 @@
-// app/ops/webform/job/[id]/page.tsx
 // Webform Job Detail: inspect one job (summary, meta/result JSON, HTML & screenshot preview links)
 
 export const runtime = "nodejs";
@@ -64,7 +63,8 @@ function Box({ children, title }: { children: React.ReactNode; title: string }) 
 }
 
 export default async function Page({ params }: { params: { id: string } }) {
-  const id = decodeURIComponent(params.id || "");
+  const rawId = params?.id ?? "";
+  const id = rawId ? decodeURIComponent(rawId) : "";
   const s = supabaseAdmin();
 
   const { data, error } = await s
@@ -118,18 +118,6 @@ export default async function Page({ params }: { params: { id: string } }) {
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <a
-            href="/ops/webform/jobs"
-            style={{
-              textDecoration: "none",
-              border: "1px solid #e5e7eb",
-              padding: "8px 12px",
-              borderRadius: 8,
-              fontWeight: 600,
-            }}
-          >
-            ← Back to Jobs
-          </a>
           <a
             href="/ops/webform/queue"
             style={{
