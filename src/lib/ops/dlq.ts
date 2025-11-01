@@ -8,16 +8,21 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import "server-only";
 import { createClient } from "@supabase/supabase-js";
-import sendControllerRequest from "@/lib/dispatch/send";
+// keep pathing consistent with rest of repo (uses "@/src/…")
+import sendControllerRequest from "@/src/lib/dispatch/send";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE || "";
 
 function sb() {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
-    throw new Error("Supabase env missing: set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE");
+    throw new Error(
+      "Supabase env missing: set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE"
+    );
   }
-  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, { auth: { persistSession: false } });
+  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
+    auth: { persistSession: false },
+  });
 }
 
 export type DLQRow = {
@@ -36,7 +41,9 @@ export async function listDLQ(limit = 200): Promise<DLQRow[]> {
   const client = sb();
   const { data, error } = await client
     .from("ops_dlq")
-    .select("id, created_at, channel, controller_key, subject_id, payload, error_code, error_note, retries")
+    .select(
+      "id, created_at, channel, controller_key, subject_id, payload, error_code, error_note, retries"
+    )
     .order("created_at", { ascending: false })
     .limit(Math.max(1, Math.min(1000, limit)));
   if (error) throw error;
@@ -146,8 +153,8 @@ export async function retryDLQ(id: string | number) {
       return {
         ok: true,
         requeued: true,
-        channel: res.channel ?? channel,
-        note: `Retried via ${res.channel ?? "webform"}`,
+        channel: (res as any)?.channel ?? channel,
+        note: `Retried via ${(res as any)?.channel ?? "webform"}`,
       };
     }
 
@@ -156,12 +163,12 @@ export async function retryDLQ(id: string | number) {
       .from("ops_dlq")
       .update({
         retries,
-        error_code: res.error ?? "retry_failed",
-        error_note: res.note ?? null,
+        error_code: (res as any)?.error ?? "retry_failed",
+        error_note: (res as any)?.note ?? null,
       } as any)
       .eq("id", id);
 
-    return { ok: false, error: res.error || "retry_failed", requeued: false };
+    return { ok: false, error: (res as any)?.error || "retry_failed", requeued: false };
   } catch (e: any) {
     const msg = String(e?.message || e);
     const retries = (row.retries ?? 0) + 1;
