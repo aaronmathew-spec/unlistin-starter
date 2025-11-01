@@ -1,3 +1,4 @@
+// app/ops/webform/job/[id]/page.tsx
 // Webform Job Detail: inspect one job (summary, meta/result JSON, HTML & screenshot preview links)
 
 export const runtime = "nodejs";
@@ -63,8 +64,7 @@ function Box({ children, title }: { children: React.ReactNode; title: string }) 
 }
 
 export default async function Page({ params }: { params: { id: string } }) {
-  const rawId = params?.id ?? "";
-  const id = rawId ? decodeURIComponent(rawId) : "";
+  const id = decodeURIComponent(params.id || "");
   const s = supabaseAdmin();
 
   const { data, error } = await s
@@ -95,10 +95,9 @@ export default async function Page({ params }: { params: { id: string } }) {
 
   const job = (data as Job | null) ?? null;
 
-  const screenshotUrl = `/api/ops/webform/job/${encodeURIComponent(
-    id
-  )}/screenshot`;
+  const screenshotUrl = `/api/ops/webform/job/${encodeURIComponent(id)}/screenshot`;
   const htmlUrl = `/api/ops/webform/job/${encodeURIComponent(id)}/html`;
+  const htmlDownloadUrl = `${htmlUrl}?download=1`;
 
   return (
     <div style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}>
@@ -118,6 +117,18 @@ export default async function Page({ params }: { params: { id: string } }) {
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <a
+            href="/ops/webform/jobs"
+            style={{
+              textDecoration: "none",
+              border: "1px solid #e5e7eb",
+              padding: "8px 12px",
+              borderRadius: 8,
+              fontWeight: 600,
+            }}
+          >
+            ← Back to Jobs
+          </a>
           <a
             href="/ops/webform/queue"
             style={{
@@ -259,6 +270,20 @@ export default async function Page({ params }: { params: { id: string } }) {
               title="Open captured HTML (if present) in a new tab"
             >
               🧾 View HTML
+            </a>
+            <a
+              href={htmlDownloadUrl}
+              style={{
+                textDecoration: "none",
+                border: "1px solid #e5e7eb",
+                padding: "8px 12px",
+                borderRadius: 8,
+                fontWeight: 600,
+                background: "#fff",
+              }}
+              title="Download captured HTML"
+            >
+              ⬇ Download HTML
             </a>
             <a
               href={screenshotUrl}
