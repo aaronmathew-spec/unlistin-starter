@@ -27,7 +27,8 @@ export function maskEmail(v: unknown): string {
   if (!domain) return maskMiddle(user, 0, Math.min(2, user.length));
 
   // Email: keep first char of user if present, mask the rest of user
-  const userMasked = user.length > 0 ? `${user[0]}${"•".repeat(Math.max(0, user.length - 1))}` : "•";
+  const userMasked =
+    user.length > 0 ? `${user[0]}${"•".repeat(Math.max(0, user.length - 1))}` : "•";
   return `${userMasked}@${domain}`;
 }
 
@@ -58,11 +59,7 @@ export function maskPhone(v: unknown): string {
 
 function looksLikeEmailKey(key: string): boolean {
   const k = key.toLowerCase();
-  return (
-    k === "email" ||
-    k.endsWith("_email") ||
-    k.includes("email")
-  );
+  return k === "email" || k.endsWith("_email") || k.includes("email");
 }
 
 function looksLikePhoneKey(key: string): boolean {
