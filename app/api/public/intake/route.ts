@@ -1,95 +1,117 @@
-// app/api/public/intake/route.ts
-/* Minimal public intake endpoint that enqueues a webform job.
-   Security:
-   - Only enabled when NEXT_PUBLIC_PUBLIC_INTAKE="1"
-   - Optional shared secret (PUBLIC_INTAKE_SECRET) via header: x-public-intake
-   - Simple size limits + basic input normalization
-*/
-
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-
 /* eslint-disable @typescript-eslint/no-explicit-any */
+export const runtime = "nodejs";
+
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { createHash } from "crypto";
 
-const ENABLED = (process.env.NEXT_PUBLIC_PUBLIC_INTAKE || "").toLowerCase() === "1";
-const SHARED = (process.env.PUBLIC_INTAKE_SECRET || "").trim();
-const TABLE = process.env.WEBFORM_JOBS_TABLE || "webform_jobs";
+/**
+ * Table (create if missing):
+ *
+ * create table if not exists public.intake_leads (
+ *   id uuid primary key default gen_random_uuid(),
+ *   created_at timestamptz default now(),
+ *   name text,
+ *   email text not null,
+ *   region text,
+ *   goals text,
+ *   referral text,
+ *   ip_hash text
+ * );
+ * create index if not exists intake_leads_email_idx on public.intake_leads (lower(email));
+ */
+
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE || "";
+const IP_SALT = (process.env.INTAKE_IP_SALT || process.env.SECURE_CRON_SECRET || "").trim(); // reuse if no dedicated salt
 
-function bad(msg: string, code = 400) {
-  return NextResponse.json({ ok: false, error: msg }, { status: code });
+function db() {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
+    throw new Error("Supabase env missing");
+  }
+  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, { auth: { persistSession: false } });
+}
+
+function json(data: any, init?: ResponseInit) {
+  return new NextResponse(JSON.stringify(data), {
+    ...init,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      ...(init?.headers || {}),
+    },
+  });
+}
+
+function hashIp(ip: string | null | undefined) {
+  if (!ip || !IP_SALT) return null;
+  try {
+    return createHash("sha256").update(IP_SALT + "::" + ip).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
+function sanitize(s: unknown, max = 2000): string | null {
+  const v = String(s ?? "").trim();
+  if (!v) return null;
+  return v.slice(0, max);
 }
 
 export async function POST(req: Request) {
   try {
-    if (!ENABLED) return bad("intake_disabled", 403);
-    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) return bad("env_missing", 500);
-
-    // Optional header secret
-    if (SHARED) {
-      const hdr = (req.headers.get("x-public-intake") || "").trim();
-      if (hdr !== SHARED) return bad("invalid_secret", 403);
-    }
-
-    const ct = String(req.headers.get("content-type") || "").toLowerCase();
-    let form: FormData | null = null;
-    if (ct.includes("application/x-www-form-urlencoded") || ct.includes("multipart/form-data")) {
-      form = await req.formData();
-    } else if (ct.includes("application/json")) {
-      const j = await req.json().catch(() => ({}));
-      form = new FormData();
-      for (const [k, v] of Object.entries(j || {})) form.append(k, String(v ?? ""));
-    } else {
-      // allow GET-style form posts from <form method="post">
-      form = await req.formData().catch(() => null);
-    }
-    if (!form) return bad("invalid_body");
-
-    const email = String(form.get("email") || "").trim();
-    const name = String(form.get("name") || "").trim();
-    const url = String(form.get("url") || "").trim();
-    const description = String(form.get("description") || "").trim();
-    const region = (String(form.get("region") || "IN").trim() || "IN").toUpperCase();
-
-    if (!email || !name || !url) return bad("missing_required_fields");
-
-    // Light validation / size limits
-    if (email.length > 200 || name.length > 200 || url.length > 2000 || description.length > 8000) {
-      return bad("input_too_large");
-    }
-
-    const meta = {
-      controllerKey: null,
-      controllerName: null,
-      subject: { email, name, handle: null, id: null },
-      formUrl: url,
-      region,
-      description,
-      source: "public_intake_v1",
-      createdBy: "public",
+    // Basic JSON parse
+    const body = (await req.json().catch(() => ({}))) as {
+      name?: string;
+      email?: string;
+      region?: string;
+      goals?: string;
+      referral?: string;
     };
 
-    // Insert a minimal queued job (worker will pick it up based on meta)
-    const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, { auth: { persistSession: false } });
-    const { data, error } = await sb
-      .from(TABLE)
-      .insert({
-        status: "queued",
-        url,
-        meta,
-        error: null,
-        result: null,
-      } as any)
-      .select("id, created_at")
-      .single();
+    const email = sanitize(body.email, 320);
+    if (!email || !/^\S+@\S+\.\S+$/.test(email)) {
+      return json({ ok: false, error: "invalid_email" }, { status: 400 });
+    }
 
-    if (error) return bad(`insert_failed:${error.message}`, 500);
+    const name = sanitize(body.name, 160);
+    const region = sanitize(body.region, 32) || "IN";
+    const goals = sanitize(body.goals, 5000);
+    const referral = sanitize(body.referral, 160);
 
-    return NextResponse.json({ ok: true, job_id: data?.id, created_at: data?.created_at }, { status: 200 });
+    // derive an IP hash (best-effort)
+    // On Vercel, this header is set: x-forwarded-for
+    const ip =
+      (req.headers.get("x-forwarded-for") || "").split(",")[0]?.trim() ||
+      (req.headers.get("x-real-ip") || "").trim() ||
+      undefined;
+    const ipHash = hashIp(ip);
+
+    // Insert
+    const client = db();
+    const { error } = await client.from("intake_leads").insert({
+      name,
+      email,
+      region,
+      goals,
+      referral,
+      ip_hash: ipHash,
+    } as any);
+
+    if (error) {
+      // Unique or validation issues still return 200 to avoid oracle for bots.
+      return json({ ok: true, note: "received" }, { status: 200 });
+    }
+
+    // (Optional) Email notify — behind flag to avoid surprises.
+    // if (process.env.FEATURE_RESEND === "1" && process.env.RESEND_API_KEY) {
+    //   // send a lightweight notification or welcome (omitted to keep this drop-in safe)
+    // }
+
+    // Respond with success (no sensitive echo)
+    return json({ ok: true, next: "/start/thanks" }, { status: 200 });
   } catch (e: any) {
-    return bad(String(e?.message || e || "intake_failed"), 500);
+    // Do not leak details
+    return json({ ok: false, error: "intake_failed" }, { status: 500 });
   }
 }
