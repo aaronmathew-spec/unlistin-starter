@@ -1,11 +1,24 @@
 // app/ops/dlq/page.tsx
-import { listDLQ } from "@/lib/ops/dlq";
-import { actionRetryDLQ } from "./actions";
+// DLQ Console: list + filter + retry (via actionRetryDLQ). CSV export button mirrors filters.
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** Small monospace pill used for terse values */
+import { supabaseAdmin } from "@/src/lib/supabase/admin";
+import { actionRetryDLQ } from "./actions";
+
+type DLQRow = {
+  id: string | number;
+  created_at: string;
+  channel: string;
+  controller_key: string | null;
+  subject_id: string | null;
+  payload: Record<string, any> | null;
+  error_code: string | null;
+  error_note: string | null;
+  retries: number | null;
+};
+
 function Mono({ children }: { children: React.ReactNode }) {
   return (
     <code
@@ -24,124 +37,64 @@ function Mono({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** Safe JSON stringify with clipping and fallback */
-function safeJsonPreview(value: unknown, max = 140): string {
+function clamp(n: number, lo: number, hi: number) {
+  return Math.max(lo, Math.min(hi, n));
+}
+
+function safeJsonPreview(value: unknown, max = 200): string {
   try {
     const s = JSON.stringify(value);
     if (!s) return "-";
     return s.length > max ? s.slice(0, max) + "…" : s;
   } catch {
-    try {
-      const s = String(value ?? "-");
-      return s.length > max ? s.slice(0, max) + "…" : s;
-    } catch {
-      return "-";
-    }
+    const s = String(value ?? "-");
+    return s.length > max ? s.slice(0, max) + "…" : s;
   }
 }
 
-/** Parse and clamp a number */
-function clamp(n: number, lo: number, hi: number) {
-  return Math.max(lo, Math.min(hi, n));
-}
-
-function Notice({
-  ok,
-  err,
-  note,
-}: {
-  ok?: boolean;
-  err?: string;
-  note?: string;
-}) {
-  if (ok) {
-    return (
-      <div
-        style={{
-          padding: 12,
-          border: "1px solid #10b981",
-          background: "#ecfdf5",
-          borderRadius: 10,
-          marginTop: 12,
-        }}
-      >
-        ✅ Retry enqueued <span style={{ color: "#065f46" }}>{note || ""}</span>
-      </div>
-    );
-  }
-  if (err) {
-    return (
-      <div
-        style={{
-          padding: 12,
-          border: "1px solid #ef4444",
-          background: "#fef2f2",
-          borderRadius: 10,
-          marginTop: 12,
-        }}
-      >
-        ❌ Retry failed: <b>{err}</b>
-      </div>
-    );
-  }
-  return null;
-}
-
-const FLAG_RETRY = process.env.FLAG_DLQ_RETRY === "1";
-
-export default async function OpsDLQPage({
+export default async function DLQPage({
   searchParams,
 }: {
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
-  // parse filters (optional; in-memory so we don’t change your DAL)
+  const s = supabaseAdmin();
+
   const qChannel =
-    typeof searchParams?.channel === "string"
-      ? searchParams?.channel.trim()
-      : "";
+    typeof searchParams?.channel === "string" ? searchParams.channel.trim() : "";
   const qController =
-    typeof searchParams?.controller === "string"
-      ? searchParams?.controller.trim()
-      : "";
-  // optional limit control
-  const limitRaw =
-    typeof searchParams?.limit === "string" ? searchParams?.limit : undefined;
-  const limit = limitRaw && !isNaN(+limitRaw) ? clamp(+limitRaw, 1, 1000) : 200;
+    typeof searchParams?.controller === "string" ? searchParams.controller.trim() : "";
+  const qLimitRaw =
+    typeof searchParams?.limit === "string" ? searchParams.limit : undefined;
+  const limit = clamp(qLimitRaw ? Number(qLimitRaw) || 200 : 200, 1, 1000);
 
-  // status notice from redirects
-  const ok = searchParams?.ok === "1";
-  const err =
-    typeof searchParams?.err === "string" ? searchParams?.err : undefined;
-  const note =
-    typeof searchParams?.note === "string" ? searchParams?.note : undefined;
-
-  let rows = await (async () => {
-    try {
-      return await listDLQ(limit);
-    } catch {
-      return [] as Awaited<ReturnType<typeof listDLQ>>;
-    }
-  })();
+  // Base select
+  let query = s
+    .from("ops_dlq")
+    .select(
+      "id, created_at, channel, controller_key, subject_id, payload, error_code, error_note, retries"
+    )
+    .order("created_at", { ascending: false })
+    .limit(limit);
 
   if (qChannel) {
-    rows = rows.filter((r) => String(r.channel || "").includes(qChannel));
+    query = query.ilike("channel", `%${qChannel}%`);
   }
   if (qController) {
-    rows = rows.filter((r) =>
-      String(r.controller_key || "").includes(qController)
-    );
+    query = query.ilike("controller_key", `%${qController}%`);
   }
 
-  // Build an Export CSV link that mirrors current filters/limit.
-  // /api/ops/dlq/list now supports ?format=csv (ensure that route exists).
-  const csvHref = `/api/ops/dlq/list?format=csv&limit=${encodeURIComponent(
-    String(limit)
-  )}${qChannel ? `&channel=${encodeURIComponent(qChannel)}` : ""}${
-    qController ? `&controller=${encodeURIComponent(qController)}` : ""
-  }`;
+  const { data, error } = await query;
+  const rows = (data ?? []) as DLQRow[];
+  const total = rows.length;
+
+  // CSV export URL mirroring filters
+  const csvHref =
+    `/api/ops/dlq/list?format=csv&limit=${encodeURIComponent(String(limit))}` +
+    (qChannel ? `&channel=${encodeURIComponent(qChannel)}` : "") +
+    (qController ? `&controller=${encodeURIComponent(qController)}` : "");
 
   return (
-    <div style={{ padding: 24, maxWidth: 1100, margin: "0 auto" }}>
+    <div style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}>
       {/* Header */}
       <div
         style={{
@@ -152,25 +105,19 @@ export default async function OpsDLQPage({
         }}
       >
         <div>
-          <h1 style={{ margin: 0 }}>Ops · Dead Letter Queue</h1>
+          <h1 style={{ margin: 0 }}>Ops · DLQ</h1>
           <p style={{ marginTop: 6, color: "#6b7280" }}>
-            Failed dispatch or worker jobs captured for investigation.
-            PII is redacted by producers. Use filters in the URL to narrow results.
+            Failed dispatches ready for manual retry. Configure{" "}
+            <Mono>FLAG_DLQ_RETRY=1</Mono> to enable the Retry action.
           </p>
           <div style={{ marginTop: 6, color: "#6b7280", fontSize: 12 }}>
-            <Mono>?channel=webform</Mono>{" "}
-            <Mono>?controller=truecaller</Mono>{" "}
+            Filters: <Mono>?channel=webform</Mono> <Mono>?controller=truecaller</Mono>{" "}
             <Mono>?limit=500</Mono>
           </div>
-          {!FLAG_RETRY && (
-            <div style={{ marginTop: 6, color: "#9ca3af", fontSize: 12 }}>
-              Set <Mono>FLAG_DLQ_RETRY=1</Mono> to enable retry buttons.
-            </div>
-          )}
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <a
-            href="/ops/targets/run"
+            href="/ops"
             style={{
               textDecoration: "none",
               border: "1px solid #e5e7eb",
@@ -179,7 +126,19 @@ export default async function OpsDLQPage({
               fontWeight: 600,
             }}
           >
-            ← Back to Plan
+            ← Ops Overview
+          </a>
+          <a
+            href="/ops/webform/queue"
+            style={{
+              textDecoration: "none",
+              border: "1px solid #e5e7eb",
+              padding: "8px 12px",
+              borderRadius: 8,
+              fontWeight: 600,
+            }}
+          >
+            📋 Queue
           </a>
           <a
             href={csvHref}
@@ -191,14 +150,68 @@ export default async function OpsDLQPage({
               fontWeight: 600,
               background: "#fff",
             }}
-            title="Download CSV of current view"
+            title="Download CSV of current DLQ view"
           >
             ⬇ Export CSV
           </a>
         </div>
       </div>
 
-      <Notice ok={ok} err={err} note={note} />
+      {/* Error */}
+      {error ? (
+        <div
+          style={{
+            marginTop: 12,
+            padding: 12,
+            border: "1px solid #ef4444",
+            background: "#fef2f2",
+            borderRadius: 10,
+          }}
+        >
+          ❌ Failed to load DLQ: <b>{String(error.message)}</b>
+        </div>
+      ) : null}
+
+      {/* Summary */}
+      <div
+        style={{
+          marginTop: 12,
+          display: "flex",
+          gap: 12,
+          flexWrap: "wrap",
+        }}
+      >
+        <div
+          style={{
+            border: "1px solid #e5e7eb",
+            background: "white",
+            borderRadius: 10,
+            padding: 12,
+          }}
+        >
+          Total <Mono>{String(total)}</Mono>
+        </div>
+        <div
+          style={{
+            border: "1px solid #e5e7eb",
+            background: "white",
+            borderRadius: 10,
+            padding: 12,
+          }}
+        >
+          Channel <Mono>{qChannel || "—"}</Mono>
+        </div>
+        <div
+          style={{
+            border: "1px solid #e5e7eb",
+            background: "white",
+            borderRadius: 10,
+            padding: 12,
+          }}
+        >
+          Controller <Mono>{qController || "—"}</Mono>
+        </div>
+      </div>
 
       {/* Table */}
       <div
@@ -214,106 +227,90 @@ export default async function OpsDLQPage({
           <table
             style={{
               width: "100%",
-              minWidth: 980,
+              minWidth: 1100,
               borderCollapse: "separate",
               borderSpacing: 0,
             }}
           >
             <thead style={{ background: "#f9fafb", textAlign: "left" }}>
               <tr>
-                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
-                  When
-                </th>
-                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
-                  Channel
-                </th>
-                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
-                  Controller
-                </th>
-                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
-                  Subject
-                </th>
-                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
-                  Error
-                </th>
-                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
-                  Retries
-                </th>
-                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
-                  Payload
-                </th>
-                {FLAG_RETRY && (
-                  <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>
-                    Actions
-                  </th>
-                )}
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>When</th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Channel</th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Controller</th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Subject</th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Retries</th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Error</th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Payload</th>
+                <th style={{ padding: 12, fontSize: 12, color: "#6b7280" }}>Actions</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((r) => {
-                const subject =
-                  r.subject_id ??
-                  r.payload?.subject?.email ??
-                  r.payload?.subject?.phone ??
-                  "-";
-                const error = r.error_code
-                  ? `${r.error_code}${r.error_note ? ` – ${r.error_note}` : ""}`
-                  : r.error_note || "-";
-                const payloadShort = safeJsonPreview(r.payload, 140);
+                const subject = r.subject_id || r.payload?.subject?.id || r.payload?.subject?.email || "—";
+                const errorShort =
+                  (r.error_code ? `${r.error_code}: ${r.error_note || ""}` : r.error_note || "") || "—";
+                const payloadShort = safeJsonPreview(r.payload, 160);
 
                 return (
-                  <tr key={r.id} style={{ borderTop: "1px solid #e5e7eb" }}>
+                  <tr key={String(r.id)} style={{ borderTop: "1px solid #e5e7eb" }}>
+                    <td style={{ padding: 12 }}>{new Date(r.created_at).toLocaleString()}</td>
                     <td style={{ padding: 12 }}>
-                      {new Date(r.created_at).toLocaleString()}
+                      <Mono>{r.channel || "—"}</Mono>
                     </td>
-                    <td style={{ padding: 12 }}>{r.channel || "-"}</td>
                     <td style={{ padding: 12 }}>
-                      {r.controller_key || "-"}
+                      <Mono>{r.controller_key || "—"}</Mono>
                     </td>
-                    <td style={{ padding: 12 }}>{subject}</td>
                     <td style={{ padding: 12 }}>
-                      <Mono>{error}</Mono>
+                      <Mono>{subject}</Mono>
                     </td>
-                    <td style={{ padding: 12 }}>{r.retries ?? 0}</td>
+                    <td style={{ padding: 12 }}>
+                      <Mono>{String(r.retries ?? 0)}</Mono>
+                    </td>
+                    <td style={{ padding: 12 }}>
+                      <Mono>{errorShort}</Mono>
+                    </td>
                     <td style={{ padding: 12 }}>
                       <Mono>{payloadShort}</Mono>
                     </td>
-                    {FLAG_RETRY && (
-                      <td style={{ padding: 12 }}>
-                        <form action={actionRetryDLQ}>
-                          <input type="hidden" name="id" value={r.id} />
-                          <button
-                            type="submit"
-                            style={{
-                              padding: "6px 10px",
-                              borderRadius: 8,
-                              border: "1px solid #111827",
-                              background: "#111827",
-                              color: "white",
-                              fontWeight: 600,
-                              cursor: "pointer",
-                            }}
-                            title="Retry this item"
-                          >
-                            Retry
-                          </button>
-                        </form>
-                      </td>
-                    )}
+                    <td style={{ padding: 12, whiteSpace: "nowrap" }}>
+                      <form action={actionRetryDLQ} style={{ display: "inline-block" }}>
+                        <input type="hidden" name="id" value={String(r.id)} />
+                        <button
+                          type="submit"
+                          style={{
+                            padding: "6px 10px",
+                            borderRadius: 8,
+                            border: "1px solid #111827",
+                            background: "#111827",
+                            color: "white",
+                            fontWeight: 600,
+                            cursor: "pointer",
+                          }}
+                          title={
+                            process.env.FLAG_DLQ_RETRY === "1"
+                              ? "Retry dispatch"
+                              : "Enable FLAG_DLQ_RETRY=1 to allow retry"
+                          }
+                          disabled={process.env.FLAG_DLQ_RETRY !== "1"}
+                        >
+                          Retry
+                        </button>
+                      </form>
+                    </td>
                   </tr>
                 );
               })}
               {rows.length === 0 && (
                 <tr>
                   <td
-                    colSpan={FLAG_RETRY ? 8 : 7}
+                    colSpan={8}
                     style={{
                       padding: 24,
                       textAlign: "center",
                       color: "#6b7280",
                     }}
                   >
-                    DLQ empty (or no rows match your filters).
+                    DLQ is empty or filters matched nothing.
                   </td>
                 </tr>
               )}
@@ -322,9 +319,8 @@ export default async function OpsDLQPage({
         </div>
       </div>
 
-      {/* Footer */}
       <div style={{ marginTop: 14, fontSize: 12, color: "#6b7280" }}>
-        Retry is behind a feature flag. Set <Mono>FLAG_DLQ_RETRY=1</Mono> to enable.
+        CSV export requires <Mono>FLAG_DLQ_EXPORT=1</Mono> (or ops header <Mono>x-secure-cron</Mono>).
       </div>
     </div>
   );
