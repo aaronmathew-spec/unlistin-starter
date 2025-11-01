@@ -1,4 +1,3 @@
-// app/api/ops/webform/job/[id]/screenshot/route.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export const runtime = "nodejs";
 
@@ -70,7 +69,7 @@ function extractScreenshot(row: any): { body: Uint8Array; mime: string } | null 
 export async function GET(req: Request, ctx: { params: { id: string } }) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
     return new Response("env_missing", { status: 500 });
-    }
+  }
   const id = (ctx.params?.id || "").trim();
   if (!id) return new Response("missing_id", { status: 400 });
 
@@ -95,16 +94,19 @@ export async function GET(req: Request, ctx: { params: { id: string } }) {
   const ab: ArrayBuffer =
     u8.byteOffset === 0 && u8.byteLength === u8.buffer.byteLength
       ? (u8.buffer as ArrayBuffer)
-      : (u8.buffer as ArrayBuffer).slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+      : (u8.buffer as ArrayBuffer).slice(
+          u8.byteOffset,
+          u8.byteOffset + u8.byteLength
+        );
 
   const headers: Record<string, string> = {
     "content-type": extracted.mime || "image/png",
     "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
     "content-disposition": asDownload
-      ? `attachment; filename="webform-${id}.png"`
-      : `inline; filename="webform-${id}.png"`,
+      ? `attachment; filename="webform-${encodeURIComponent(id)}.png"`
+      : `inline; filename="webform-${encodeURIComponent(id)}.png"`,
   };
 
-  // Hand Response an ArrayBuffer (valid BodyInit in Node’s fetch)
   return new Response(ab, { status: 200, headers });
 }
