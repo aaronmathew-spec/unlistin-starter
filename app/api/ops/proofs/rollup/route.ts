@@ -10,8 +10,8 @@ import { createClient } from "@supabase/supabase-js";
 import { sha256Hex } from "@/src/lib/crypto/receipts";
 
 const OPS = (process.env.SECURE_CRON_SECRET || "").trim();
-const URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-const SR = process.env.SUPABASE_SERVICE_ROLE || "";
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE || "";
 
 function forbid(msg: string) {
   return NextResponse.json({ ok: false, error: msg }, { status: 403 });
@@ -24,7 +24,7 @@ function merkleRoot(leaves: string[]): string | null {
     const next: string[] = [];
     for (let i = 0; i < level.length; i += 2) {
       const a = level[i];
-      const b = i + 1 < level.length ? level[i + 1] : a; // duplicate last if odd
+      const b = i + 1 < level.length ? level[i + 1] : a;
       next.push(sha256Hex(a + ":" + b));
     }
     level = next;
@@ -37,15 +37,14 @@ export async function POST(req: Request) {
   if (!OPS) return forbid("secret_not_configured");
   if (hdr !== OPS) return forbid("invalid_secret");
 
-  const sb = createClient(URL, SR, { auth: { persistSession: false } });
+  const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, { auth: { persistSession: false } });
 
   const today = new Date();
   const y = today.getUTCFullYear();
   const m = String(today.getUTCMonth() + 1).padStart(2, "0");
   const d = String(today.getUTCDate()).padStart(2, "0");
-  const dayStr = `${y}-${m}-${d}`; // UTC date
+  const dayStr = `${y}-${m}-${d}`;
 
-  // Pull today's receipts
   const { data, error } = await sb
     .from("ops_artifact_receipts")
     .select("job_id, html_sha256, screenshot_sha256, created_at")
@@ -62,18 +61,13 @@ export async function POST(req: Request) {
   );
   const root = merkleRoot(leaves);
   if (!root) {
-    // Upsert empty day root as a no-op record (optional)
     return NextResponse.json({ ok: true, day: dayStr, merkle_root: null, leaf_count: 0 });
   }
 
   const { error: upErr } = await sb
     .from("ops_merkle_roots")
     .upsert(
-      {
-        day: dayStr,
-        merkle_root: root,
-        leaf_count: leaves.length,
-      },
+      { day: dayStr, merkle_root: root, leaf_count: leaves.length },
       { onConflict: "day" }
     );
 
