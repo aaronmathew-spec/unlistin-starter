@@ -1,3 +1,4 @@
+// app/coverage/page.tsx
 export const dynamic = "force-dynamic";
 export const fetchCache = "default-no-store";
 
@@ -12,44 +13,43 @@ type CoverageRow = {
   created_at: string;
 };
 
-async function fetchCoverage(cursor?: string) {
-  const u = new URL(`${process.env.NEXT_PUBLIC_BASE_URL ?? ""}/api/coverage`, "http://localhost");
-  // When running on server, relative fetch('/api/...') is fine as well. Fallback to relative:
-  const path = cursor ? `/api/coverage?cursor=${encodeURIComponent(cursor)}` : "/api/coverage";
+type CoveragePayload = { coverage: CoverageRow[]; nextCursor: string | null };
 
-  const res = await fetch(process.env.NEXT_PUBLIC_BASE_URL ? u.toString() : path, {
-    method: "GET",
-    cache: "no-store",
-  });
-  if (!res.ok) {
-    throw new Error(`Failed to fetch coverage: ${res.status}`);
+async function fetchCoverage(cursor?: string): Promise<CoveragePayload> {
+  const base = process.env.NEXT_PUBLIC_BASE_URL ?? "";
+  const path = cursor ? `/api/coverage?cursor=${encodeURIComponent(cursor)}` : "/api/coverage";
+  const url = base ? new URL(path, base).toString() : path;
+
+  try {
+    const res = await fetch(url, { method: "GET", cache: "no-store" });
+    if (!res.ok) throw new Error(String(res.status));
+    return (await res.json()) as CoveragePayload;
+  } catch {
+    // Graceful fallback keeps page usable even if API is offline
+    return { coverage: [], nextCursor: null };
   }
-  return (await res.json()) as { coverage: CoverageRow[]; nextCursor: string | null };
 }
 
 export default async function CoveragePage() {
   const { coverage, nextCursor } = await fetchCoverage();
 
   return (
-    <div className="max-w-5xl mx-auto px-4 py-8">
+    <div className="mx-auto max-w-5xl px-4 py-8">
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Coverage</h1>
-        <Link
-          href="/requests"
-          className="rounded-md border px-3 py-1.5 text-sm hover:bg-gray-50"
-        >
+        <Link href="/requests" className="rounded-md border px-3 py-1.5 text-sm hover:bg-gray-50">
           Back to Requests
         </Link>
       </div>
 
       {coverage.length === 0 ? (
-        <div className="border rounded-md p-6 text-gray-600">
+        <div className="rounded-md border p-6 text-gray-600">
           No coverage snapshots yet. Open a request and upload files, then POST to
-          <code className="mx-1 px-1 rounded bg-gray-100">/api/coverage</code> with
-          <code className="ml-1 px-1 rounded bg-gray-100">{"{ request_id }"}</code>.
+          <code className="mx-1 rounded bg-gray-100 px-1">/api/coverage</code> with
+          <code className="ml-1 rounded bg-gray-100 px-1">{`{ request_id }`}</code>.
         </div>
       ) : (
-        <div className="overflow-x-auto border rounded-md">
+        <div className="overflow-x-auto rounded-md border">
           <table className="min-w-full text-sm">
             <thead className="bg-gray-50 text-gray-700">
               <tr>
@@ -67,10 +67,7 @@ export default async function CoveragePage() {
                   <td className="px-3 py-2">{row.id}</td>
                   <td className="px-3 py-2">
                     {row.request_id ? (
-                      <Link
-                        href={`/requests/${row.request_id}`}
-                        className="underline underline-offset-2"
-                      >
+                      <Link href={`/requests/${row.request_id}`} className="underline underline-offset-2">
                         {row.request_id}
                       </Link>
                     ) : (
@@ -80,9 +77,7 @@ export default async function CoveragePage() {
                   <td className="px-3 py-2 font-medium">{row.score}</td>
                   <td className="px-3 py-2">{row.files_count}</td>
                   <td className="px-3 py-2">{row.exposure}</td>
-                  <td className="px-3 py-2">
-                    {new Date(row.created_at).toLocaleString()}
-                  </td>
+                  <td className="px-3 py-2">{new Date(row.created_at).toLocaleString()}</td>
                 </tr>
               ))}
             </tbody>
@@ -91,9 +86,7 @@ export default async function CoveragePage() {
       )}
 
       {nextCursor && (
-        <div className="mt-4 text-sm text-gray-600">
-          More rows available… (paging UI coming next)
-        </div>
+        <div className="mt-4 text-sm text-gray-600">More rows available… (paging UI coming next)</div>
       )}
     </div>
   );
